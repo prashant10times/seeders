@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,9 +20,26 @@ import (
 	"github.com/elastic/go-elasticsearch/v6"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
+	"github.com/kelseyhightower/envconfig"
 )
 
+// Config holds all configuration including environment variables and runtime settings
 type Config struct {
+	// Environment variables (automatically loaded)
+	DatabaseHost       string `envconfig:"DB_HOST" required:"true"`
+	DatabasePort       int    `envconfig:"DB_PORT" required:"true"`
+	DatabaseName       string `envconfig:"DB_NAME" required:"true"`
+	DatabaseUser       string `envconfig:"DB_USER" required:"true"`
+	DatabasePassword   string `envconfig:"DB_PASSWORD" required:"true"`
+	ClickhouseUser     string `envconfig:"CLICKHOUSE_USER" required:"true"`
+	ClickhouseHost     string `envconfig:"CLICKHOUSE_HOST" required:"true"`
+	ClickhousePort     string `envconfig:"CLICKHOUSE_PORT" required:"true"`
+	ClickhouseDB       string `envconfig:"CLICKHOUSE_DB" required:"true"`
+	ElasticsearchHost  string `envconfig:"ELASTICSEARCH_HOST" required:"true"`
+	ElasticsearchPort  string `envconfig:"ELASTICSEARCH_PORT" required:"true"`
+	ElasticsearchIndex string `envconfig:"ELASTICSEARCH_INDEX" required:"true"`
+
+	// Runtime configuration (set after loading env vars)
 	MySQLDSN            string
 	ClickhouseDSN       string
 	BaseTable           string
@@ -36,23 +52,22 @@ type Config struct {
 	IndexName           string
 }
 
-// loadEnv loads environment variables from .env file
-func loadEnv() error {
-	// Load .env file if it exists
-	if err := godotenv.Load(); err != nil {
-		// .env file not found, continue with system environment variables
-		fmt.Println("No .env file found, using system environment variables")
-	}
-	return nil
-}
+// Global config variable
+var config Config
 
-// getEnv gets environment variable and fails if not set
-func getEnv(key string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
+// loadEnv loads environment variables from .env file and validates them
+func loadEnv() error {
+	// Load .env file - it must exist
+	if err := godotenv.Load(); err != nil {
+		return fmt.Errorf("failed to load .env file: %w", err)
 	}
-	log.Fatalf("Environment variable %s is not set. Please check your .env file.", key)
-	return ""
+
+	// Automatically load and validate all environment variables
+	if err := envconfig.Process("", &config); err != nil {
+		return fmt.Errorf("failed to process environment variables: %w", err)
+	}
+
+	return nil
 }
 
 func setupConnections(config Config) (*sql.DB, *sql.DB, *elasticsearch.Client, error) {
@@ -325,40 +340,39 @@ func main() {
 	}
 
 	// Build connection strings from environment variables
-	mysqlDSN := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s",
-		getEnv("DB_USER"),
-		getEnv("DB_PASSWORD"),
-		getEnv("DB_HOST"),
-		getEnv("DB_PORT"),
-		getEnv("DB_NAME"),
+	mysqlDSN := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s",
+		config.DatabaseUser,
+		config.DatabasePassword,
+		config.DatabaseHost,
+		config.DatabasePort,
+		config.DatabaseName,
 	)
 
 	clickhouseDSN := fmt.Sprintf("clickhouse://%s@%s:%s/%s",
-		getEnv("CLICKHOUSE_USER"),
-		getEnv("CLICKHOUSE_HOST"),
-		getEnv("CLICKHOUSE_PORT"),
-		getEnv("CLICKHOUSE_DB"),
+		config.ClickhouseUser,
+		config.ClickhouseHost,
+		config.ClickhousePort,
+		config.ClickhouseDB,
 	)
 
 	elasticHost := fmt.Sprintf("http://%s:%s",
-		getEnv("ELASTICSEARCH_HOST"),
-		getEnv("ELASTICSEARCH_PORT"),
+		config.ElasticsearchHost,
+		config.ElasticsearchPort,
 	)
 
-	elasticIndex := getEnv("ELASTICSEARCH_INDEX")
+	elasticIndex := config.ElasticsearchIndex
 
-	config := Config{
-		MySQLDSN:            mysqlDSN,
-		ClickhouseDSN:       clickhouseDSN,
-		BaseTable:           tableName,
-		BatchSize:           batchSize,
-		ClickHouseBatchSize: clickHouseBatchSize,
-		NumChunks:           numChunks,
-		NumWorkers:          numWorkers,
-		ClickHouseWorkers:   clickHouseWorkers,
-		ElasticHost:         elasticHost,
-		IndexName:           elasticIndex,
-	}
+	// Set runtime configuration values
+	config.MySQLDSN = mysqlDSN
+	config.ClickhouseDSN = clickhouseDSN
+	config.BaseTable = tableName
+	config.BatchSize = batchSize
+	config.ClickHouseBatchSize = clickHouseBatchSize
+	config.NumChunks = numChunks
+	config.NumWorkers = numWorkers
+	config.ClickHouseWorkers = clickHouseWorkers
+	config.ElasticHost = elasticHost
+	config.IndexName = elasticIndex
 
 	// Display configuration
 	fmt.Printf("=== Data Migration Configuration ===\n")
@@ -1398,10 +1412,10 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			"event_totalSponsor": source["totalSponsor"],
 			"event_following":    source["following"],
 			"event_punchline":    source["punchline"],
-			"edition_exhibitor": source["exhibitors"],
-			"edition_sponsor":   source["totalSponsor"],
-			"edition_speaker":   source["speakers"],
-			"edition_followers": source["following"],
+			"edition_exhibitor":  source["exhibitors"],
+			"edition_sponsor":    source["totalSponsor"],
+			"edition_speaker":    source["speakers"],
+			"edition_followers":  source["following"],
 		}
 	}
 
@@ -1602,7 +1616,7 @@ func insertClickHouseBatch(clickhouseDB *sql.DB, records []map[string]interface{
 			event_created, edition_created, version
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
-	
+
 	// Retry logic for connection issues
 	maxRetries := 3
 	for attempt := 1; attempt <= maxRetries; attempt++ {
