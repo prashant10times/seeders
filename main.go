@@ -686,8 +686,8 @@ func testElasticsearchConnection(esClient *elasticsearch.Client, indexName strin
 		return fmt.Errorf("elasticsearch info request failed: %v", res.Status())
 	}
 
-	fmt.Println("OK: Elasticsearch connection successful")
-	fmt.Printf("OK: Cluster info: %s\n", res.Status())
+	log.Println("OK: Elasticsearch connection successful")
+	log.Printf("OK: Cluster info: %s", res.Status())
 
 	indexRes, err := esClient.Indices.Exists([]string{indexName})
 	if err != nil {
@@ -697,9 +697,9 @@ func testElasticsearchConnection(esClient *elasticsearch.Client, indexName strin
 
 	switch indexRes.StatusCode {
 	case 200:
-		fmt.Printf("OK: Index '%s' exists\n", indexName)
+		log.Printf("OK: Index '%s' exists", indexName)
 	case 404:
-		fmt.Printf("WARNING: Index '%s' does not exist\n", indexName)
+		log.Printf("WARNING: Index '%s' does not exist", indexName)
 	default:
 		return fmt.Errorf("unexpected status checking index: %d", indexRes.StatusCode)
 	}
@@ -744,7 +744,7 @@ func testElasticsearchConnection(esClient *elasticsearch.Client, indexName strin
 		totalCount = fmt.Sprintf("unknown format: %T", total)
 	}
 
-	fmt.Printf("OK: Search query successful, total documents: %v\n", totalCount)
+	log.Printf("OK: Search query successful, total documents: %v", totalCount)
 
 	return nil
 }
@@ -769,11 +769,11 @@ func testClickHouseConnection(clickhouseDB *sql.DB) error {
 		return fmt.Errorf("ClickHouse table access test failed: %v", err)
 	}
 
-	fmt.Println("OK: ClickHouse connection successful")
-	fmt.Printf("OK: ClickHouse table 'event_edition_ch' is accessible\n")
+	log.Println("OK: ClickHouse connection successful")
+	log.Printf("OK: ClickHouse table 'event_edition_ch' is accessible")
 
 	stats := clickhouseDB.Stats()
-	fmt.Printf("OK: ClickHouse connection pool: Open=%d, InUse=%d, Idle=%d\n",
+	log.Printf("OK: ClickHouse connection pool: Open=%d, InUse=%d, Idle=%d",
 		stats.OpenConnections, stats.InUse, stats.Idle)
 
 	return nil
@@ -906,7 +906,7 @@ collectLoop:
 
 			break collectLoop
 		case <-time.After(120 * time.Second):
-			fmt.Printf("Warning: Timeout waiting for venue data. Completed %d/%d batches\n",
+			log.Printf("Warning: Timeout waiting for venue data. Completed %d/%d batches",
 				completedBatches, expectedBatches)
 			break collectLoop
 		}
@@ -927,7 +927,7 @@ collectLoop:
 	}
 
 	if len(missingVenueIDs) > 0 {
-		fmt.Printf("Missing venue IDs (%d): %v\n", len(missingVenueIDs), missingVenueIDs)
+		log.Printf("Missing venue IDs (%d): %v", len(missingVenueIDs), missingVenueIDs)
 	}
 
 	return allVenueData
@@ -954,7 +954,7 @@ func fetchVenueDataForBatch(db *sql.DB, venueIDs []int64) []map[string]interface
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
-		fmt.Printf("Error fetching venue data: %v\n", err)
+		log.Printf("Error fetching venue data: %v", err)
 		return nil
 	}
 	defer rows.Close()
@@ -993,7 +993,7 @@ func fetchVenueDataForBatch(db *sql.DB, venueIDs []int64) []map[string]interface
 								if f, err := strconv.ParseFloat(str, 64); err == nil {
 									row[col] = f
 								} else {
-									fmt.Printf("Warning: Could not parse %s value '%s' to float64: %v\n", col, str, err)
+									log.Printf("Warning: Could not parse %s value '%s' to float64: %v", col, str, err)
 									row[col] = nil
 								}
 							} else {
@@ -1008,7 +1008,7 @@ func fetchVenueDataForBatch(db *sql.DB, venueIDs []int64) []map[string]interface
 							if f, err := strconv.ParseFloat(str, 64); err == nil {
 								row[col] = f
 							} else {
-								fmt.Printf("Warning: Could not parse %s string '%s' to float64: %v\n", col, str, err)
+								log.Printf("Warning: Could not parse %s string '%s' to float64: %v", col, str, err)
 								row[col] = nil
 							}
 						} else {
@@ -1109,7 +1109,7 @@ collectLoop:
 
 			break collectLoop
 		case <-time.After(120 * time.Second):
-			fmt.Printf("Warning: Timeout waiting for company data. Completed %d/%d batches\n",
+			log.Printf("Warning: Timeout waiting for company data. Completed %d/%d batches",
 				completedBatches, expectedBatches)
 			break collectLoop
 		}
@@ -1147,7 +1147,7 @@ func fetchCompanyDataForBatch(db *sql.DB, companyIDs []int64) []map[string]inter
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
-		fmt.Printf("Error fetching company data: %v\n", err)
+		log.Printf("Error fetching company data: %v", err)
 		return nil
 	}
 	defer rows.Close()
@@ -1247,7 +1247,7 @@ func fetchEditionDataParallel(db *sql.DB, eventIDs []int64, numWorkers int) []ma
 
 			return allEditionData
 		case <-time.After(120 * time.Second):
-			fmt.Printf("Warning: Timeout waiting for edition data. Completed %d/%d batches\n",
+			log.Printf("Warning: Timeout waiting for edition data. Completed %d/%d batches",
 				completedBatches, expectedBatches)
 			return allEditionData
 		}
@@ -1278,7 +1278,7 @@ func fetchEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interfa
 
 	currentEditionRows, err := db.Query(currentEditionQuery, args...)
 	if err != nil {
-		fmt.Printf("Error fetching current edition data: %v\n", err)
+		log.Printf("Error fetching current edition data: %v", err)
 		return nil
 	}
 	defer currentEditionRows.Close()
@@ -1307,7 +1307,7 @@ func fetchEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interfa
 
 	editionRows, err := db.Query(editionQuery, args...)
 	if err != nil {
-		fmt.Printf("Error fetching edition data: %v\n", err)
+		log.Printf("Error fetching edition data: %v", err)
 		return nil
 	}
 	defer editionRows.Close()
@@ -1353,7 +1353,7 @@ func fetchEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interfa
 }
 
 func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config Config) {
-	fmt.Println("=== Starting EVENT EDITION ONLY Processing ===")
+	log.Println("=== Starting EVENT EDITION ONLY Processing ===")
 
 	// Get total records and min/max ID's count from event table
 	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event")
@@ -1361,7 +1361,7 @@ func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClie
 		log.Fatal("Failed to get total records and ID range from event:", err)
 	}
 
-	fmt.Printf("Total event records: %d, Min ID: %d, Max ID: %d\n", totalRecords, minID, maxID)
+	log.Printf("Total event records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
 
 	// Calculate chunk size based on user input
 	if config.NumChunks <= 0 {
@@ -1373,7 +1373,7 @@ func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClie
 		chunkSize = 1
 	}
 
-	fmt.Printf("Processing event edition data in %d chunks with chunk size: %d\n", config.NumChunks, chunkSize)
+	log.Printf("Processing event edition data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
 
 	results := make(chan string, config.NumChunks)
 	semaphore := make(chan struct{}, config.NumWorkers)
@@ -1390,7 +1390,7 @@ func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClie
 		// delay between chunk launches
 		if i > 0 {
 			delay := 3 * time.Second
-			fmt.Printf("Waiting %v before launching event edition chunk %d...\n", delay, i+1)
+			log.Printf("Waiting %v before launching event edition chunk %d...", delay, i+1)
 			time.Sleep(delay)
 		}
 
@@ -1403,10 +1403,10 @@ func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClie
 
 	for i := 0; i < config.NumChunks; i++ {
 		result := <-results
-		fmt.Printf("Event Edition Result: %s\n", result)
+		log.Printf("Event Edition Result: %s", result)
 	}
 
-	fmt.Println("Event Edition processing completed!")
+	log.Println("Event Edition processing completed!")
 }
 
 // processes a single chunk of event edition data
@@ -1436,24 +1436,24 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 		// Get event IDs from this batch
 		eventIDs := extractEventIDs(batchData)
 		if len(eventIDs) > 0 {
-			fmt.Printf("Event edition chunk %d: Fetching edition data for %d events\n", chunkNum, len(eventIDs))
+			log.Printf("Event edition chunk %d: Fetching edition data for %d events", chunkNum, len(eventIDs))
 
 			// Fetch edition data in parallel
 			startTime := time.Now()
 			editionData := fetchEditionDataParallel(mysqlDB, eventIDs, config.NumWorkers)
 			editionTime := time.Since(startTime)
-			fmt.Printf("Event edition chunk %d: Retrieved edition data for %d events in %v\n", chunkNum, len(editionData), editionTime)
+			log.Printf("Event edition chunk %d: Retrieved edition data for %d events in %v", chunkNum, len(editionData), editionTime)
 
 			// Fetch company data for all editions
 			var companyData []map[string]interface{}
 			if len(editionData) > 0 {
 				companyIDs := extractCompanyIDs(editionData)
 				if len(companyIDs) > 0 {
-					fmt.Printf("Event edition chunk %d: Fetching company data for %d companies\n", chunkNum, len(companyIDs))
+					log.Printf("Event edition chunk %d: Fetching company data for %d companies", chunkNum, len(companyIDs))
 					startTime = time.Now()
 					companyData = fetchCompanyDataParallel(mysqlDB, companyIDs, config.NumWorkers)
 					companyTime := time.Since(startTime)
-					fmt.Printf("Event edition chunk %d: Retrieved company data for %d companies in %v\n", chunkNum, len(companyData), companyTime)
+					log.Printf("Event edition chunk %d: Retrieved company data for %d companies in %v", chunkNum, len(companyData), companyTime)
 				}
 			}
 
@@ -1462,11 +1462,11 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 			if len(editionData) > 0 {
 				venueIDs := extractVenueIDs(editionData)
 				if len(venueIDs) > 0 {
-					fmt.Printf("Event edition chunk %d: Fetching venue data for %d venues\n", chunkNum, len(venueIDs))
+					log.Printf("Event edition chunk %d: Fetching venue data for %d venues", chunkNum, len(venueIDs))
 					startTime = time.Now()
 					venueData = fetchVenueDataParallel(mysqlDB, venueIDs, config.NumWorkers)
 					venueTime := time.Since(startTime)
-					fmt.Printf("Event edition chunk %d: Retrieved venue data for %d venues in %v\n", chunkNum, len(venueData), venueTime)
+					log.Printf("Event edition chunk %d: Retrieved venue data for %d venues in %v", chunkNum, len(venueData), venueTime)
 				}
 			}
 
@@ -1475,22 +1475,22 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 			if len(editionData) > 0 {
 				cityIDs := extractCityIDs(editionData)
 				if len(cityIDs) > 0 {
-					fmt.Printf("Event edition chunk %d: Fetching city data for %d cities\n", chunkNum, len(cityIDs))
+					log.Printf("Event edition chunk %d: Fetching city data for %d cities", chunkNum, len(cityIDs))
 					startTime = time.Now()
 					cityData = fetchCityDataParallel(mysqlDB, cityIDs, config.NumWorkers)
 					cityTime := time.Since(startTime)
-					fmt.Printf("Event edition chunk %d: Retrieved city data for %d cities in %v\n", chunkNum, len(cityData), cityTime)
+					log.Printf("Event edition chunk %d: Retrieved city data for %d cities in %v", chunkNum, len(cityData), cityTime)
 				}
 			}
 
 			// Fetch Elasticsearch data for all editions
 			var esData map[int64]map[string]interface{}
 			if len(editionData) > 0 {
-				fmt.Printf("Event edition chunk %d: Fetching Elasticsearch data for %d events in batches of 200\n", chunkNum, len(eventIDs))
+				log.Printf("Event edition chunk %d: Fetching Elasticsearch data for %d events in batches of 200", chunkNum, len(eventIDs))
 				startTime = time.Now()
 				esData = fetchElasticsearchDataForEvents(esClient, config.IndexName, eventIDs)
 				esTime := time.Since(startTime)
-				fmt.Printf("Event edition chunk %d: Retrieved Elasticsearch data for %d events in %v\n", chunkNum, len(esData), esTime)
+				log.Printf("Event edition chunk %d: Retrieved Elasticsearch data for %d events in %v", chunkNum, len(esData), esTime)
 			}
 
 			// Denormalize data, create lookup maps
@@ -1681,16 +1681,16 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 					}
 				}
 
-				fmt.Printf("Event edition chunk %d: Data completeness - Complete: %d, Partial: %d, Skipped: %d\n",
+				log.Printf("Event edition chunk %d: Data completeness - Complete: %d, Partial: %d, Skipped: %d",
 					chunkNum, completeCount, partialCount, skippedCount)
 				if eventsWithMissingCurrentEdition > 0 {
-					fmt.Printf("Event edition chunk %d: Warning - %d events have no current edition (event_edition is NULL)\n",
+					log.Printf("Event edition chunk %d: Warning - %d events have no current edition (event_edition is NULL)",
 						chunkNum, eventsWithMissingCurrentEdition)
 				}
 
 				// Insert collected records into ClickHouse
 				if len(clickHouseRecords) > 0 {
-					fmt.Printf("Event edition chunk %d: Attempting to insert %d records into ClickHouse...\n", chunkNum, len(clickHouseRecords))
+					log.Printf("Event edition chunk %d: Attempting to insert %d records into ClickHouse...", chunkNum, len(clickHouseRecords))
 
 					insertErr := retryWithBackoff(
 						func() error {
@@ -1707,7 +1707,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 						log.Printf("Event edition chunk %d: Successfully inserted %d records into ClickHouse", chunkNum, len(clickHouseRecords))
 					}
 				} else {
-					fmt.Printf("Event edition chunk %d: No records to insert into ClickHouse\n", chunkNum)
+					log.Printf("Event edition chunk %d: No records to insert into ClickHouse", chunkNum)
 				}
 			}
 		}
@@ -1864,7 +1864,7 @@ collectLoop:
 
 			break collectLoop
 		case <-time.After(120 * time.Second):
-			fmt.Printf("Warning: Timeout waiting for city data. Completed %d/%d batches\n",
+			log.Printf("Warning: Timeout waiting for city data. Completed %d/%d batches",
 				completedBatches, expectedBatches)
 			break collectLoop
 		}
@@ -1886,7 +1886,7 @@ collectLoop:
 	}
 
 	if len(missingCityIDs) > 0 {
-		fmt.Printf("Missing city IDs (%d): %v\n", len(missingCityIDs), missingCityIDs)
+		log.Printf("Missing city IDs (%d): %v", len(missingCityIDs), missingCityIDs)
 	}
 
 	return allCityData
@@ -1912,7 +1912,7 @@ func fetchCityDataForBatch(db *sql.DB, cityIDs []int64) []map[string]interface{}
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
-		fmt.Printf("Error fetching city data: %v\n", err)
+		log.Printf("Error fetching city data: %v", err)
 		return nil
 	}
 	defer rows.Close()
@@ -1951,7 +1951,7 @@ func fetchCityDataForBatch(db *sql.DB, cityIDs []int64) []map[string]interface{}
 								if f, err := strconv.ParseFloat(str, 64); err == nil {
 									row[col] = f
 								} else {
-									fmt.Printf("Warning: Could not parse %s value '%s' to float64: %v\n", col, str, err)
+									log.Printf("Warning: Could not parse %s value '%s' to float64: %v", col, str, err)
 									row[col] = nil
 								}
 							} else {
@@ -1966,7 +1966,7 @@ func fetchCityDataForBatch(db *sql.DB, cityIDs []int64) []map[string]interface{}
 							if f, err := strconv.ParseFloat(str, 64); err == nil {
 								row[col] = f
 							} else {
-								fmt.Printf("Warning: Could not parse %s string '%s' to float64: %v\n", col, str, err)
+								log.Printf("Warning: Could not parse %s string '%s' to float64: %v", col, str, err)
 								row[col] = nil
 							}
 						} else {
@@ -2017,20 +2017,20 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 		esClient.Search.WithBody(strings.NewReader(string(queryJSON))),
 	)
 	if err != nil {
-		fmt.Printf("Warning: Failed to search Elasticsearch for batch: %v\n", err)
+		log.Printf("Warning: Failed to search Elasticsearch for batch: %v", err)
 		return results
 	}
 	defer searchRes.Body.Close()
 
 	if searchRes.IsError() {
-		fmt.Printf("Warning: Elasticsearch search failed: %v\n", searchRes.Status())
+		log.Printf("Warning: Elasticsearch search failed: %v", searchRes.Status())
 		return results
 	}
 
 	// Parse response
 	var result map[string]interface{}
 	if err := json.NewDecoder(searchRes.Body).Decode(&result); err != nil {
-		fmt.Printf("Warning: Failed to decode Elasticsearch response: %v\n", err)
+		log.Printf("Warning: Failed to decode Elasticsearch response: %v", err)
 		return results
 	}
 
@@ -2053,14 +2053,14 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			if parsedID, err := strconv.ParseInt(eventIDStr, 10, 64); err == nil {
 				eventIDInt = parsedID
 			} else {
-				fmt.Printf("Warning: Failed to parse id string '%s': %v\n", eventIDStr, err)
+				log.Printf("Warning: Failed to parse id string '%s': %v", eventIDStr, err)
 				continue
 			}
 		} else if eventIDNum, ok := source["id"].(float64); ok {
 			// Convert float64 to int64
 			eventIDInt = int64(eventIDNum)
 		} else {
-			fmt.Printf("Warning: Unexpected id type: %T, value: %v\n", source["id"], source["id"])
+			log.Printf("Warning: Unexpected id type: %T, value: %v", source["id"], source["id"])
 			continue
 		}
 
@@ -2158,7 +2158,7 @@ collectLoop:
 		case <-done:
 			break collectLoop
 		case <-time.After(120 * time.Second):
-			fmt.Printf("Warning: Timeout waiting for Elasticsearch data. Completed %d/%d batches\n",
+			log.Printf("Warning: Timeout waiting for Elasticsearch data. Completed %d/%d batches",
 				completedBatches, expectedBatches)
 			break collectLoop
 		}
@@ -2171,7 +2171,7 @@ collectLoop:
 		}
 	}
 
-	fmt.Printf("OK: Retrieved Elasticsearch data for %d events in %d batches\n", len(results), len(allResults))
+	log.Printf("OK: Retrieved Elasticsearch data for %d events in %d batches", len(results), len(allResults))
 	return results
 }
 
@@ -2298,19 +2298,19 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
-	fmt.Printf("OK: Successfully inserted %d event edition records\n", len(records))
+	log.Printf("OK: Successfully inserted %d event edition records", len(records))
 	return nil
 }
 
 func processExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
-	fmt.Println("=== Starting EXHIBITOR ONLY Processing ===")
+	log.Println("=== Starting EXHIBITOR ONLY Processing ===")
 
 	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_exhibitor")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event_exhibitor:", err)
 	}
 
-	fmt.Printf("Total exhibitor records: %d, Min ID: %d, Max ID: %d\n", totalRecords, minID, maxID)
+	log.Printf("Total exhibitor records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
 
 	if config.NumChunks <= 0 {
 		config.NumChunks = 5 // Default to 5 chunks if not specified
@@ -2321,7 +2321,7 @@ func processExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 		chunkSize = 1
 	}
 
-	fmt.Printf("Processing exhibitor data in %d chunks with chunk size: %d\n", config.NumChunks, chunkSize)
+	log.Printf("Processing exhibitor data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
 
 	results := make(chan string, config.NumChunks)
 	semaphore := make(chan struct{}, config.NumWorkers)
@@ -2350,14 +2350,14 @@ func processExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 
 	for i := 0; i < config.NumChunks; i++ {
 		result := <-results
-		fmt.Printf("Exhibitor Result: %s\n", result)
+		log.Printf("Exhibitor Result: %s", result)
 	}
 
-	fmt.Println("Exhibitor processing completed!")
+	log.Println("Exhibitor processing completed!")
 }
 
 func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, endID int, chunkNum int, results chan<- string) {
-	fmt.Printf("Processing exhibitor chunk %d: ID range %d-%d\n", chunkNum, startID, endID)
+	log.Printf("Processing exhibitor chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
 	batchData, err := buildExhibitorMigrationData(mysqlDB, startID, endID, endID-startID+1)
 	if err != nil {
@@ -2366,14 +2366,14 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID,
 	}
 
 	if len(batchData) == 0 {
-		fmt.Printf("Exhibitor chunk %d: No data found in range %d-%d\n", chunkNum, startID, endID)
+		log.Printf("Exhibitor chunk %d: No data found in range %d-%d", chunkNum, startID, endID)
 		results <- fmt.Sprintf("Exhibitor chunk %d: No data found", chunkNum)
 		return
 	}
-	fmt.Printf("Exhibitor chunk %d: Retrieved %d records in chunk\n", chunkNum, len(batchData))
+	log.Printf("Exhibitor chunk %d: Retrieved %d records in chunk", chunkNum, len(batchData))
 	eventIDs := extractExhibitorEventIDs(batchData) // Extract event IDs from this batch to fetch social media data
 	if len(eventIDs) > 0 {
-		fmt.Printf("Exhibitor chunk %d: Processing %d exhibitor records\n", chunkNum, len(batchData))
+		log.Printf("Exhibitor chunk %d: Processing %d exhibitor records", chunkNum, len(batchData))
 
 		// Extract company IDs from exhibitor data to fetch social media information
 		var exhibitorCompanyIDs []int64
@@ -2390,11 +2390,11 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID,
 		// Fetch social media data for exhibitor companies
 		var socialData map[int64]map[string]interface{}
 		if len(exhibitorCompanyIDs) > 0 {
-			fmt.Printf("Exhibitor chunk %d: Fetching social media data for %d companies\n", chunkNum, len(exhibitorCompanyIDs))
+			log.Printf("Exhibitor chunk %d: Fetching social media data for %d companies", chunkNum, len(exhibitorCompanyIDs))
 			startTime := time.Now()
 			socialData = fetchExhibitorSocialData(mysqlDB, exhibitorCompanyIDs)
 			socialTime := time.Since(startTime)
-			fmt.Printf("Exhibitor chunk %d: Retrieved social media data for %d companies in %v\n", chunkNum, len(socialData), socialTime)
+			log.Printf("Exhibitor chunk %d: Retrieved social media data for %d companies in %v", chunkNum, len(socialData), socialTime)
 		}
 
 		var exhibitorRecords []ExhibitorRecord
@@ -2443,7 +2443,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID,
 
 		// Insert exhibitor data into ClickHouse
 		if len(exhibitorRecords) > 0 {
-			fmt.Printf("Exhibitor chunk %d: Attempting to insert %d records into event_exhibitor_ch...\n", chunkNum, len(exhibitorRecords))
+			log.Printf("Exhibitor chunk %d: Attempting to insert %d records into event_exhibitor_ch...", chunkNum, len(exhibitorRecords))
 			exhibitorInsertErr := retryWithBackoff(
 				func() error {
 					return insertExhibitorDataIntoClickHouse(clickhouseConn, exhibitorRecords, config.ClickHouseWorkers)
@@ -2460,7 +2460,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID,
 				log.Printf("Exhibitor chunk %d: Successfully inserted %d records into event_exhibitor_ch", chunkNum, len(exhibitorRecords))
 			}
 		} else {
-			fmt.Printf("Exhibitor chunk %d: No exhibitor records to insert\n", chunkNum)
+			log.Printf("Exhibitor chunk %d: No exhibitor records to insert", chunkNum)
 		}
 	}
 
@@ -2544,7 +2544,7 @@ func fetchExhibitorSocialData(db *sql.DB, companyIDs []int64) map[int64]map[stri
 
 		rows, err := db.Query(query, args...)
 		if err != nil {
-			fmt.Printf("Error fetching exhibitor social data batch %d-%d: %v\n", i, end-1, err)
+			log.Printf("Error fetching exhibitor social data batch %d-%d: %v", i, end-1, err)
 			continue
 		}
 
@@ -2672,7 +2672,7 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
-	fmt.Printf("OK: Successfully inserted %d exhibitor records\n", len(exhibitorRecords))
+	log.Printf("OK: Successfully inserted %d exhibitor records", len(exhibitorRecords))
 	return nil
 }
 
@@ -2694,14 +2694,14 @@ func extractExhibitorEventIDs(exhibitorData []map[string]interface{}) []int64 {
 }
 
 func processSponsorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
-	fmt.Println("=== Starting SPONSORS ONLY Processing ===")
+	log.Println("=== Starting SPONSORS ONLY Processing ===")
 
 	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_sponsors")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event_sponsors:", err)
 	}
 
-	fmt.Printf("Total sponsors records: %d, Min ID: %d, Max ID: %d\n", totalRecords, minID, maxID)
+	log.Printf("Total sponsors records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
 
 	if config.NumChunks <= 0 {
 		config.NumChunks = 5 // Default to 5 chunks if not specified
@@ -2712,7 +2712,7 @@ func processSponsorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 		chunkSize = 1
 	}
 
-	fmt.Printf("Processing sponsors data in %d chunks with chunk size: %d\n", config.NumChunks, chunkSize)
+	log.Printf("Processing sponsors data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
 
 	results := make(chan string, config.NumChunks)
 	semaphore := make(chan struct{}, config.NumWorkers)
@@ -2728,7 +2728,7 @@ func processSponsorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 		// Add delay between chunk launches to reduce ClickHouse load
 		if i > 0 {
 			delay := 3 * time.Second
-			fmt.Printf("Waiting %v before launching sponsors chunk %d...\n", delay, i+1)
+			log.Printf("Waiting %v before launching sponsors chunk %d...", delay, i+1)
 			time.Sleep(delay)
 		}
 
@@ -2741,14 +2741,14 @@ func processSponsorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 
 	for i := 0; i < config.NumChunks; i++ {
 		result := <-results
-		fmt.Printf("Sponsors Result: %s\n", result)
+		log.Printf("Sponsors Result: %s", result)
 	}
 
-	fmt.Println("Sponsors processing completed!")
+	log.Println("Sponsors processing completed!")
 }
 
 func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, endID int, chunkNum int, results chan<- string) {
-	fmt.Printf("Processing sponsors chunk %d: ID range %d-%d\n", chunkNum, startID, endID)
+	log.Printf("Processing sponsors chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
 	batchData, err := buildSponsorsMigrationData(mysqlDB, startID, endID, endID-startID+1)
 	if err != nil {
@@ -2757,12 +2757,12 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 	}
 
 	if len(batchData) == 0 {
-		fmt.Printf("Sponsors chunk %d: No data found in range %d-%d\n", chunkNum, startID, endID)
+		log.Printf("Sponsors chunk %d: No data found in range %d-%d", chunkNum, startID, endID)
 		results <- fmt.Sprintf("Sponsors chunk %d: No data found", chunkNum)
 		return
 	}
 
-	fmt.Printf("Sponsors chunk %d: Retrieved %d records in chunk\n", chunkNum, len(batchData))
+	log.Printf("Sponsors chunk %d: Retrieved %d records in chunk", chunkNum, len(batchData))
 
 	// Extract company IDs from this batch to fetch social media and website information
 	var sponsorCompanyIDs []int64
@@ -2779,11 +2779,11 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 	// Fetch social media and website data for sponsor companies
 	var companyData map[int64]map[string]interface{}
 	if len(sponsorCompanyIDs) > 0 {
-		fmt.Printf("Sponsors chunk %d: Fetching company data for %d companies\n", chunkNum, len(sponsorCompanyIDs))
+		log.Printf("Sponsors chunk %d: Fetching company data for %d companies", chunkNum, len(sponsorCompanyIDs))
 		startTime := time.Now()
 		companyData = fetchSponsorsCompanyData(mysqlDB, sponsorCompanyIDs)
 		companyTime := time.Since(startTime)
-		fmt.Printf("Sponsors chunk %d: Retrieved company data for %d companies in %v\n", chunkNum, len(companyData), companyTime)
+		log.Printf("Sponsors chunk %d: Retrieved company data for %d companies in %v", chunkNum, len(companyData), companyTime)
 	}
 
 	var sponsorRecords []SponsorRecord
@@ -2836,7 +2836,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 
 	// Insert sponsors data into ClickHouse
 	if len(sponsorRecords) > 0 {
-		fmt.Printf("Sponsors chunk %d: Attempting to insert %d records into event_sponsors_ch...\n", chunkNum, len(sponsorRecords))
+		log.Printf("Sponsors chunk %d: Attempting to insert %d records into event_sponsors_ch...", chunkNum, len(sponsorRecords))
 
 		sponsorInsertErr := retryWithBackoff(
 			func() error {
@@ -2854,7 +2854,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 			log.Printf("Sponsors chunk %d: Successfully inserted %d records into event_sponsors_ch", chunkNum, len(sponsorRecords))
 		}
 	} else {
-		fmt.Printf("Sponsors chunk %d: No sponsor records to insert\n", chunkNum)
+		log.Printf("Sponsors chunk %d: No sponsor records to insert", chunkNum)
 	}
 
 	results <- fmt.Sprintf("Sponsors chunk %d: Completed successfully", chunkNum)
@@ -2938,7 +2938,7 @@ func fetchSponsorsCompanyData(db *sql.DB, companyIDs []int64) map[int64]map[stri
 
 		rows, err := db.Query(query, args...)
 		if err != nil {
-			fmt.Printf("Error fetching sponsors company data batch %d-%d: %v\n", i, end-1, err)
+			log.Printf("Error fetching sponsors company data batch %d-%d: %v", i, end-1, err)
 			continue
 		}
 
@@ -3066,19 +3066,19 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
-	fmt.Printf("OK: Successfully inserted %d sponsor records\n", len(sponsorRecords))
+	log.Printf("OK: Successfully inserted %d sponsor records", len(sponsorRecords))
 	return nil
 }
 
 func processVisitorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
-	fmt.Println("=== Starting VISITORS ONLY Processing ===")
+	log.Println("=== Starting VISITORS ONLY Processing ===")
 
 	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_visitor")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event_visitor:", err)
 	}
 
-	fmt.Printf("Total visitors records: %d, Min ID: %d, Max ID: %d\n", totalRecords, minID, maxID)
+	log.Printf("Total visitors records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
 
 	if config.NumChunks <= 0 {
 		config.NumChunks = 5 // Default to 5 chunks if not specified
@@ -3089,7 +3089,7 @@ func processVisitorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 		chunkSize = 1
 	}
 
-	fmt.Printf("Processing visitors data in %d chunks with chunk size: %d\n", config.NumChunks, chunkSize)
+	log.Printf("Processing visitors data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
 
 	results := make(chan string, config.NumChunks)
 	semaphore := make(chan struct{}, config.NumWorkers)
@@ -3106,7 +3106,7 @@ func processVisitorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 		// Add delay between chunk launches to reduce ClickHouse load
 		if i > 0 {
 			delay := 3 * time.Second
-			fmt.Printf("Waiting %v before launching visitors chunk %d...\n", delay, i+1)
+			log.Printf("Waiting %v before launching visitors chunk %d...", delay, i+1)
 			time.Sleep(delay)
 		}
 
@@ -3119,15 +3119,15 @@ func processVisitorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 
 	for i := 0; i < config.NumChunks; i++ {
 		result := <-results
-		fmt.Printf("Visitors Result: %s\n", result)
+		log.Printf("Visitors Result: %s", result)
 	}
 
-	fmt.Println("Visitors processing completed!")
+	log.Println("Visitors processing completed!")
 }
 
 // processes a single chunk of visitors data
 func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, endID int, chunkNum int, results chan<- string) {
-	fmt.Printf("Processing visitors chunk %d: ID range %d-%d\n", chunkNum, startID, endID)
+	log.Printf("Processing visitors chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
 	batchData, err := buildVisitorsMigrationData(mysqlDB, startID, endID, endID-startID+1)
 	if err != nil {
@@ -3136,12 +3136,12 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 	}
 
 	if len(batchData) == 0 {
-		fmt.Printf("Visitors chunk %d: No data found in range %d-%d\n", chunkNum, startID, endID)
+		log.Printf("Visitors chunk %d: No data found in range %d-%d", chunkNum, startID, endID)
 		results <- fmt.Sprintf("Visitors chunk %d: No data found", chunkNum)
 		return
 	}
 
-	fmt.Printf("Visitors chunk %d: Retrieved %d records in chunk\n", chunkNum, len(batchData))
+	log.Printf("Visitors chunk %d: Retrieved %d records in chunk", chunkNum, len(batchData))
 
 	// Extract user IDs from this batch to fetch user names
 	var userIDs []int64
@@ -3158,11 +3158,11 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 	// Fetch user data for visitors
 	var userData map[int64]map[string]interface{}
 	if len(userIDs) > 0 {
-		fmt.Printf("Visitors chunk %d: Fetching user data for %d users\n", chunkNum, len(userIDs))
+		log.Printf("Visitors chunk %d: Fetching user data for %d users", chunkNum, len(userIDs))
 		startTime := time.Now()
 		userData = fetchVisitorsUserData(mysqlDB, userIDs)
 		userTime := time.Since(startTime)
-		fmt.Printf("Visitors chunk %d: Retrieved user data for %d users in %v\n", chunkNum, len(userData), userTime)
+		log.Printf("Visitors chunk %d: Retrieved user data for %d users in %v", chunkNum, len(userData), userTime)
 	}
 
 	var visitorRecords []VisitorRecord
@@ -3199,7 +3199,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 
 	// Insert visitors data into ClickHouse
 	if len(visitorRecords) > 0 {
-		fmt.Printf("Visitors chunk %d: Attempting to insert %d records into event_visitor_ch...\n", chunkNum, len(visitorRecords))
+		log.Printf("Visitors chunk %d: Attempting to insert %d records into event_visitor_ch...", chunkNum, len(visitorRecords))
 
 		visitorInsertErr := retryWithBackoff(
 			func() error {
@@ -3217,7 +3217,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 			log.Printf("Visitors chunk %d: Successfully inserted %d records into event_visitor_ch", chunkNum, len(visitorRecords))
 		}
 	} else {
-		fmt.Printf("Visitors chunk %d: No visitor records to insert\n", chunkNum)
+		log.Printf("Visitors chunk %d: No visitor records to insert", chunkNum)
 	}
 
 	results <- fmt.Sprintf("Visitors chunk %d: Completed successfully", chunkNum)
@@ -3301,7 +3301,7 @@ func fetchVisitorsUserData(db *sql.DB, userIDs []int64) map[int64]map[string]int
 
 		rows, err := db.Query(query, args...)
 		if err != nil {
-			fmt.Printf("Error fetching visitors user data batch %d-%d: %v\n", i, end-1, err)
+			log.Printf("Error fetching visitors user data batch %d-%d: %v", i, end-1, err)
 			continue
 		}
 
@@ -3425,19 +3425,19 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
-	fmt.Printf("OK: Successfully inserted %d visitor records\n", len(visitorRecords))
+	log.Printf("OK: Successfully inserted %d visitor records", len(visitorRecords))
 	return nil
 }
 
 func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
-	fmt.Println("=== Starting SPEAKERS ONLY Processing ===")
+	log.Println("=== Starting SPEAKERS ONLY Processing ===")
 
 	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_speaker")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event_speaker:", err)
 	}
 
-	fmt.Printf("Total speakers records: %d, Min ID: %d, Max ID: %d\n", totalRecords, minID, maxID)
+	log.Printf("Total speakers records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
 
 	if config.NumChunks <= 0 {
 		config.NumChunks = 5 // Default to 5 chunks if not specified
@@ -3448,7 +3448,7 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 		chunkSize = 1
 	}
 
-	fmt.Printf("Processing speakers data in %d chunks with chunk size: %d\n", config.NumChunks, chunkSize)
+	log.Printf("Processing speakers data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
 
 	results := make(chan string, config.NumChunks)
 	semaphore := make(chan struct{}, config.NumWorkers)
@@ -3465,7 +3465,7 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 		// delay between chunk launches to reduce ClickHouse load
 		if i > 0 {
 			delay := 3 * time.Second
-			fmt.Printf("Waiting %v before launching speakers chunk %d...\n", delay, i+1)
+			log.Printf("Waiting %v before launching speakers chunk %d...", delay, i+1)
 			time.Sleep(delay)
 		}
 
@@ -3478,15 +3478,15 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 
 	for i := 0; i < config.NumChunks; i++ {
 		result := <-results
-		fmt.Printf("Speakers Result: %s\n", result)
+		log.Printf("Speakers Result: %s", result)
 	}
 
-	fmt.Println("Speakers processing completed!")
+	log.Println("Speakers processing completed!")
 }
 
 // processes a single chunk of speakers data
 func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, endID int, chunkNum int, results chan<- string) {
-	fmt.Printf("Processing speakers chunk %d: ID range %d-%d\n", chunkNum, startID, endID)
+	log.Printf("Processing speakers chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
 	// Fetch all data for current chunk
 	batchData, err := buildSpeakersMigrationData(mysqlDB, startID, endID, endID-startID+1)
@@ -3496,12 +3496,12 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 	}
 
 	if len(batchData) == 0 {
-		fmt.Printf("Speakers chunk %d: No data found in range %d-%d\n", chunkNum, startID, endID)
+		log.Printf("Speakers chunk %d: No data found in range %d-%d", chunkNum, startID, endID)
 		results <- fmt.Sprintf("Speakers chunk %d: No data found", chunkNum)
 		return
 	}
 
-	fmt.Printf("Speakers chunk %d: Retrieved %d records in chunk\n", chunkNum, len(batchData))
+	log.Printf("Speakers chunk %d: Retrieved %d records in chunk", chunkNum, len(batchData))
 
 	// Extract user IDs from this batch to fetch user names
 	var userIDs []int64
@@ -3518,11 +3518,11 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 	// Fetch user data for speakers
 	var userData map[int64]map[string]interface{}
 	if len(userIDs) > 0 {
-		fmt.Printf("Speakers chunk %d: Fetching user data for %d users\n", chunkNum, len(userIDs))
+		log.Printf("Speakers chunk %d: Fetching user data for %d users", chunkNum, len(userIDs))
 		startTime := time.Now()
 		userData = fetchSpeakersUserData(mysqlDB, userIDs)
 		userTime := time.Since(startTime)
-		fmt.Printf("Speakers chunk %d: Retrieved user data for %d users in %v\n", chunkNum, len(userData), userTime)
+		log.Printf("Speakers chunk %d: Retrieved user data for %d users in %v", chunkNum, len(userData), userTime)
 	}
 
 	var speakerRecords []SpeakerRecord
@@ -3560,7 +3560,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 
 	// Insert speakers data into ClickHouse
 	if len(speakerRecords) > 0 {
-		fmt.Printf("Speakers chunk %d: Attempting to insert %d records into event_speaker_ch...\n", chunkNum, len(speakerRecords))
+		log.Printf("Speakers chunk %d: Attempting to insert %d records into event_speaker_ch...", chunkNum, len(speakerRecords))
 
 		speakerInsertErr := retryWithBackoff(
 			func() error {
@@ -3578,7 +3578,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 			log.Printf("Speakers chunk %d: Successfully inserted %d records into event_speaker_ch", chunkNum, len(speakerRecords))
 		}
 	} else {
-		fmt.Printf("Speakers chunk %d: No speaker records to insert\n", chunkNum)
+		log.Printf("Speakers chunk %d: No speaker records to insert", chunkNum)
 	}
 
 	results <- fmt.Sprintf("Speakers chunk %d: Completed successfully", chunkNum)
@@ -3662,7 +3662,7 @@ func fetchSpeakersUserData(db *sql.DB, userIDs []int64) map[int64]map[string]int
 
 		rows, err := db.Query(query, args...)
 		if err != nil {
-			fmt.Printf("Error fetching speakers user data batch %d-%d: %v\n", i, end-1, err)
+			log.Printf("Error fetching speakers user data batch %d-%d: %v", i, end-1, err)
 			continue
 		}
 
@@ -3786,7 +3786,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
-	fmt.Printf("OK: Successfully inserted %d speaker records\n", len(speakerRecords))
+	log.Printf("OK: Successfully inserted %d speaker records", len(speakerRecords))
 	return nil
 }
 
@@ -3922,42 +3922,42 @@ func main() {
 	flag.Parse()
 
 	if showHelp {
-		fmt.Println("=== Data Migration Script ===")
-		fmt.Println("Usage: go run main.go [table-mode] [options]")
-		fmt.Println("\nRequired Table Mode (choose one):")
-		fmt.Println("  -event-edition    # Process event edition data")
-		fmt.Println("  -sponsors         # Process sponsors data")
-		fmt.Println("  -exhibitors       # Process exhibitors data")
-		fmt.Println("  -visitors         # Process visitors data")
-		fmt.Println("  -speakers         # Process speakers data")
-		fmt.Println("\nOptions:")
-		fmt.Println("  -chunks int")
-		fmt.Println("        Number of chunks to process data in (default: 5)")
-		fmt.Println("  -batch int")
-		fmt.Println("        MySQL batch size for fetching data (default: 5000)")
-		fmt.Println("  -workers int")
-		fmt.Println("        Number of parallel workers (default: 5)")
-		fmt.Println("  -clickhouse-workers int")
-		fmt.Println("        Number of parallel ClickHouse insertion workers (default: 3)")
-		fmt.Println("  -exhibitor")
-		fmt.Println("        Process only exhibitor data (default: false)")
-		fmt.Println("  -sponsors")
-		fmt.Println("        Process only sponsors data (default: false)")
-		fmt.Println("  -visitors")
-		fmt.Println("        Process only visitors data (default: false)")
-		fmt.Println("  -speakers")
-		fmt.Println("        Process only speakers data (default: false)")
-		fmt.Println("  -event-edition")
-		fmt.Println("        Process only event edition data (default: false)")
+		log.Println("=== Data Migration Script ===")
+		log.Println("Usage: go run main.go [table-mode] [options]")
+		log.Println("\nRequired Table Mode (choose one):")
+		log.Println("  -event-edition    # Process event edition data")
+		log.Println("  -sponsors         # Process sponsors data")
+		log.Println("  -exhibitors       # Process exhibitors data")
+		log.Println("  -visitors         # Process visitors data")
+		log.Println("  -speakers         # Process speakers data")
+		log.Println("\nOptions:")
+		log.Println("  -chunks int")
+		log.Println("        Number of chunks to process data in (default: 5)")
+		log.Println("  -batch int")
+		log.Println("        MySQL batch size for fetching data (default: 5000)")
+		log.Println("  -workers int")
+		log.Println("        Number of parallel workers (default: 5)")
+		log.Println("  -clickhouse-workers int")
+		log.Println("        Number of parallel ClickHouse insertion workers (default: 3)")
+		log.Println("  -exhibitor")
+		log.Println("        Process only exhibitor data (default: false)")
+		log.Println("  -sponsors")
+		log.Println("        Process only sponsors data (default: false)")
+		log.Println("  -visitors")
+		log.Println("        Process only visitors data (default: false)")
+		log.Println("  -speakers")
+		log.Println("        Process only speakers data (default: false)")
+		log.Println("  -event-edition")
+		log.Println("        Process only event edition data (default: false)")
 
-		fmt.Println("  -help")
-		fmt.Println("        Show this help message")
-		fmt.Println("\nExamples:")
-		fmt.Println("  go run main.go -event-edition -chunks=10 -workers=20 -batch=50000")
-		fmt.Println("  go run main.go -sponsors -chunks=5 -workers=10 -batch=10000")
-		fmt.Println("  go run main.go -exhibitors -chunks=8 -workers=15 -batch=20000")
-		fmt.Println("  go run main.go -visitors -chunks=3 -workers=8 -batch=5000")
-		fmt.Println("  go run main.go -speakers -chunks=6 -workers=12 -batch=15000")
+		log.Println("  -help")
+		log.Println("        Show this help message")
+		log.Println("\nExamples:")
+		log.Println("  go run main.go -event-edition -chunks=10 -workers=20 -batch=50000")
+		log.Println("  go run main.go -sponsors -chunks=5 -workers=10 -batch=10000")
+		log.Println("  go run main.go -exhibitors -chunks=8 -workers=15 -batch=20000")
+		log.Println("  go run main.go -visitors -chunks=3 -workers=8 -batch=5000")
+		log.Println("  go run main.go -speakers -chunks=6 -workers=12 -batch=15000")
 		return
 	}
 
@@ -4033,15 +4033,15 @@ func main() {
 	}
 
 	if sponsorsOnly {
-		fmt.Printf("Elasticsearch: Skipped (not needed for sponsors)\n")
+		log.Printf("Elasticsearch: Skipped (not needed for sponsors)")
 	} else if speakersOnly {
-		fmt.Printf("Elasticsearch: Skipped (not needed for speakers)\n")
+		log.Printf("Elasticsearch: Skipped (not needed for speakers)")
 	} else if visitorsOnly {
-		fmt.Printf("Elasticsearch: Skipped (not needed for visitors)\n")
+		log.Printf("Elasticsearch: Skipped (not needed for visitors)")
 	} else if exhibitorOnly {
-		fmt.Printf("Elasticsearch: Skipped (not needed for exhibitors)\n")
+		log.Printf("Elasticsearch: Skipped (not needed for exhibitors)")
 	}
-	fmt.Printf("==============================\n\n")
+	log.Printf("==============================\n")
 
 	mysqlDB, clickhouseDB, esClient, err := setupConnections(config)
 	if err != nil {
@@ -4050,7 +4050,7 @@ func main() {
 	defer mysqlDB.Close()
 	defer clickhouseDB.Close()
 
-	fmt.Println("Connections established successfully!")
+	log.Println("Connections established successfully!")
 
 	if err := testClickHouseConnection(clickhouseDB); err != nil {
 		log.Fatalf("ClickHouse connection test failed: %v", err)
@@ -4062,13 +4062,13 @@ func main() {
 		}
 	} else {
 		if sponsorsOnly {
-			fmt.Println("WARNING: Skipping Elasticsearch connection test (not needed for sponsors processing)")
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for sponsors processing)")
 		} else if speakersOnly {
-			fmt.Println("WARNING: Skipping Elasticsearch connection test (not needed for speakers processing)")
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for speakers processing)")
 		} else if visitorsOnly {
-			fmt.Println("WARNING: Skipping Elasticsearch connection test (not needed for visitors processing)")
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for visitors processing)")
 		} else if exhibitorOnly {
-			fmt.Println("WARNING: Skipping Elasticsearch connection test (not needed for exhibitors processing)")
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for exhibitors processing)")
 		}
 	}
 
@@ -4108,15 +4108,15 @@ func main() {
 		defer nativeConn.Close()
 		processEventEditionOnly(mysqlDB, nativeConn, esClient, config)
 	} else {
-		fmt.Println("Error: No specific table mode selected!")
-		fmt.Println("Please specify one of the following modes:")
-		fmt.Println("  -event-edition    # Process event edition data")
-		fmt.Println("  -sponsors         # Process sponsors data")
-		fmt.Println("  -exhibitors       # Process exhibitors data")
-		fmt.Println("  -visitors         # Process visitors data")
-		fmt.Println("  -speakers         # Process speakers data")
-		fmt.Println("")
-		fmt.Println("Example: go run main.go -event-edition -chunks=10 -workers=20")
+		log.Println("Error: No specific table mode selected!")
+		log.Println("Please specify one of the following modes:")
+		log.Println("  -event-edition    # Process event edition data")
+		log.Println("  -sponsors         # Process sponsors data")
+		log.Println("  -exhibitors       # Process exhibitors data")
+		log.Println("  -visitors         # Process visitors data")
+		log.Println("  -speakers         # Process speakers data")
+		log.Println("")
+		log.Println("Example: go run main.go -event-edition -chunks=10 -workers=20")
 		os.Exit(1)
 	}
 }
