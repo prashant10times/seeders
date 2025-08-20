@@ -26,7 +26,7 @@ import (
 	"github.com/kelseyhightower/envconfig"
 )
 
-// retryWithBackoff implements exponential backoff with jitter for retry operations
+// retryWithBackoff
 func retryWithBackoff(operation func() error, maxRetries int, operationName string) error {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		if err := operation(); err == nil {
@@ -40,7 +40,6 @@ func retryWithBackoff(operation func() error, maxRetries int, operationName stri
 			return fmt.Errorf("operation %s failed after %d attempts", operationName, maxRetries)
 		}
 
-		// Exponential backoff with jitter
 		baseDelay := time.Duration(attempt*attempt) * time.Second
 		jitter := time.Duration(rand.Intn(1000)) * time.Millisecond
 		delay := baseDelay + jitter
@@ -175,7 +174,6 @@ func safeConvertToUInt16(value interface{}) uint16 {
 		}
 		return 0
 	}
-	// Handle []byte values (common when scanning MySQL VARCHAR)
 	if bytes, ok := value.([]byte); ok {
 		str := string(bytes)
 		if i, err := strconv.ParseUint(str, 10, 16); err == nil {
@@ -285,7 +283,7 @@ func safeConvertToNullableFloat64(value interface{}) *float64 {
 	return nil
 }
 
-// convertToUInt32 converts a value to uint32
+// converts a value to uint32
 func convertToUInt32(value interface{}) uint32 {
 	if value == nil {
 		return 0
@@ -369,10 +367,10 @@ func extractDomainFromWebsite(website interface{}) string {
 	return host
 }
 
-// getCompanyNameOrDefault provides a default value for company names if they are NULL
+// getCompanyNameOrDefault
 func getCompanyNameOrDefault(companyName interface{}) string {
 	if companyName == nil {
-		return "N/A" // Default value for NULL company names
+		return "N/A"
 	}
 
 	if name, ok := companyName.(string); ok {
@@ -1744,12 +1742,6 @@ func determineEditionType(editionStartDate, currentEditionStartDate interface{},
 		return &editionType
 	}
 
-	if editionStartDate == nil || currentEditionStartDate == nil || currentEditionID == 0 {
-		return nil
-	}
-
-	// MySQL DATE can be returned as string or []uint8 (byte array)
-	// Convert to string first, then parse
 	var editionDateStr, currentDateStr string
 
 	switch v := editionStartDate.(type) {
@@ -1780,7 +1772,6 @@ func determineEditionType(editionStartDate, currentEditionStartDate interface{},
 		return nil
 	}
 
-	// Compare dates to determine edition type according to business rules
 	if editionDate.After(currentDate) {
 		editionType := "future_edition"
 		return &editionType
@@ -1788,7 +1779,8 @@ func determineEditionType(editionStartDate, currentEditionStartDate interface{},
 		editionType := "past_edition"
 		return &editionType
 	} else {
-		return nil
+		editionType := "past_edition"
+		return &editionType
 	}
 }
 
@@ -2164,7 +2156,7 @@ collectLoop:
 			allResults = append(allResults, batchResults)
 			completedBatches++
 		case <-done:
-			break collectLoop // All goroutines completed
+			break collectLoop
 		case <-time.After(120 * time.Second):
 			fmt.Printf("Warning: Timeout waiting for Elasticsearch data. Completed %d/%d batches\n",
 				completedBatches, expectedBatches)
@@ -2181,6 +2173,133 @@ collectLoop:
 
 	fmt.Printf("OK: Retrieved Elasticsearch data for %d events in %d batches\n", len(results), len(allResults))
 	return results
+}
+
+// inserts event edition data into event_edition_ch
+func insertEventEditionDataIntoClickHouse(clickhouseConn driver.Conn, records []map[string]interface{}, numWorkers int) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	if numWorkers <= 1 {
+		return insertEventEditionDataSingleWorker(clickhouseConn, records)
+	}
+
+	batchSize := (len(records) + numWorkers - 1) / numWorkers
+	results := make(chan error, numWorkers)
+	semaphore := make(chan struct{}, numWorkers)
+
+	for i := 0; i < numWorkers; i++ {
+		start := i * batchSize
+		end := start + batchSize
+		if end > len(records) {
+			end = len(records)
+		}
+		if start >= len(records) {
+			break
+		}
+
+		semaphore <- struct{}{}
+		go func(start, end int) {
+			defer func() { <-semaphore }()
+			batch := records[start:end]
+			err := insertEventEditionDataSingleWorker(clickhouseConn, batch)
+			results <- err
+		}(start, end)
+	}
+
+	for i := 0; i < numWorkers && i*batchSize < len(records); i++ {
+		if err := <-results; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []map[string]interface{}) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	batch, err := clickhouseConn.PrepareBatch(ctx, `
+		INSERT INTO event_edition_ch (
+			event_id, event_name, event_abbr_name, event_description, event_punchline,
+			start_date, end_date,
+			edition_id, edition_country, edition_city, edition_city_lat, edition_city_long,
+			company_id, company_name, company_domain, company_website, company_country, company_city,
+			venue_id, venue_name, venue_country, venue_city, venue_lat, venue_long,
+			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
+			edition_type, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
+			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
+			event_created, edition_created, version
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
+	}
+
+	for _, record := range records {
+		eventEditionRecord := convertToEventEditionRecord(record)
+
+		err := batch.Append(
+			eventEditionRecord.EventID,              // event_id: UInt32 NOT NULL
+			eventEditionRecord.EventName,            // event_name: String NOT NULL
+			eventEditionRecord.EventAbbrName,        // event_abbr_name: Nullable(String)
+			eventEditionRecord.EventDescription,     // event_description: Nullable(String)
+			eventEditionRecord.EventPunchline,       // event_punchline: Nullable(String)
+			eventEditionRecord.StartDate,            // start_date: Date NOT NULL
+			eventEditionRecord.EndDate,              // end_date: Date NOT NULL
+			eventEditionRecord.EditionID,            // edition_id: UInt32 NOT NULL
+			eventEditionRecord.EditionCountry,       // edition_country: LowCardinality(FixedString(2)) NOT NULL
+			eventEditionRecord.EditionCity,          // edition_city: UInt32 NOT NULL
+			eventEditionRecord.EditionCityLat,       // edition_city_lat: Float64 NOT NULL
+			eventEditionRecord.EditionCityLong,      // edition_city_long: Float64 NOT NULL
+			eventEditionRecord.CompanyID,            // company_id: Nullable(UInt32)
+			eventEditionRecord.CompanyName,          // company_name: Nullable(String)
+			eventEditionRecord.CompanyDomain,        // company_domain: Nullable(String)
+			eventEditionRecord.CompanyWebsite,       // company_website: Nullable(String)
+			eventEditionRecord.CompanyCountry,       // company_country: LowCardinality(Nullable(FixedString(2)))
+			eventEditionRecord.CompanyCity,          // company_city: Nullable(UInt32)
+			eventEditionRecord.VenueID,              // venue_id: Nullable(UInt32)
+			eventEditionRecord.VenueName,            // venue_name: Nullable(String)
+			eventEditionRecord.VenueCountry,         // venue_country: LowCardinality(Nullable(FixedString(2)))
+			eventEditionRecord.VenueCity,            // venue_city: Nullable(UInt32)
+			eventEditionRecord.VenueLat,             // venue_lat: Nullable(Float64)
+			eventEditionRecord.VenueLong,            // venue_long: Nullable(Float64)
+			eventEditionRecord.Published,            // published: Int8 NOT NULL
+			eventEditionRecord.Status,               // status: LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
+			eventEditionRecord.EditionsAudianceType, // editions_audiance_type: UInt16 NOT NULL
+			eventEditionRecord.EditionFunctionality, // edition_functionality: LowCardinality(String) NOT NULL
+			eventEditionRecord.EditionWebsite,       // edition_website: Nullable(String)
+			eventEditionRecord.EditionDomain,        // edition_domain: Nullable(String)
+			eventEditionRecord.EditionType,          // edition_type: LowCardinality(Nullable(String)) DEFAULT 'NA'
+			eventEditionRecord.EventFollowers,       // event_followers: Nullable(UInt32)
+			eventEditionRecord.EditionFollowers,     // edition_followers: Nullable(UInt32)
+			eventEditionRecord.EventExhibitor,       // event_exhibitor: Nullable(UInt32)
+			eventEditionRecord.EditionExhibitor,     // edition_exhibitor: Nullable(UInt32)
+			eventEditionRecord.EventSponsor,         // event_sponsor: Nullable(UInt32)
+			eventEditionRecord.EditionSponsor,       // edition_sponsor: Nullable(UInt32)
+			eventEditionRecord.EventSpeaker,         // event_speaker: Nullable(UInt32)
+			eventEditionRecord.EditionSpeaker,       // edition_speaker: Nullable(UInt32)
+			eventEditionRecord.EventCreated,         // event_created: DateTime NOT NULL
+			eventEditionRecord.EditionCreated,       // edition_created: DateTime NOT NULL
+			eventEditionRecord.Version,              // version: UInt32 NOT NULL DEFAULT 1
+		)
+		if err != nil {
+			return fmt.Errorf("failed to append record to batch: %v", err)
+		}
+	}
+
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
+	}
+
+	fmt.Printf("OK: Successfully inserted %d event edition records\n", len(records))
+	return nil
 }
 
 func processExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
@@ -2239,7 +2358,7 @@ func processExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 
 func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, endID int, chunkNum int, results chan<- string) {
 	fmt.Printf("Processing exhibitor chunk %d: ID range %d-%d\n", chunkNum, startID, endID)
-	// Fetch all data for current chunk
+
 	batchData, err := buildExhibitorMigrationData(mysqlDB, startID, endID, endID-startID+1)
 	if err != nil {
 		results <- fmt.Sprintf("Exhibitor chunk %d batch error: %v", chunkNum, err)
@@ -2434,7 +2553,7 @@ func fetchExhibitorSocialData(db *sql.DB, companyIDs []int64) map[int64]map[stri
 			rows.Close()
 			continue
 		}
-		// Process current batch
+
 		for rows.Next() {
 			values := make([]interface{}, len(columns))
 			valuePtrs := make([]interface{}, len(columns))
@@ -2670,11 +2789,12 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 	var sponsorRecords []SponsorRecord
 	for _, sponsor := range batchData {
 		// Get company data for this sponsor
-		var companyWebsite, companyDomain, facebookID, linkedinID, twitterID, companyCountry interface{}
+		var companyWebsite, companyDomain, facebookID, linkedinID, twitterID, companyCountry, companyCity interface{}
 		if companyID, ok := sponsor["company_id"].(int64); ok && companyData != nil {
 			if company, exists := companyData[companyID]; exists {
 				companyWebsite = company["website"]
 				companyCountry = company["country"]
+				companyCity = company["city"]
 
 				// Extract domain from website
 				if website, ok := companyWebsite.(string); ok && website != "" {
@@ -2690,7 +2810,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 			}
 		}
 
-		// Convert data to proper types for protocol
+		// Convert data to proper types
 		companyID := convertToUInt32Ptr(sponsor["company_id"])
 		editionID := convertToUInt32(sponsor["event_edition"])
 		eventID := convertToUInt32(sponsor["event_id"])
@@ -2704,7 +2824,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 			CompanyWebsite: convertToStringPtr(companyWebsite),
 			CompanyDomain:  convertToStringPtr(companyDomain),
 			CompanyCountry: convertToStringPtr(companyCountry),
-			CompanyCity:    nil, // Always nil for sponsors
+			CompanyCity:    convertToUInt32Ptr(companyCity),
 			FacebookID:     convertToStringPtr(facebookID),
 			LinkedinID:     convertToStringPtr(linkedinID),
 			TwitterID:      convertToStringPtr(twitterID),
@@ -2714,7 +2834,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 		sponsorRecords = append(sponsorRecords, sponsorRecord)
 	}
 
-	// Insert sponsors data into ClickHouse using protocol
+	// Insert sponsors data into ClickHouse
 	if len(sponsorRecords) > 0 {
 		fmt.Printf("Sponsors chunk %d: Attempting to insert %d records into event_sponsors_ch...\n", chunkNum, len(sponsorRecords))
 
@@ -2812,7 +2932,7 @@ func fetchSponsorsCompanyData(db *sql.DB, companyIDs []int64) map[int64]map[stri
 
 		query := fmt.Sprintf(`
 			SELECT 
-				id, website, country, facebook_id, linkedin_id, twitter_id
+				id, website, country, city, facebook_id, linkedin_id, twitter_id
 			FROM company 
 			WHERE id IN (%s)`, strings.Join(placeholders, ","))
 
@@ -3056,7 +3176,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 			}
 		}
 
-		// Convert data to proper types for protocol
+		// Convert data to proper types
 		userID := convertToUInt32(visitor["user"])
 		eventID := convertToUInt32(visitor["event"])
 		editionID := convertToUInt32(visitor["edition"])
@@ -3774,134 +3894,6 @@ type EventEditionRecord struct {
 	Version              uint32   `ch:"version"`
 }
 
-// inserts event edition data into event_edition_ch table using parallel workers
-func insertEventEditionDataIntoClickHouse(clickhouseConn driver.Conn, records []map[string]interface{}, numWorkers int) error {
-	if len(records) == 0 {
-		return nil
-	}
-
-	if numWorkers <= 1 {
-		return insertEventEditionDataSingleWorker(clickhouseConn, records)
-	}
-
-	batchSize := (len(records) + numWorkers - 1) / numWorkers
-	results := make(chan error, numWorkers)
-	semaphore := make(chan struct{}, numWorkers)
-
-	for i := 0; i < numWorkers; i++ {
-		start := i * batchSize
-		end := start + batchSize
-		if end > len(records) {
-			end = len(records)
-		}
-		if start >= len(records) {
-			break
-		}
-
-		semaphore <- struct{}{}
-		go func(start, end int) {
-			defer func() { <-semaphore }()
-			batch := records[start:end]
-			err := insertEventEditionDataSingleWorker(clickhouseConn, batch)
-			results <- err
-		}(start, end)
-	}
-
-	for i := 0; i < numWorkers && i*batchSize < len(records); i++ {
-		if err := <-results; err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []map[string]interface{}) error {
-	if len(records) == 0 {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_edition_ch (
-			event_id, event_name, event_abbr_name, event_description, event_punchline,
-			start_date, end_date,
-			edition_id, edition_country, edition_city, edition_city_lat, edition_city_long,
-			company_id, company_name, company_domain, company_website, company_country, company_city,
-			venue_id, venue_name, venue_country, venue_city, venue_lat, venue_long,
-			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
-			edition_type, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
-			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
-			event_created, edition_created, version
-		)
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
-	}
-
-	for _, record := range records {
-		eventEditionRecord := convertToEventEditionRecord(record)
-
-		err := batch.Append(
-			eventEditionRecord.EventID,              // event_id: UInt32 NOT NULL
-			eventEditionRecord.EventName,            // event_name: String NOT NULL
-			eventEditionRecord.EventAbbrName,        // event_abbr_name: Nullable(String)
-			eventEditionRecord.EventDescription,     // event_description: Nullable(String)
-			eventEditionRecord.EventPunchline,       // event_punchline: Nullable(String)
-			eventEditionRecord.StartDate,            // start_date: Date NOT NULL
-			eventEditionRecord.EndDate,              // end_date: Date NOT NULL
-			eventEditionRecord.EditionID,            // edition_id: UInt32 NOT NULL
-			eventEditionRecord.EditionCountry,       // edition_country: LowCardinality(FixedString(2)) NOT NULL
-			eventEditionRecord.EditionCity,          // edition_city: UInt32 NOT NULL
-			eventEditionRecord.EditionCityLat,       // edition_city_lat: Float64 NOT NULL
-			eventEditionRecord.EditionCityLong,      // edition_city_long: Float64 NOT NULL
-			eventEditionRecord.CompanyID,            // company_id: Nullable(UInt32)
-			eventEditionRecord.CompanyName,          // company_name: Nullable(String)
-			eventEditionRecord.CompanyDomain,        // company_domain: Nullable(String)
-			eventEditionRecord.CompanyWebsite,       // company_website: Nullable(String)
-			eventEditionRecord.CompanyCountry,       // company_country: LowCardinality(Nullable(FixedString(2)))
-			eventEditionRecord.CompanyCity,          // company_city: Nullable(UInt32)
-			eventEditionRecord.VenueID,              // venue_id: Nullable(UInt32)
-			eventEditionRecord.VenueName,            // venue_name: Nullable(String)
-			eventEditionRecord.VenueCountry,         // venue_country: LowCardinality(Nullable(FixedString(2)))
-			eventEditionRecord.VenueCity,            // venue_city: Nullable(UInt32)
-			eventEditionRecord.VenueLat,             // venue_lat: Nullable(Float64)
-			eventEditionRecord.VenueLong,            // venue_long: Nullable(Float64)
-			eventEditionRecord.Published,            // published: Int8 NOT NULL
-			eventEditionRecord.Status,               // status: LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
-			eventEditionRecord.EditionsAudianceType, // editions_audiance_type: UInt16 NOT NULL
-			eventEditionRecord.EditionFunctionality, // edition_functionality: LowCardinality(String) NOT NULL
-			eventEditionRecord.EditionWebsite,       // edition_website: Nullable(String)
-			eventEditionRecord.EditionDomain,        // edition_domain: Nullable(String)
-			eventEditionRecord.EditionType,          // edition_type: LowCardinality(Nullable(String)) DEFAULT 'NA'
-			eventEditionRecord.EventFollowers,       // event_followers: Nullable(UInt32)
-			eventEditionRecord.EditionFollowers,     // edition_followers: Nullable(UInt32)
-			eventEditionRecord.EventExhibitor,       // event_exhibitor: Nullable(UInt32)
-			eventEditionRecord.EditionExhibitor,     // edition_exhibitor: Nullable(UInt32)
-			eventEditionRecord.EventSponsor,         // event_sponsor: Nullable(UInt32)
-			eventEditionRecord.EditionSponsor,       // edition_sponsor: Nullable(UInt32)
-			eventEditionRecord.EventSpeaker,         // event_speaker: Nullable(UInt32)
-			eventEditionRecord.EditionSpeaker,       // edition_speaker: Nullable(UInt32)
-			eventEditionRecord.EventCreated,         // event_created: DateTime NOT NULL
-			eventEditionRecord.EditionCreated,       // edition_created: DateTime NOT NULL
-			eventEditionRecord.Version,              // version: UInt32 NOT NULL DEFAULT 1
-		)
-		if err != nil {
-			return fmt.Errorf("failed to append record to batch: %v", err)
-		}
-	}
-
-	// Send batch
-	if err := batch.Send(); err != nil {
-		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
-	}
-
-	fmt.Printf("OK: Successfully inserted %d event edition records\n", len(records))
-	return nil
-}
-
 func main() {
 	var numChunks int
 	var batchSize int
@@ -4022,7 +4014,7 @@ func main() {
 	config.ElasticHost = elasticHost
 	config.IndexName = elasticIndex
 
-	// Validate configuration after all values are set
+	// Validate configuration
 	if err := validateConfig(config); err != nil {
 		log.Fatal("Configuration validation failed:", err)
 	}
@@ -4116,7 +4108,6 @@ func main() {
 		defer nativeConn.Close()
 		processEventEditionOnly(mysqlDB, nativeConn, esClient, config)
 	} else {
-		// Require explicit table specification
 		fmt.Println("Error: No specific table mode selected!")
 		fmt.Println("Please specify one of the following modes:")
 		fmt.Println("  -event-edition    # Process event edition data")
