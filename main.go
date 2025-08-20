@@ -102,6 +102,34 @@ func safeConvertToNullableString(value interface{}) *string {
 	return nil
 }
 
+// Special function for edition_type that preserves empty strings as "NA"
+func safeConvertEditionType(value interface{}) string {
+	if value == nil {
+		return "NA"
+	}
+	if str, ok := value.(string); ok {
+		if str == "" {
+			return "NA"
+		}
+		return str
+	}
+	if bytes, ok := value.([]uint8); ok {
+		str := string(bytes)
+		if str == "" {
+			return "NA"
+		}
+		return str
+	}
+	if bytes, ok := value.([]byte); ok {
+		str := string(bytes)
+		if str == "" {
+			return "NA"
+		}
+		return str
+	}
+	return "NA"
+}
+
 func safeConvertToUInt32(value interface{}) uint32 {
 	if value == nil {
 		return 0
@@ -139,6 +167,21 @@ func safeConvertToUInt16(value interface{}) uint16 {
 	}
 	if num, ok := value.(uint64); ok {
 		return uint16(num)
+	}
+
+	if str, ok := value.(string); ok {
+		if i, err := strconv.ParseUint(str, 10, 16); err == nil {
+			return uint16(i)
+		}
+		return 0
+	}
+	// Handle []byte values (common when scanning MySQL VARCHAR)
+	if bytes, ok := value.([]byte); ok {
+		str := string(bytes)
+		if i, err := strconv.ParseUint(str, 10, 16); err == nil {
+			return uint16(i)
+		}
+		return 0
 	}
 	return 0
 }
@@ -400,10 +443,10 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		EventAbbrName:        safeConvertToNullableString(record["event_abbr_name"]),
 		EventDescription:     safeConvertToNullableString(record["event_description"]),
 		EventPunchline:       safeConvertToNullableString(record["event_punchline"]),
-		StartDate:            safeConvertToDateString(record["event_start_date"]),
-		EndDate:              safeConvertToDateString(record["event_end_date"]),
+		StartDate:            safeConvertToDateString(record["start_date"]),
+		EndDate:              safeConvertToDateString(record["end_date"]),
 		EditionID:            safeConvertToUInt32(record["edition_id"]),
-		EditionCountry:       safeConvertToString(record["event_country"]),
+		EditionCountry:       safeConvertToString(record["edition_country"]),
 		EditionCity:          safeConvertToUInt32(record["edition_city"]),
 		EditionCityLat:       safeConvertToFloat64(record["edition_city_lat"]),
 		EditionCityLong:      safeConvertToFloat64(record["edition_city_long"]),
@@ -419,13 +462,13 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		VenueCity:            safeConvertToNullableUInt32(record["venue_city"]),
 		VenueLat:             safeConvertToNullableFloat64(record["venue_lat"]),
 		VenueLong:            safeConvertToNullableFloat64(record["venue_long"]),
-		Published:            safeConvertToInt8(record["event_published"]),
-		Status:               safeConvertToString(record["event_status"]),
+		Published:            safeConvertToInt8(record["published"]),
+		Status:               safeConvertToString(record["status"]),
 		EditionsAudianceType: safeConvertToUInt16(record["editions_audiance_type"]),
 		EditionFunctionality: safeConvertToString(record["edition_functionality"]),
 		EditionWebsite:       safeConvertToNullableString(record["edition_website"]),
 		EditionDomain:        safeConvertToNullableString(record["edition_domain"]),
-		EditionType:          safeConvertToString(record["edition_type"]),
+		EditionType:          safeConvertEditionType(record["edition_type"]),
 		EventFollowers:       safeConvertToNullableUInt32(record["event_followers"]),
 		EditionFollowers:     safeConvertToNullableUInt32(record["edition_followers"]),
 		EventExhibitor:       safeConvertToNullableUInt32(record["event_exhibitor"]),
@@ -1227,35 +1270,64 @@ func fetchEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interfa
 		args[i] = id
 	}
 
-	query := fmt.Sprintf(`
+	// First, fetch the current edition ID for each event from the event table
+	currentEditionQuery := fmt.Sprintf(`
+		SELECT 
+			id as event_id, 
+			event_edition as current_edition_id
+		FROM event 
+		WHERE id IN (%s)`, strings.Join(placeholders, ","))
+
+	currentEditionRows, err := db.Query(currentEditionQuery, args...)
+	if err != nil {
+		fmt.Printf("Error fetching current edition data: %v\n", err)
+		return nil
+	}
+	defer currentEditionRows.Close()
+
+	// Create a map of event_id to current_edition_id
+	currentEditionMap := make(map[int64]int64)
+	for currentEditionRows.Next() {
+		var eventID int64
+		var currentEditionID sql.NullInt64
+		if err := currentEditionRows.Scan(&eventID, &currentEditionID); err != nil {
+			continue
+		}
+		if currentEditionID.Valid {
+			currentEditionMap[eventID] = currentEditionID.Int64
+		}
+	}
+
+	// Now fetch all edition data with start_date
+	editionQuery := fmt.Sprintf(`
 		SELECT 
 			event, id as edition_id, city as edition_city, 
 			company_id, venue as venue_id, website as edition_website, 
-			created as edition_created
+			created as edition_created, start_date as edition_start_date
 		FROM event_edition 
 		WHERE event IN (%s)`, strings.Join(placeholders, ","))
 
-	rows, err := db.Query(query, args...)
+	editionRows, err := db.Query(editionQuery, args...)
 	if err != nil {
 		fmt.Printf("Error fetching edition data: %v\n", err)
 		return nil
 	}
-	defer rows.Close()
+	defer editionRows.Close()
 
-	columns, err := rows.Columns()
+	columns, err := editionRows.Columns()
 	if err != nil {
 		return nil
 	}
 
 	var results []map[string]interface{}
-	for rows.Next() {
+	for editionRows.Next() {
 		values := make([]interface{}, len(columns))
 		valuePtrs := make([]interface{}, len(columns))
 		for i := range values {
 			valuePtrs[i] = &values[i]
 		}
 
-		if err := rows.Scan(valuePtrs...); err != nil {
+		if err := editionRows.Scan(valuePtrs...); err != nil {
 			continue
 		}
 
@@ -1268,10 +1340,456 @@ func fetchEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interfa
 				row[col] = val
 			}
 		}
+
+		// Add current_edition_id to the row
+		if eventID, ok := row["event"].(int64); ok {
+			if currentEditionID, exists := currentEditionMap[eventID]; exists {
+				row["current_edition_id"] = currentEditionID
+			}
+		}
+
 		results = append(results, row)
 	}
 
 	return results
+}
+
+func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config Config) {
+	fmt.Println("=== Starting EVENT EDITION ONLY Processing ===")
+
+	// Get total records and min/max ID's count from event table
+	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event")
+	if err != nil {
+		log.Fatal("Failed to get total records and ID range from event:", err)
+	}
+
+	fmt.Printf("Total event records: %d, Min ID: %d, Max ID: %d\n", totalRecords, minID, maxID)
+
+	// Calculate chunk size based on user input
+	if config.NumChunks <= 0 {
+		config.NumChunks = 5 // Default to 5 chunks if not specified
+	}
+
+	chunkSize := (maxID - minID + 1) / config.NumChunks
+	if chunkSize == 0 {
+		chunkSize = 1
+	}
+
+	fmt.Printf("Processing event edition data in %d chunks with chunk size: %d\n", config.NumChunks, chunkSize)
+
+	results := make(chan string, config.NumChunks)
+	semaphore := make(chan struct{}, config.NumWorkers)
+
+	for i := 0; i < config.NumChunks; i++ {
+		startID := minID + (i * chunkSize)
+		endID := startID + chunkSize - 1
+
+		// last chunk to include remaining records
+		if i == config.NumChunks-1 {
+			endID = maxID
+		}
+
+		// delay between chunk launches
+		if i > 0 {
+			delay := 3 * time.Second
+			fmt.Printf("Waiting %v before launching event edition chunk %d...\n", delay, i+1)
+			time.Sleep(delay)
+		}
+
+		semaphore <- struct{}{}
+		go func(chunkNum, start, end int) {
+			defer func() { <-semaphore }()
+			processEventEditionChunk(mysqlDB, clickhouseConn, esClient, config, start, end, chunkNum, results)
+		}(i+1, startID, endID)
+	}
+
+	for i := 0; i < config.NumChunks; i++ {
+		result := <-results
+		fmt.Printf("Event Edition Result: %s\n", result)
+	}
+
+	fmt.Println("Event Edition processing completed!")
+}
+
+// processes a single chunk of event edition data
+func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config Config, startID, endID int, chunkNum int, results chan<- string) {
+	log.Printf("Processing event edition chunk %d: ID range %d-%d", chunkNum, startID, endID)
+
+	totalRecords := endID - startID + 1
+	processed := 0
+
+	offset := 0
+	for {
+		batchData, err := buildMigrationData(mysqlDB, "event", startID, endID, config.BatchSize)
+		if err != nil {
+			log.Printf("Event edition chunk %d batch error: %v", chunkNum, err)
+			results <- fmt.Sprintf("Event edition chunk %d batch error: %v", chunkNum, err)
+			return
+		}
+
+		if len(batchData) == 0 {
+			break
+		}
+
+		processed += len(batchData)
+		progress := float64(processed) / float64(totalRecords) * 100
+		log.Printf("Event edition chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
+
+		// Get event IDs from this batch
+		eventIDs := extractEventIDs(batchData)
+		if len(eventIDs) > 0 {
+			fmt.Printf("Event edition chunk %d: Fetching edition data for %d events\n", chunkNum, len(eventIDs))
+
+			// Fetch edition data in parallel
+			startTime := time.Now()
+			editionData := fetchEditionDataParallel(mysqlDB, eventIDs, config.NumWorkers)
+			editionTime := time.Since(startTime)
+			fmt.Printf("Event edition chunk %d: Retrieved edition data for %d events in %v\n", chunkNum, len(editionData), editionTime)
+
+			// Fetch company data for all editions
+			var companyData []map[string]interface{}
+			if len(editionData) > 0 {
+				companyIDs := extractCompanyIDs(editionData)
+				if len(companyIDs) > 0 {
+					fmt.Printf("Event edition chunk %d: Fetching company data for %d companies\n", chunkNum, len(companyIDs))
+					startTime = time.Now()
+					companyData = fetchCompanyDataParallel(mysqlDB, companyIDs, config.NumWorkers)
+					companyTime := time.Since(startTime)
+					fmt.Printf("Event edition chunk %d: Retrieved company data for %d companies in %v\n", chunkNum, len(companyData), companyTime)
+				}
+			}
+
+			// Fetch venue data for all editions
+			var venueData []map[string]interface{}
+			if len(editionData) > 0 {
+				venueIDs := extractVenueIDs(editionData)
+				if len(venueIDs) > 0 {
+					fmt.Printf("Event edition chunk %d: Fetching venue data for %d venues\n", chunkNum, len(venueIDs))
+					startTime = time.Now()
+					venueData = fetchVenueDataParallel(mysqlDB, venueIDs, config.NumWorkers)
+					venueTime := time.Since(startTime)
+					fmt.Printf("Event edition chunk %d: Retrieved venue data for %d venues in %v\n", chunkNum, len(venueData), venueTime)
+				}
+			}
+
+			// Fetch city data for all editions
+			var cityData []map[string]interface{}
+			if len(editionData) > 0 {
+				cityIDs := extractCityIDs(editionData)
+				if len(cityIDs) > 0 {
+					fmt.Printf("Event edition chunk %d: Fetching city data for %d cities\n", chunkNum, len(cityIDs))
+					startTime = time.Now()
+					cityData = fetchCityDataParallel(mysqlDB, cityIDs, config.NumWorkers)
+					cityTime := time.Since(startTime)
+					fmt.Printf("Event edition chunk %d: Retrieved city data for %d cities in %v\n", chunkNum, len(cityData), cityTime)
+				}
+			}
+
+			// Fetch Elasticsearch data for all editions
+			var esData map[int64]map[string]interface{}
+			if len(editionData) > 0 {
+				fmt.Printf("Event edition chunk %d: Fetching Elasticsearch data for %d events in batches of 200\n", chunkNum, len(eventIDs))
+				startTime = time.Now()
+				esData = fetchElasticsearchDataForEvents(esClient, config.IndexName, eventIDs)
+				esTime := time.Since(startTime)
+				fmt.Printf("Event edition chunk %d: Retrieved Elasticsearch data for %d events in %v\n", chunkNum, len(esData), esTime)
+			}
+
+			// Denormalize data, create lookup maps
+			if len(editionData) > 0 {
+				companyLookup := make(map[int64]map[string]interface{})
+				if len(companyData) > 0 {
+					for _, company := range companyData {
+						if companyID, ok := company["id"].(int64); ok {
+							companyLookup[companyID] = company
+						}
+					}
+				}
+
+				venueLookup := make(map[int64]map[string]interface{})
+				if len(venueData) > 0 {
+					for _, venue := range venueData {
+						if venueID, ok := venue["id"].(int64); ok {
+							venueLookup[venueID] = venue
+						}
+					}
+				}
+
+				cityLookup := make(map[int64]map[string]interface{})
+				if len(cityData) > 0 {
+					for _, city := range cityData {
+						if cityID, ok := city["id"].(int64); ok {
+							cityLookup[cityID] = city
+						}
+					}
+				}
+
+				// Group editions by event_id and create current edition lookup
+				eventEditions := make(map[int64][]map[string]interface{})
+				currentEditionStartDates := make(map[int64]interface{})
+				currentEditionIDs := make(map[int64]int64)
+
+				for _, edition := range editionData {
+					if eventID, ok := edition["event"].(int64); ok {
+						eventEditions[eventID] = append(eventEditions[eventID], edition)
+						// Storing current edition ID and start date for each event
+						if currentEditionID, exists := edition["current_edition_id"]; exists {
+							if editionID, ok := edition["edition_id"].(int64); ok {
+								if currentEditionID.(int64) == editionID {
+									currentEditionStartDates[eventID] = edition["edition_start_date"]
+									currentEditionIDs[eventID] = editionID
+								}
+							}
+						}
+					}
+				}
+
+				// Collect ALL records for ClickHouse insertion
+				var clickHouseRecords []map[string]interface{}
+				completeCount := 0
+				partialCount := 0
+				skippedCount := 0
+
+				for eventID, editions := range eventEditions {
+					// Find the event data for this eventID
+					var eventData map[string]interface{}
+					for _, row := range batchData {
+						if id, ok := row["id"].(int64); ok && id == eventID {
+							eventData = row
+							break
+						}
+					}
+
+					if eventData != nil {
+						for _, edition := range editions {
+							companyID := edition["company_id"]
+							venueID := edition["venue_id"]
+							cityID := edition["edition_city"]
+							editionWebsite := edition["edition_website"]
+
+							// Get company data
+							var company map[string]interface{}
+							if companyID != nil {
+								if c, exists := companyLookup[companyID.(int64)]; exists {
+									company = c // If not found->company remains nil
+								}
+							}
+
+							// Get venue data
+							var venue map[string]interface{}
+							if venueID != nil {
+								if v, exists := venueLookup[venueID.(int64)]; exists {
+									venue = v // If not found->venue remains nil
+								}
+
+							}
+
+							// Get city data
+							var city map[string]interface{}
+							if cityID != nil {
+								if c, exists := cityLookup[cityID.(int64)]; exists {
+									city = c // If not found->city remains nil
+								}
+
+							}
+
+							// Get Elasticsearch data
+							esInfoMap := esData[eventID] // If not found, esInfoMap remains nil
+
+							// Extract domain from website
+							var editionDomain string
+							if editionWebsite != nil {
+								editionDomain = extractDomainFromWebsite(editionWebsite) // If no website, editionDomain remains empty string
+							}
+
+							// Determine edition type using simplified logic
+							editionType := determineEditionType(
+								edition["edition_start_date"],
+								currentEditionStartDates[eventID],
+								edition["edition_id"].(int64),
+								currentEditionIDs[eventID],
+							)
+
+							// Create record for ClickHouse insertion - include ALL data
+							record := map[string]interface{}{
+								"event_id":               eventData["id"],
+								"event_name":             eventData["event_name"],
+								"event_abbr_name":        eventData["abbr_name"],
+								"event_description":      esInfoMap["event_description"],
+								"event_punchline":        esInfoMap["event_punchline"],
+								"start_date":             eventData["start_date"],
+								"end_date":               eventData["end_date"],
+								"edition_id":             edition["edition_id"],
+								"edition_country":        eventData["country"],
+								"edition_city":           edition["edition_city"],
+								"edition_city_lat":       city["event_city_lat"],
+								"edition_city_long":      city["event_city_long"],
+								"company_id":             company["id"],
+								"company_name":           company["company_name"],
+								"company_domain":         company["company_domain"],
+								"company_website":        company["company_website"],
+								"company_country":        company["company_country"],
+								"company_city":           company["company_city"],
+								"venue_id":               venue["id"],
+								"venue_name":             venue["venue_name"],
+								"venue_country":          venue["venue_country"],
+								"venue_city":             venue["venue_city"],
+								"venue_lat":              venue["venue_lat"],
+								"venue_long":             venue["venue_long"],
+								"published":              eventData["published"],
+								"status":                 eventData["status"],
+								"editions_audiance_type": eventData["event_audience"],
+								"edition_functionality":  eventData["functionality"],
+								"edition_website":        edition["edition_website"],
+								"edition_domain":         editionDomain,
+								"event_followers":        esInfoMap["event_following"],
+								"edition_followers":      esInfoMap["event_following"],
+								"event_exhibitor":        esInfoMap["event_exhibitors"],
+								"edition_exhibitor":      esInfoMap["edition_exhibitor"],
+								"event_sponsor":          esInfoMap["event_totalSponsor"],
+								"edition_sponsor":        esInfoMap["edition_sponsor"],
+								"event_speaker":          esInfoMap["event_speakers"],
+								"edition_speaker":        esInfoMap["edition_speaker"],
+								"event_created":          eventData["created"],
+								"edition_created":        edition["edition_created"],
+								"version":                1,
+							}
+
+							// Set edition_type with default value if nil
+							if editionType != nil {
+								record["edition_type"] = *editionType
+							} else {
+								record["edition_type"] = "NA"
+							}
+							clickHouseRecords = append(clickHouseRecords, record)
+
+							// Track completeness for reporting (simplified)
+							if companyID != nil && venueID != nil && cityID != nil {
+								completeCount++
+							} else {
+								partialCount++
+							}
+						}
+					} else {
+						skippedCount++
+					}
+				}
+
+				// Count events with missing current editions
+				eventsWithMissingCurrentEdition := 0
+				for eventID := range eventEditions {
+					if currentEditionIDs[eventID] == 0 {
+						eventsWithMissingCurrentEdition++
+					}
+				}
+
+				fmt.Printf("Event edition chunk %d: Data completeness - Complete: %d, Partial: %d, Skipped: %d\n",
+					chunkNum, completeCount, partialCount, skippedCount)
+				if eventsWithMissingCurrentEdition > 0 {
+					fmt.Printf("Event edition chunk %d: Warning - %d events have no current edition (event_edition is NULL)\n",
+						chunkNum, eventsWithMissingCurrentEdition)
+				}
+
+				// Insert collected records into ClickHouse
+				if len(clickHouseRecords) > 0 {
+					fmt.Printf("Event edition chunk %d: Attempting to insert %d records into ClickHouse...\n", chunkNum, len(clickHouseRecords))
+
+					insertErr := retryWithBackoff(
+						func() error {
+							return insertEventEditionDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers)
+						},
+						3,
+						fmt.Sprintf("ClickHouse insertion for chunk %d", chunkNum),
+					)
+
+					if insertErr != nil {
+						log.Printf("Event edition chunk %d: ClickHouse insertion failed after retries: %v", chunkNum, insertErr)
+						log.Printf("Event edition chunk %d: %d records failed to insert - consider manual retry", chunkNum, len(clickHouseRecords))
+					} else {
+						log.Printf("Event edition chunk %d: Successfully inserted %d records into ClickHouse", chunkNum, len(clickHouseRecords))
+					}
+				} else {
+					fmt.Printf("Event edition chunk %d: No records to insert into ClickHouse\n", chunkNum)
+				}
+			}
+		}
+
+		// Get the last ID from this batch for next iteration
+		if len(batchData) > 0 {
+			lastID := batchData[len(batchData)-1]["id"]
+			if lastID != nil {
+				// Update startID for next batch within this chunk
+				if id, ok := lastID.(int64); ok {
+					startID = int(id) + 1
+				}
+			}
+		}
+
+		offset += len(batchData)
+		if len(batchData) < config.BatchSize {
+			break
+		}
+	}
+
+	results <- fmt.Sprintf("Event edition chunk %d completed successfully", chunkNum)
+}
+
+// 1. current_edition: The edition_id that matches event.event_edition (only one per event)
+// 2. future_edition: All editions with start_date > current_edition start_date
+// 3. past_edition: All editions with start_date < current_edition start_date
+func determineEditionType(editionStartDate, currentEditionStartDate interface{}, editionID, currentEditionID int64) *string {
+	// edition is the current edition, return "current_edition"
+	if editionID == currentEditionID {
+		editionType := "current_edition"
+		return &editionType
+	}
+
+	if editionStartDate == nil || currentEditionStartDate == nil || currentEditionID == 0 {
+		return nil
+	}
+
+	// MySQL DATE can be returned as string or []uint8 (byte array)
+	// Convert to string first, then parse
+	var editionDateStr, currentDateStr string
+
+	switch v := editionStartDate.(type) {
+	case string:
+		editionDateStr = v
+	case []uint8:
+		editionDateStr = string(v)
+	default:
+		return nil
+	}
+
+	switch v := currentEditionStartDate.(type) {
+	case string:
+		currentDateStr = v
+	case []uint8:
+		currentDateStr = string(v)
+	default:
+		return nil
+	}
+
+	editionDate, err := time.Parse("2006-01-02", editionDateStr)
+	if err != nil {
+		return nil
+	}
+
+	currentDate, err := time.Parse("2006-01-02", currentDateStr)
+	if err != nil {
+		return nil
+	}
+
+	// Compare dates to determine edition type according to business rules
+	if editionDate.After(currentDate) {
+		editionType := "future_edition"
+		return &editionType
+	} else if editionDate.Before(currentDate) {
+		editionType := "past_edition"
+		return &editionType
+	} else {
+		return nil
+	}
 }
 
 func extractCityIDs(editionData []map[string]interface{}) []int64 {
@@ -1554,17 +2072,30 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			continue
 		}
 
+		// Helper function to convert string to uint32 with fallback
+		convertStringToUInt32 := func(key string) interface{} {
+			if val, exists := source[key]; exists && val != nil {
+				strVal := convertToString(val)
+				if strVal != "" {
+					if num, err := strconv.ParseUint(strVal, 10, 32); err == nil {
+						return uint32(num)
+					}
+				}
+			}
+			return uint32(0)
+		}
+
 		results[eventIDInt] = map[string]interface{}{
-			"event_description":  source["description"],
-			"event_exhibitors":   source["exhibitors"],
-			"event_speakers":     source["speakers"],
-			"event_totalSponsor": source["totalSponsor"],
-			"event_following":    source["following"],
-			"event_punchline":    source["punchline"],
-			"edition_exhibitor":  source["exhibitors"],
-			"edition_sponsor":    source["totalSponsor"],
-			"edition_speaker":    source["speakers"],
-			"edition_followers":  source["following"],
+			"event_description":  convertToString(source["description"]),
+			"event_exhibitors":   convertStringToUInt32("exhibitors"),
+			"event_speakers":     convertStringToUInt32("speakers"),
+			"event_totalSponsor": convertStringToUInt32("totalSponsor"),
+			"event_following":    convertStringToUInt32("following"),
+			"event_punchline":    convertToString(source["punchline"]),
+			"edition_exhibitor":  convertStringToUInt32("exhibitors"),
+			"edition_sponsor":    convertStringToUInt32("totalSponsor"),
+			"edition_speaker":    convertStringToUInt32("speakers"),
+			"edition_followers":  convertStringToUInt32("following"),
 		}
 	}
 
@@ -1650,505 +2181,6 @@ collectLoop:
 
 	fmt.Printf("OK: Retrieved Elasticsearch data for %d events in %d batches\n", len(results), len(allResults))
 	return results
-}
-
-func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config Config) {
-	fmt.Println("=== Starting EVENT EDITION ONLY Processing ===")
-
-	// Get total records and min/max ID's count from event table
-	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event")
-	if err != nil {
-		log.Fatal("Failed to get total records and ID range from event:", err)
-	}
-
-	fmt.Printf("Total event records: %d, Min ID: %d, Max ID: %d\n", totalRecords, minID, maxID)
-
-	// Calculate chunk size based on user input
-	if config.NumChunks <= 0 {
-		config.NumChunks = 5 // Default to 5 chunks if not specified
-	}
-
-	chunkSize := (maxID - minID + 1) / config.NumChunks
-	if chunkSize == 0 {
-		chunkSize = 1
-	}
-
-	fmt.Printf("Processing event edition data in %d chunks with chunk size: %d\n", config.NumChunks, chunkSize)
-
-	results := make(chan string, config.NumChunks)
-	semaphore := make(chan struct{}, config.NumWorkers)
-
-	for i := 0; i < config.NumChunks; i++ {
-		startID := minID + (i * chunkSize)
-		endID := startID + chunkSize - 1
-
-		// last chunk to include remaining records
-		if i == config.NumChunks-1 {
-			endID = maxID
-		}
-
-		// delay between chunk launches
-		if i > 0 {
-			delay := 3 * time.Second
-			fmt.Printf("Waiting %v before launching event edition chunk %d...\n", delay, i+1)
-			time.Sleep(delay)
-		}
-
-		semaphore <- struct{}{}
-		go func(chunkNum, start, end int) {
-			defer func() { <-semaphore }()
-			processEventEditionChunk(mysqlDB, clickhouseConn, esClient, config, start, end, chunkNum, results)
-		}(i+1, startID, endID)
-	}
-
-	for i := 0; i < config.NumChunks; i++ {
-		result := <-results
-		fmt.Printf("Event Edition Result: %s\n", result)
-	}
-
-	fmt.Println("Event Edition processing completed!")
-}
-
-// processes a single chunk of event edition data
-func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config Config, startID, endID int, chunkNum int, results chan<- string) {
-	log.Printf("Processing event edition chunk %d: ID range %d-%d", chunkNum, startID, endID)
-
-	totalRecords := endID - startID + 1
-	processed := 0
-
-	offset := 0
-	for {
-		batchData, err := buildMigrationData(mysqlDB, "event", startID, endID, config.BatchSize)
-		if err != nil {
-			log.Printf("Event edition chunk %d batch error: %v", chunkNum, err)
-			results <- fmt.Sprintf("Event edition chunk %d batch error: %v", chunkNum, err)
-			return
-		}
-
-		if len(batchData) == 0 {
-			break
-		}
-
-		processed += len(batchData)
-		progress := float64(processed) / float64(totalRecords) * 100
-		log.Printf("Event edition chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
-
-		// Get event IDs from this batch
-		eventIDs := extractEventIDs(batchData)
-		if len(eventIDs) > 0 {
-			fmt.Printf("Event edition chunk %d: Fetching edition data for %d events\n", chunkNum, len(eventIDs))
-
-			// Fetch edition data in parallel
-			startTime := time.Now()
-			editionData := fetchEditionDataParallel(mysqlDB, eventIDs, config.NumWorkers)
-			editionTime := time.Since(startTime)
-			fmt.Printf("Event edition chunk %d: Retrieved edition data for %d events in %v\n", chunkNum, len(editionData), editionTime)
-
-			// Fetch company data for all editions
-			var companyData []map[string]interface{}
-			if len(editionData) > 0 {
-				companyIDs := extractCompanyIDs(editionData)
-				if len(companyIDs) > 0 {
-					fmt.Printf("Event edition chunk %d: Fetching company data for %d companies\n", chunkNum, len(companyIDs))
-					startTime = time.Now()
-					companyData = fetchCompanyDataParallel(mysqlDB, companyIDs, config.NumWorkers)
-					companyTime := time.Since(startTime)
-					fmt.Printf("Event edition chunk %d: Retrieved company data for %d companies in %v\n", chunkNum, len(companyData), companyTime)
-				}
-			}
-
-			// Fetch venue data for all editions
-			var venueData []map[string]interface{}
-			if len(editionData) > 0 {
-				venueIDs := extractVenueIDs(editionData)
-				if len(venueIDs) > 0 {
-					fmt.Printf("Event edition chunk %d: Fetching venue data for %d venues\n", chunkNum, len(venueIDs))
-					startTime = time.Now()
-					venueData = fetchVenueDataParallel(mysqlDB, venueIDs, config.NumWorkers)
-					venueTime := time.Since(startTime)
-					fmt.Printf("Event edition chunk %d: Retrieved venue data for %d venues in %v\n", chunkNum, len(venueData), venueTime)
-				}
-			}
-
-			// Fetch city data for all editions
-			var cityData []map[string]interface{}
-			if len(editionData) > 0 {
-				cityIDs := extractCityIDs(editionData)
-				if len(cityIDs) > 0 {
-					fmt.Printf("Event edition chunk %d: Fetching city data for %d cities\n", chunkNum, len(cityIDs))
-					startTime = time.Now()
-					cityData = fetchCityDataParallel(mysqlDB, cityIDs, config.NumWorkers)
-					cityTime := time.Since(startTime)
-					fmt.Printf("Event edition chunk %d: Retrieved city data for %d cities in %v\n", chunkNum, len(cityData), cityTime)
-				}
-			}
-
-			// Fetch Elasticsearch data for all editions
-			var esData map[int64]map[string]interface{}
-			if len(editionData) > 0 {
-				fmt.Printf("Event edition chunk %d: Fetching Elasticsearch data for %d events in batches of 200\n", chunkNum, len(eventIDs))
-				startTime = time.Now()
-				esData = fetchElasticsearchDataForEvents(esClient, config.IndexName, eventIDs)
-				esTime := time.Since(startTime)
-				fmt.Printf("Event edition chunk %d: Retrieved Elasticsearch data for %d events in %v\n", chunkNum, len(esData), esTime)
-			}
-
-			// Denormalize data, create lookup maps
-			if len(editionData) > 0 {
-				companyLookup := make(map[int64]map[string]interface{})
-				if len(companyData) > 0 {
-					for _, company := range companyData {
-						if companyID, ok := company["id"].(int64); ok {
-							companyLookup[companyID] = company
-						}
-					}
-				}
-
-				venueLookup := make(map[int64]map[string]interface{})
-				if len(venueData) > 0 {
-					for _, venue := range venueData {
-						if venueID, ok := venue["id"].(int64); ok {
-							venueLookup[venueID] = venue
-						}
-					}
-				}
-
-				cityLookup := make(map[int64]map[string]interface{})
-				if len(cityData) > 0 {
-					for _, city := range cityData {
-						if cityID, ok := city["id"].(int64); ok {
-							cityLookup[cityID] = city
-						}
-					}
-				}
-
-				// Group editions by event_id
-				eventEditions := make(map[int64][]map[string]interface{})
-				for _, edition := range editionData {
-					if eventID, ok := edition["event"].(int64); ok {
-						eventEditions[eventID] = append(eventEditions[eventID], edition)
-					}
-				}
-
-				// Collect ALL records for ClickHouse insertion
-				var clickHouseRecords []map[string]interface{}
-				completeCount := 0
-				partialCount := 0
-				skippedCount := 0
-
-				for eventID, editions := range eventEditions {
-					// Find the event data for this eventID
-					var eventData map[string]interface{}
-					for _, row := range batchData {
-						if id, ok := row["id"].(int64); ok && id == eventID {
-							eventData = row
-							break
-						}
-					}
-
-					if eventData != nil {
-						for _, edition := range editions {
-							// Extract all available data
-							companyID := edition["company_id"]
-							venueID := edition["venue_id"]
-							cityID := edition["edition_city"]
-							editionWebsite := edition["edition_website"]
-
-							// Get company data if available
-							var company map[string]interface{}
-							if companyID != nil {
-								if c, exists := companyLookup[companyID.(int64)]; exists {
-									company = c // If not found->company remains nil
-								}
-							}
-
-							// Get venue data if available
-							var venue map[string]interface{}
-							if venueID != nil {
-								if v, exists := venueLookup[venueID.(int64)]; exists {
-									venue = v // If not found->venue remains nil
-								}
-
-							}
-
-							// Get city data if available
-							var city map[string]interface{}
-							if cityID != nil {
-								if c, exists := cityLookup[cityID.(int64)]; exists {
-									city = c // If not found->city remains nil
-								}
-
-							}
-
-							// Get Elasticsearch data if available
-							esInfoMap := esData[eventID] // If not found, esInfoMap remains nil
-
-							// Extract domain from website if available
-							var editionDomain string
-							if editionWebsite != nil {
-								editionDomain = extractDomainFromWebsite(editionWebsite) // If no website, editionDomain remains empty string
-							}
-
-							// Create record for ClickHouse insertion - include ALL data
-							record := map[string]interface{}{
-								"event_id":            eventData["id"],
-								"event_name":          eventData["event_name"],
-								"event_abbr_name":     eventData["abbr_name"],
-								"event_punchline":     esInfoMap["event_punchline"],
-								"event_start_date":    eventData["start_date"],
-								"event_end_date":      eventData["end_date"],
-								"event_country":       eventData["country"],
-								"event_published":     eventData["published"],
-								"event_status":        eventData["status"],
-								"event_audience":      eventData["event_audience"],
-								"event_functionality": eventData["functionality"],
-								"event_created":       eventData["created"],
-								"edition_id":          edition["edition_id"],
-								"edition_name":        edition["edition_name"],
-								"edition_start_date":  edition["edition_start_date"],
-								"edition_end_date":    edition["edition_end_date"],
-								"edition_website":     edition["edition_website"],
-								"edition_domain":      editionDomain,
-								"company_id":          company["id"],
-								"company_name":        company["company_name"],
-								"company_website":     company["company_website"],
-								"company_domain":      company["company_domain"],
-								"company_country":     company["company_country"],
-								"company_city":        company["company_city"],
-								"venue_id":            venue["id"],
-								"venue_name":          venue["venue_name"],
-								"venue_address":       venue["venue_address"],
-								"venue_city":          venue["venue_city"],
-								"venue_country":       venue["venue_country"],
-								"city_id":             city["id"],
-								"city_name":           city["city_name"],
-								"city_country":        city["city_country"],
-								"es_description":      esInfoMap["event_description"],
-								"es_keywords":         esInfoMap["event_keywords"],
-								"es_category":         esInfoMap["event_category"],
-							}
-							clickHouseRecords = append(clickHouseRecords, record)
-
-							// Track completeness for reporting (simplified)
-							if companyID != nil && venueID != nil && cityID != nil {
-								completeCount++
-							} else {
-								partialCount++
-							}
-						}
-					} else {
-						skippedCount++
-					}
-				}
-
-				fmt.Printf("Event edition chunk %d: Data completeness - Complete: %d, Partial: %d, Skipped: %d\n",
-					chunkNum, completeCount, partialCount, skippedCount)
-
-				// Insert collected records into ClickHouse
-				if len(clickHouseRecords) > 0 {
-					fmt.Printf("Event edition chunk %d: Attempting to insert %d records into ClickHouse...\n", chunkNum, len(clickHouseRecords))
-
-					insertErr := retryWithBackoff(
-						func() error {
-							return insertEventEditionDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers)
-						},
-						3,
-						fmt.Sprintf("ClickHouse insertion for chunk %d", chunkNum),
-					)
-
-					if insertErr != nil {
-						log.Printf("Event edition chunk %d: ClickHouse insertion failed after retries: %v", chunkNum, insertErr)
-						log.Printf("Event edition chunk %d: %d records failed to insert - consider manual retry", chunkNum, len(clickHouseRecords))
-					} else {
-						log.Printf("Event edition chunk %d: Successfully inserted %d records into ClickHouse", chunkNum, len(clickHouseRecords))
-					}
-				} else {
-					fmt.Printf("Event edition chunk %d: No records to insert into ClickHouse\n", chunkNum)
-				}
-			}
-		}
-
-		// Get the last ID from this batch for next iteration
-		if len(batchData) > 0 {
-			lastID := batchData[len(batchData)-1]["id"]
-			if lastID != nil {
-				// Update startID for next batch within this chunk
-				if id, ok := lastID.(int64); ok {
-					startID = int(id) + 1
-				}
-			}
-		}
-
-		offset += len(batchData)
-		if len(batchData) < config.BatchSize {
-			break
-		}
-	}
-
-	results <- fmt.Sprintf("Event edition chunk %d completed successfully", chunkNum)
-}
-
-// fetches social media IDs for exhibitor companies
-func fetchExhibitorSocialData(db *sql.DB, companyIDs []int64) map[int64]map[string]interface{} {
-	if len(companyIDs) == 0 {
-		return nil
-	}
-
-	batchSize := 1000
-	var allSocialData map[int64]map[string]interface{}
-
-	for i := 0; i < len(companyIDs); i += batchSize {
-		end := i + batchSize
-		if end > len(companyIDs) {
-			end = len(companyIDs)
-		}
-
-		batch := companyIDs[i:end]
-		placeholders := make([]string, len(batch))
-		args := make([]interface{}, len(batch))
-		for j, id := range batch {
-			placeholders[j] = "?"
-			args[j] = id
-		}
-
-		query := fmt.Sprintf(`
-			SELECT 
-				id, facebook_id, linkedin_id, twitter_id
-			FROM company 
-			WHERE id IN (%s)`, strings.Join(placeholders, ","))
-
-		rows, err := db.Query(query, args...)
-		if err != nil {
-			fmt.Printf("Error fetching exhibitor social data batch %d-%d: %v\n", i, end-1, err)
-			continue
-		}
-
-		columns, err := rows.Columns()
-		if err != nil {
-			rows.Close()
-			continue
-		}
-		// Process current batch
-		for rows.Next() {
-			values := make([]interface{}, len(columns))
-			valuePtrs := make([]interface{}, len(columns))
-			for j := range values {
-				valuePtrs[j] = &values[j]
-			}
-
-			if err := rows.Scan(valuePtrs...); err != nil {
-				continue
-			}
-
-			row := make(map[string]interface{})
-			for j, col := range columns {
-				val := values[j]
-				if val == nil {
-					row[col] = nil
-				} else {
-					row[col] = val
-				}
-			}
-
-			if companyID, ok := row["id"].(int64); ok {
-				if allSocialData == nil {
-					allSocialData = make(map[int64]map[string]interface{})
-				}
-				allSocialData[companyID] = row
-			}
-		}
-		rows.Close()
-	}
-
-	return allSocialData
-}
-
-func insertExhibitorDataIntoClickHouse(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord, numWorkers int) error {
-	if len(exhibitorRecords) == 0 {
-		return nil
-	}
-
-	if numWorkers <= 1 {
-		return insertExhibitorDataSingleWorker(clickhouseConn, exhibitorRecords)
-	}
-
-	batchSize := (len(exhibitorRecords) + numWorkers - 1) / numWorkers
-	results := make(chan error, numWorkers)
-	semaphore := make(chan struct{}, numWorkers)
-
-	for i := 0; i < numWorkers; i++ {
-		start := i * batchSize
-		end := start + batchSize
-		if end > len(exhibitorRecords) {
-			end = len(exhibitorRecords)
-		}
-		if start >= len(exhibitorRecords) {
-			break
-		}
-
-		semaphore <- struct{}{}
-		go func(start, end int) {
-			defer func() { <-semaphore }()
-			batch := exhibitorRecords[start:end]
-			err := insertExhibitorDataSingleWorker(clickhouseConn, batch)
-			results <- err
-		}(start, end)
-	}
-
-	for i := 0; i < numWorkers && i*batchSize < len(exhibitorRecords); i++ {
-		if err := <-results; err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord) error {
-	if len(exhibitorRecords) == 0 {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_exhibitor_ch (
-			company_id, company_id_name, edition_id, event_id, company_website,
-			company_domain, company_country, company_city, facebook_id,
-			linkedin_id, twitter_id, version
-		)
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
-	}
-
-	for _, record := range exhibitorRecords {
-		err := batch.Append(
-			record.CompanyID,      // company_id: Nullable(UInt32)
-			record.CompanyIDName,  // company_id_name: String NOT NULL
-			record.EditionID,      // edition_id: UInt32 NOT NULL
-			record.EventID,        // event_id: UInt32 NOT NULL
-			record.CompanyWebsite, // company_website: Nullable(String)
-			record.CompanyDomain,  // company_domain: Nullable(String)
-			record.CompanyCountry, // company_country: LowCardinality(FixedString(2))
-			record.CompanyCity,    // company_city: Nullable(UInt32)
-			record.FacebookID,     // facebook_id: Nullable(String)
-			record.LinkedinID,     // linkedin_id: Nullable(String)
-			record.TwitterID,      // twitter_id: Nullable(String)
-			record.Version,        // version: UInt32 NOT NULL DEFAULT 1
-		)
-		if err != nil {
-			return fmt.Errorf("failed to append record to batch: %v", err)
-		}
-	}
-
-	if err := batch.Send(); err != nil {
-		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
-	}
-
-	fmt.Printf("OK: Successfully inserted %d exhibitor records\n", len(exhibitorRecords))
-	return nil
 }
 
 func processExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
@@ -2361,6 +2393,168 @@ func buildExhibitorMigrationData(db *sql.DB, startID, endID int, batchSize int) 
 	}
 
 	return results, nil
+}
+
+func fetchExhibitorSocialData(db *sql.DB, companyIDs []int64) map[int64]map[string]interface{} {
+	if len(companyIDs) == 0 {
+		return nil
+	}
+
+	batchSize := 1000
+	var allSocialData map[int64]map[string]interface{}
+
+	for i := 0; i < len(companyIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(companyIDs) {
+			end = len(companyIDs)
+		}
+
+		batch := companyIDs[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]interface{}, len(batch))
+		for j, id := range batch {
+			placeholders[j] = "?"
+			args[j] = id
+		}
+
+		query := fmt.Sprintf(`
+			SELECT 
+				id, facebook_id, linkedin_id, twitter_id
+			FROM company 
+			WHERE id IN (%s)`, strings.Join(placeholders, ","))
+
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			fmt.Printf("Error fetching exhibitor social data batch %d-%d: %v\n", i, end-1, err)
+			continue
+		}
+
+		columns, err := rows.Columns()
+		if err != nil {
+			rows.Close()
+			continue
+		}
+		// Process current batch
+		for rows.Next() {
+			values := make([]interface{}, len(columns))
+			valuePtrs := make([]interface{}, len(columns))
+			for j := range values {
+				valuePtrs[j] = &values[j]
+			}
+
+			if err := rows.Scan(valuePtrs...); err != nil {
+				continue
+			}
+
+			row := make(map[string]interface{})
+			for j, col := range columns {
+				val := values[j]
+				if val == nil {
+					row[col] = nil
+				} else {
+					row[col] = val
+				}
+			}
+
+			if companyID, ok := row["id"].(int64); ok {
+				if allSocialData == nil {
+					allSocialData = make(map[int64]map[string]interface{})
+				}
+				allSocialData[companyID] = row
+			}
+		}
+		rows.Close()
+	}
+
+	return allSocialData
+}
+
+func insertExhibitorDataIntoClickHouse(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord, numWorkers int) error {
+	if len(exhibitorRecords) == 0 {
+		return nil
+	}
+
+	if numWorkers <= 1 {
+		return insertExhibitorDataSingleWorker(clickhouseConn, exhibitorRecords)
+	}
+
+	batchSize := (len(exhibitorRecords) + numWorkers - 1) / numWorkers
+	results := make(chan error, numWorkers)
+	semaphore := make(chan struct{}, numWorkers)
+
+	for i := 0; i < numWorkers; i++ {
+		start := i * batchSize
+		end := start + batchSize
+		if end > len(exhibitorRecords) {
+			end = len(exhibitorRecords)
+		}
+		if start >= len(exhibitorRecords) {
+			break
+		}
+
+		semaphore <- struct{}{}
+		go func(start, end int) {
+			defer func() { <-semaphore }()
+			batch := exhibitorRecords[start:end]
+			err := insertExhibitorDataSingleWorker(clickhouseConn, batch)
+			results <- err
+		}(start, end)
+	}
+
+	for i := 0; i < numWorkers && i*batchSize < len(exhibitorRecords); i++ {
+		if err := <-results; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord) error {
+	if len(exhibitorRecords) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	batch, err := clickhouseConn.PrepareBatch(ctx, `
+		INSERT INTO event_exhibitor_ch (
+			company_id, company_id_name, edition_id, event_id, company_website,
+			company_domain, company_country, company_city, facebook_id,
+			linkedin_id, twitter_id, version
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
+	}
+
+	for _, record := range exhibitorRecords {
+		err := batch.Append(
+			record.CompanyID,      // company_id: Nullable(UInt32)
+			record.CompanyIDName,  // company_id_name: String NOT NULL
+			record.EditionID,      // edition_id: UInt32 NOT NULL
+			record.EventID,        // event_id: UInt32 NOT NULL
+			record.CompanyWebsite, // company_website: Nullable(String)
+			record.CompanyDomain,  // company_domain: Nullable(String)
+			record.CompanyCountry, // company_country: LowCardinality(FixedString(2))
+			record.CompanyCity,    // company_city: Nullable(UInt32)
+			record.FacebookID,     // facebook_id: Nullable(String)
+			record.LinkedinID,     // linkedin_id: Nullable(String)
+			record.TwitterID,      // twitter_id: Nullable(String)
+			record.Version,        // version: UInt32 NOT NULL DEFAULT 1
+		)
+		if err != nil {
+			return fmt.Errorf("failed to append record to batch: %v", err)
+		}
+	}
+
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
+	}
+
+	fmt.Printf("OK: Successfully inserted %d exhibitor records\n", len(exhibitorRecords))
+	return nil
 }
 
 // extracts event IDs from exhibitor data
@@ -3566,7 +3760,7 @@ type EventEditionRecord struct {
 	EditionFunctionality string   `ch:"edition_functionality"`  // LowCardinality(String) NOT NULL
 	EditionWebsite       *string  `ch:"edition_website"`
 	EditionDomain        *string  `ch:"edition_domain"`
-	EditionType          string   `ch:"edition_type"` // LowCardinality(Nullable(String)) NOT NULL DEFAULT 'NA'
+	EditionType          string   `ch:"edition_type"` // LowCardinality(Nullable(String)) DEFAULT 'NA'
 	EventFollowers       *uint32  `ch:"event_followers"`
 	EditionFollowers     *uint32  `ch:"edition_followers"`
 	EventExhibitor       *uint32  `ch:"event_exhibitor"`
@@ -3681,7 +3875,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			eventEditionRecord.EditionFunctionality, // edition_functionality: LowCardinality(String) NOT NULL
 			eventEditionRecord.EditionWebsite,       // edition_website: Nullable(String)
 			eventEditionRecord.EditionDomain,        // edition_domain: Nullable(String)
-			eventEditionRecord.EditionType,          // edition_type: LowCardinality(Nullable(String)) NOT NULL DEFAULT 'NA'
+			eventEditionRecord.EditionType,          // edition_type: LowCardinality(Nullable(String)) DEFAULT 'NA'
 			eventEditionRecord.EventFollowers,       // event_followers: Nullable(UInt32)
 			eventEditionRecord.EditionFollowers,     // edition_followers: Nullable(UInt32)
 			eventEditionRecord.EventExhibitor,       // event_exhibitor: Nullable(UInt32)
