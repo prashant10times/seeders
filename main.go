@@ -326,7 +326,7 @@ func extractDomainFromWebsite(website interface{}) string {
 	websiteStr = strings.TrimSpace(websiteStr)
 
 	if !strings.Contains(websiteStr, "://") {
-		websiteStr = "http://" + websiteStr
+		websiteStr = "https://" + websiteStr
 	}
 	// Parse URL
 	parsedURL, err := url.Parse(websiteStr)
@@ -2326,7 +2326,7 @@ func processExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 		semaphore <- struct{}{}
 		go func(chunkNum, start, end int) {
 			defer func() { <-semaphore }()
-			processExhibitorChunk(mysqlDB, clickhouseConn, start, end, chunkNum, results)
+			processExhibitorChunk(mysqlDB, clickhouseConn, config, start, end, chunkNum, results)
 		}(i+1, startID, endID)
 	}
 
@@ -2338,111 +2338,136 @@ func processExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 	log.Println("Exhibitor processing completed!")
 }
 
-func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, endID int, chunkNum int, results chan<- string) {
+func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing exhibitor chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
-	batchData, err := buildExhibitorMigrationData(mysqlDB, startID, endID, endID-startID+1)
-	if err != nil {
-		results <- fmt.Sprintf("Exhibitor chunk %d batch error: %v", chunkNum, err)
-		return
-	}
+	totalRecords := endID - startID + 1
+	processed := 0
 
-	if len(batchData) == 0 {
-		log.Printf("Exhibitor chunk %d: No data found in range %d-%d", chunkNum, startID, endID)
-		results <- fmt.Sprintf("Exhibitor chunk %d: No data found", chunkNum)
-		return
-	}
-	log.Printf("Exhibitor chunk %d: Retrieved %d records in chunk", chunkNum, len(batchData))
-	eventIDs := extractExhibitorEventIDs(batchData) // Extract event IDs from this batch to fetch social media data
-	if len(eventIDs) > 0 {
-		log.Printf("Exhibitor chunk %d: Processing %d exhibitor records", chunkNum, len(batchData))
-
-		// Extract company IDs from exhibitor data to fetch social media information
-		var exhibitorCompanyIDs []int64
-		seenCompanyIDs := make(map[int64]bool)
-		for _, exhibitor := range batchData {
-			if companyID, ok := exhibitor["company_id"].(int64); ok && companyID > 0 {
-				if !seenCompanyIDs[companyID] {
-					exhibitorCompanyIDs = append(exhibitorCompanyIDs, companyID)
-					seenCompanyIDs[companyID] = true
-				}
-			}
+	// Use batching within the chunk
+	offset := 0
+	for {
+		batchData, err := buildExhibitorMigrationData(mysqlDB, startID, endID, config.BatchSize)
+		if err != nil {
+			results <- fmt.Sprintf("Exhibitor chunk %d batch error: %v", chunkNum, err)
+			return
 		}
 
-		// Fetch social media data for exhibitor companies
-		var socialData map[int64]map[string]interface{}
-		if len(exhibitorCompanyIDs) > 0 {
-			log.Printf("Exhibitor chunk %d: Fetching social media data for %d companies", chunkNum, len(exhibitorCompanyIDs))
-			startTime := time.Now()
-			socialData = fetchExhibitorSocialData(mysqlDB, exhibitorCompanyIDs)
-			socialTime := time.Since(startTime)
-			log.Printf("Exhibitor chunk %d: Retrieved social media data for %d companies in %v", chunkNum, len(socialData), socialTime)
+		if len(batchData) == 0 {
+			break
 		}
 
-		var exhibitorRecords []ExhibitorRecord
-		for _, exhibitor := range batchData {
-			var companyDomain string
-			if website, ok := exhibitor["website"].(string); ok && website != "" {
-				companyDomain = extractDomainFromWebsite(website)
-			} else if website, ok := exhibitor["website"].([]byte); ok && len(website) > 0 {
-				websiteStr := string(website)
-				companyDomain = extractDomainFromWebsite(websiteStr)
-			}
+		processed += len(batchData)
+		progress := float64(processed) / float64(totalRecords) * 100
+		log.Printf("Exhibitor chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
 
-			// Get social media data for this company
-			var facebookID, linkedinID, twitterID interface{}
-			if companyID, ok := exhibitor["company_id"].(int64); ok && socialData != nil {
-				if social, exists := socialData[companyID]; exists {
-					facebookID = social["facebook_id"]
-					linkedinID = social["linkedin_id"]
-					twitterID = social["twitter_id"]
+		eventIDs := extractExhibitorEventIDs(batchData) // Extract event IDs from this batch to fetch social media data
+		if len(eventIDs) > 0 {
+			log.Printf("Exhibitor chunk %d: Processing %d exhibitor records", chunkNum, len(batchData))
+
+			// Extract company IDs from exhibitor data to fetch social media information
+			var exhibitorCompanyIDs []int64
+			seenCompanyIDs := make(map[int64]bool)
+			for _, exhibitor := range batchData {
+				if companyID, ok := exhibitor["company_id"].(int64); ok && companyID > 0 {
+					if !seenCompanyIDs[companyID] {
+						exhibitorCompanyIDs = append(exhibitorCompanyIDs, companyID)
+						seenCompanyIDs[companyID] = true
+					}
 				}
 			}
 
-			// Convert data to proper types for protocol
-			companyID := convertToUInt32Ptr(exhibitor["company_id"])
-			editionID := convertToUInt32(exhibitor["edition_id"])
-			eventID := convertToUInt32(exhibitor["event_id"])
-
-			// Create exhibitor record with proper types
-			exhibitorRecord := ExhibitorRecord{
-				CompanyID:      companyID,
-				CompanyIDName:  getCompanyNameOrDefault(exhibitor["company_name"]),
-				EditionID:      editionID,
-				EventID:        eventID,
-				CompanyWebsite: convertToStringPtr(exhibitor["website"]),
-				CompanyDomain:  convertToStringPtr(companyDomain),
-				CompanyCountry: toUpperNullableString(convertToStringPtr(exhibitor["country"])),
-				CompanyCity:    convertToUInt32Ptr(exhibitor["city"]),
-				FacebookID:     convertToStringPtr(facebookID),
-				LinkedinID:     convertToStringPtr(linkedinID),
-				TwitterID:      convertToStringPtr(twitterID),
-				Version:        1,
+			// Fetch social media data for exhibitor companies
+			var socialData map[int64]map[string]interface{}
+			if len(exhibitorCompanyIDs) > 0 {
+				log.Printf("Exhibitor chunk %d: Fetching social media data for %d companies", chunkNum, len(exhibitorCompanyIDs))
+				startTime := time.Now()
+				socialData = fetchExhibitorSocialData(mysqlDB, exhibitorCompanyIDs)
+				socialTime := time.Since(startTime)
+				log.Printf("Exhibitor chunk %d: Retrieved social media data for %d companies in %v", chunkNum, len(socialData), socialTime)
 			}
 
-			exhibitorRecords = append(exhibitorRecords, exhibitorRecord)
-		}
+			var exhibitorRecords []ExhibitorRecord
+			for _, exhibitor := range batchData {
+				var companyDomain string
+				if website, ok := exhibitor["website"].(string); ok && website != "" {
+					companyDomain = extractDomainFromWebsite(website)
+				} else if website, ok := exhibitor["website"].([]byte); ok && len(website) > 0 {
+					websiteStr := string(website)
+					companyDomain = extractDomainFromWebsite(websiteStr)
+				}
 
-		// Insert exhibitor data into ClickHouse
-		if len(exhibitorRecords) > 0 {
-			log.Printf("Exhibitor chunk %d: Attempting to insert %d records into event_exhibitor_ch...", chunkNum, len(exhibitorRecords))
-			exhibitorInsertErr := retryWithBackoff(
-				func() error {
-					return insertExhibitorDataIntoClickHouse(clickhouseConn, exhibitorRecords, config.ClickHouseWorkers)
-				},
-				3,
-				fmt.Sprintf("exhibitor insertion for chunk %d", chunkNum),
-			)
+				// Get social media data for this company
+				var facebookID, linkedinID, twitterID interface{}
+				if companyID, ok := exhibitor["company_id"].(int64); ok && socialData != nil {
+					if social, exists := socialData[companyID]; exists {
+						facebookID = social["facebook_id"]
+						linkedinID = social["linkedin_id"]
+						twitterID = social["twitter_id"]
+					}
+				}
 
-			if exhibitorInsertErr != nil {
-				log.Printf("Exhibitor chunk %d: Insertion failed after retries: %v", chunkNum, exhibitorInsertErr)
-				results <- fmt.Sprintf("Exhibitor chunk %d: Failed to insert %d records", chunkNum, len(exhibitorRecords))
-				return
+				// Convert data to proper types for protocol
+				companyID := convertToUInt32Ptr(exhibitor["company_id"])
+				editionID := convertToUInt32(exhibitor["edition_id"])
+				eventID := convertToUInt32(exhibitor["event_id"])
+
+				// Create exhibitor record with proper types
+				exhibitorRecord := ExhibitorRecord{
+					CompanyID:      companyID,
+					CompanyIDName:  getCompanyNameOrDefault(exhibitor["company_name"]),
+					EditionID:      editionID,
+					EventID:        eventID,
+					CompanyWebsite: convertToStringPtr(exhibitor["website"]),
+					CompanyDomain:  convertToStringPtr(companyDomain),
+					CompanyCountry: toUpperNullableString(convertToStringPtr(exhibitor["country"])),
+					CompanyCity:    convertToUInt32Ptr(exhibitor["city"]),
+					FacebookID:     convertToStringPtr(facebookID),
+					LinkedinID:     convertToStringPtr(linkedinID),
+					TwitterID:      convertToStringPtr(twitterID),
+					Version:        1,
+				}
+
+				exhibitorRecords = append(exhibitorRecords, exhibitorRecord)
+			}
+
+			// Insert exhibitor data into ClickHouse
+			if len(exhibitorRecords) > 0 {
+				log.Printf("Exhibitor chunk %d: Attempting to insert %d records into event_exhibitor_ch...", chunkNum, len(exhibitorRecords))
+				exhibitorInsertErr := retryWithBackoff(
+					func() error {
+						return insertExhibitorDataIntoClickHouse(clickhouseConn, exhibitorRecords, config.ClickHouseWorkers)
+					},
+					3,
+					fmt.Sprintf("exhibitor insertion for chunk %d", chunkNum),
+				)
+
+				if exhibitorInsertErr != nil {
+					log.Printf("Exhibitor chunk %d: Insertion failed after retries: %v", chunkNum, exhibitorInsertErr)
+					results <- fmt.Sprintf("Exhibitor chunk %d: Failed to insert %d records", chunkNum, len(exhibitorRecords))
+					return
+				} else {
+					log.Printf("Exhibitor chunk %d: Successfully inserted %d records into event_exhibitor_ch", chunkNum, len(exhibitorRecords))
+				}
 			} else {
-				log.Printf("Exhibitor chunk %d: Successfully inserted %d records into event_exhibitor_ch", chunkNum, len(exhibitorRecords))
+				log.Printf("Exhibitor chunk %d: No exhibitor records to insert", chunkNum)
 			}
-		} else {
-			log.Printf("Exhibitor chunk %d: No exhibitor records to insert", chunkNum)
+		}
+
+		// Get the last ID from this batch for next iteration
+		if len(batchData) > 0 {
+			lastID := batchData[len(batchData)-1]["id"]
+			if lastID != nil {
+				// Update startID for next batch within this chunk
+				if id, ok := lastID.(int64); ok {
+					startID = int(id) + 1
+				}
+			}
+		}
+
+		offset += len(batchData)
+		if len(batchData) < config.BatchSize {
+			break
 		}
 	}
 
@@ -2717,7 +2742,7 @@ func processSponsorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 		semaphore <- struct{}{}
 		go func(chunkNum, start, end int) {
 			defer func() { <-semaphore }()
-			processSponsorsChunk(mysqlDB, clickhouseConn, start, end, chunkNum, results)
+			processSponsorsChunk(mysqlDB, clickhouseConn, config, start, end, chunkNum, results)
 		}(i+1, startID, endID)
 	}
 
@@ -2729,114 +2754,135 @@ func processSponsorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 	log.Println("Sponsors processing completed!")
 }
 
-func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, endID int, chunkNum int, results chan<- string) {
+func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing sponsors chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
-	batchData, err := buildSponsorsMigrationData(mysqlDB, startID, endID, endID-startID+1)
-	if err != nil {
-		results <- fmt.Sprintf("Sponsors chunk %d batch error: %v", chunkNum, err)
-		return
-	}
+	totalRecords := endID - startID + 1
+	processed := 0
 
-	if len(batchData) == 0 {
-		log.Printf("Sponsors chunk %d: No data found in range %d-%d", chunkNum, startID, endID)
-		results <- fmt.Sprintf("Sponsors chunk %d: No data found", chunkNum)
-		return
-	}
-
-	log.Printf("Sponsors chunk %d: Retrieved %d records in chunk", chunkNum, len(batchData))
-
-	// Extract company IDs from this batch to fetch social media and website information
-	var sponsorCompanyIDs []int64
-	seenCompanyIDs := make(map[int64]bool)
-	for _, sponsor := range batchData {
-		if companyID, ok := sponsor["company_id"].(int64); ok && companyID > 0 {
-			if !seenCompanyIDs[companyID] {
-				sponsorCompanyIDs = append(sponsorCompanyIDs, companyID)
-				seenCompanyIDs[companyID] = true
-			}
-		}
-	}
-
-	// Fetch social media and website data for sponsor companies
-	var companyData map[int64]map[string]interface{}
-	if len(sponsorCompanyIDs) > 0 {
-		log.Printf("Sponsors chunk %d: Fetching company data for %d companies", chunkNum, len(sponsorCompanyIDs))
-		startTime := time.Now()
-		companyData = fetchSponsorsCompanyData(mysqlDB, sponsorCompanyIDs)
-		companyTime := time.Since(startTime)
-		log.Printf("Sponsors chunk %d: Retrieved company data for %d companies in %v", chunkNum, len(companyData), companyTime)
-	}
-
-	var sponsorRecords []SponsorRecord
-	for _, sponsor := range batchData {
-		// Get company data for this sponsor
-		var companyWebsite, companyDomain, facebookID, linkedinID, twitterID, companyCountry, companyCity interface{}
-		if companyID, ok := sponsor["company_id"].(int64); ok && companyData != nil {
-			if company, exists := companyData[companyID]; exists {
-				companyWebsite = company["website"]
-				companyCountry = strings.ToUpper(safeConvertToString(company["country"]))
-				companyCity = company["city"]
-
-				// Extract domain from website
-				if website, ok := companyWebsite.(string); ok && website != "" {
-					companyDomain = extractDomainFromWebsite(website)
-				} else if website, ok := companyWebsite.([]byte); ok && len(website) > 0 {
-					websiteStr := string(website)
-					companyDomain = extractDomainFromWebsite(websiteStr)
-				}
-
-				facebookID = company["facebook_id"]
-				linkedinID = company["linkedin_id"]
-				twitterID = company["twitter_id"]
-			}
-		}
-
-		// Convert data to proper types
-		companyID := convertToUInt32Ptr(sponsor["company_id"])
-		editionID := convertToUInt32(sponsor["event_edition"])
-		eventID := convertToUInt32(sponsor["event_id"])
-
-		// Create sponsor record with proper types
-		sponsorRecord := SponsorRecord{
-			CompanyID:      companyID,
-			CompanyIDName:  getCompanyNameOrDefault(sponsor["name"]),
-			EditionID:      editionID,
-			EventID:        eventID,
-			CompanyWebsite: convertToStringPtr(companyWebsite),
-			CompanyDomain:  convertToStringPtr(companyDomain),
-			CompanyCountry: toUpperNullableString(convertToStringPtr(companyCountry)),
-			CompanyCity:    convertToUInt32Ptr(companyCity),
-			FacebookID:     convertToStringPtr(facebookID),
-			LinkedinID:     convertToStringPtr(linkedinID),
-			TwitterID:      convertToStringPtr(twitterID),
-			Version:        1,
-		}
-
-		sponsorRecords = append(sponsorRecords, sponsorRecord)
-	}
-
-	// Insert sponsors data into ClickHouse
-	if len(sponsorRecords) > 0 {
-		log.Printf("Sponsors chunk %d: Attempting to insert %d records into event_sponsors_ch...", chunkNum, len(sponsorRecords))
-
-		sponsorInsertErr := retryWithBackoff(
-			func() error {
-				return insertSponsorsDataIntoClickHouse(clickhouseConn, sponsorRecords, config.ClickHouseWorkers)
-			},
-			3,
-			fmt.Sprintf("sponsors insertion for chunk %d", chunkNum),
-		)
-
-		if sponsorInsertErr != nil {
-			log.Printf("Sponsors chunk %d: Insertion failed after retries: %v", chunkNum, sponsorInsertErr)
-			results <- fmt.Sprintf("Sponsors chunk %d: Failed to insert %d records", chunkNum, len(sponsorRecords))
+	// Use batching within the chunk
+	offset := 0
+	for {
+		batchData, err := buildSponsorsMigrationData(mysqlDB, startID, endID, config.BatchSize)
+		if err != nil {
+			results <- fmt.Sprintf("Sponsors chunk %d batch error: %v", chunkNum, err)
 			return
-		} else {
-			log.Printf("Sponsors chunk %d: Successfully inserted %d records into event_sponsors_ch", chunkNum, len(sponsorRecords))
 		}
-	} else {
-		log.Printf("Sponsors chunk %d: No sponsor records to insert", chunkNum)
+
+		if len(batchData) == 0 {
+			break
+		}
+
+		processed += len(batchData)
+		progress := float64(processed) / float64(totalRecords) * 100
+		log.Printf("Sponsors chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
+
+		// Extract company IDs from this batch to fetch social media and website information
+		var sponsorCompanyIDs []int64
+		seenCompanyIDs := make(map[int64]bool)
+		for _, sponsor := range batchData {
+			if companyID, ok := sponsor["company_id"].(int64); ok && companyID > 0 {
+				if !seenCompanyIDs[companyID] {
+					sponsorCompanyIDs = append(sponsorCompanyIDs, companyID)
+					seenCompanyIDs[companyID] = true
+				}
+			}
+		}
+
+		// Fetch social media and website data for sponsor companies
+		var companyData map[int64]map[string]interface{}
+		if len(sponsorCompanyIDs) > 0 {
+			log.Printf("Sponsors chunk %d: Fetching company data for %d companies", chunkNum, len(sponsorCompanyIDs))
+			startTime := time.Now()
+			companyData = fetchSponsorsCompanyData(mysqlDB, sponsorCompanyIDs)
+			companyTime := time.Since(startTime)
+			log.Printf("Sponsors chunk %d: Retrieved company data for %d companies in %v", chunkNum, len(companyData), companyTime)
+		}
+
+		var sponsorRecords []SponsorRecord
+		for _, sponsor := range batchData {
+			// Get company data for this sponsor
+			var companyWebsite, companyDomain, facebookID, linkedinID, twitterID, companyCountry, companyCity interface{}
+			if companyID, ok := sponsor["company_id"].(int64); ok && companyData != nil {
+				if company, exists := companyData[companyID]; exists {
+					companyWebsite = company["website"]
+					companyCountry = strings.ToUpper(safeConvertToString(company["country"]))
+					companyCity = company["city"]
+
+					// Extract domain from website
+					if website, ok := companyWebsite.(string); ok && website != "" {
+						companyDomain = extractDomainFromWebsite(website)
+					} else if website, ok := companyWebsite.([]byte); ok && len(website) > 0 {
+						websiteStr := string(website)
+						companyDomain = extractDomainFromWebsite(websiteStr)
+					}
+
+					facebookID = company["facebook_id"]
+					linkedinID = company["linkedin_id"]
+					twitterID = company["twitter_id"]
+				}
+			}
+
+			// Convert data to proper types
+			companyID := convertToUInt32Ptr(sponsor["company_id"])
+			editionID := convertToUInt32(sponsor["event_edition"])
+			eventID := convertToUInt32(sponsor["event_id"])
+
+			// Create sponsor record with proper types
+			sponsorRecord := SponsorRecord{
+				CompanyID:      companyID,
+				CompanyIDName:  getCompanyNameOrDefault(sponsor["name"]),
+				EditionID:      editionID,
+				EventID:        eventID,
+				CompanyWebsite: convertToStringPtr(companyWebsite),
+				CompanyDomain:  convertToStringPtr(companyDomain),
+				CompanyCountry: toUpperNullableString(convertToStringPtr(companyCountry)),
+				CompanyCity:    convertToUInt32Ptr(companyCity),
+				FacebookID:     convertToStringPtr(facebookID),
+				LinkedinID:     convertToStringPtr(linkedinID),
+				TwitterID:      convertToStringPtr(twitterID),
+				Version:        1,
+			}
+
+			sponsorRecords = append(sponsorRecords, sponsorRecord)
+		}
+
+		// Insert sponsors data into ClickHouse
+		if len(sponsorRecords) > 0 {
+			log.Printf("Sponsors chunk %d: Attempting to insert %d records into event_sponsors_ch...", chunkNum, len(sponsorRecords))
+
+			sponsorInsertErr := retryWithBackoff(
+				func() error {
+					return insertSponsorsDataIntoClickHouse(clickhouseConn, sponsorRecords, config.ClickHouseWorkers)
+				},
+				3,
+				fmt.Sprintf("sponsors insertion for chunk %d", chunkNum),
+			)
+
+			if sponsorInsertErr != nil {
+				log.Printf("Sponsors chunk %d: Insertion failed after retries: %v", chunkNum, sponsorInsertErr)
+				results <- fmt.Sprintf("Sponsors chunk %d: Failed to insert %d records", chunkNum, len(sponsorRecords))
+				return
+			} else {
+				log.Printf("Sponsors chunk %d: Successfully inserted %d records into event_sponsors_ch", chunkNum, len(sponsorRecords))
+			}
+		}
+
+		// Get the last ID from this batch for next iteration
+		if len(batchData) > 0 {
+			lastID := batchData[len(batchData)-1]["id"]
+			if lastID != nil {
+				// Update startID for next batch within this chunk
+				if id, ok := lastID.(int64); ok {
+					startID = int(id) + 1
+				}
+			}
+		}
+
+		offset += len(batchData)
+		if len(batchData) < config.BatchSize {
+			break
+		}
 	}
 
 	results <- fmt.Sprintf("Sponsors chunk %d: Completed successfully", chunkNum)
@@ -3095,7 +3141,7 @@ func processVisitorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 		semaphore <- struct{}{}
 		go func(chunkNum, start, end int) {
 			defer func() { <-semaphore }()
-			processVisitorsChunk(mysqlDB, clickhouseConn, start, end, chunkNum, results)
+			processVisitorsChunk(mysqlDB, clickhouseConn, config, start, end, chunkNum, results)
 		}(i+1, startID, endID)
 	}
 
@@ -3108,98 +3154,119 @@ func processVisitorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 }
 
 // processes a single chunk of visitors data
-func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, endID int, chunkNum int, results chan<- string) {
+func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing visitors chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
-	batchData, err := buildVisitorsMigrationData(mysqlDB, startID, endID, endID-startID+1)
-	if err != nil {
-		results <- fmt.Sprintf("Visitors chunk %d batch error: %v", chunkNum, err)
-		return
-	}
+	totalRecords := endID - startID + 1
+	processed := 0
 
-	if len(batchData) == 0 {
-		log.Printf("Visitors chunk %d: No data found in range %d-%d", chunkNum, startID, endID)
-		results <- fmt.Sprintf("Visitors chunk %d: No data found", chunkNum)
-		return
-	}
-
-	log.Printf("Visitors chunk %d: Retrieved %d records in chunk", chunkNum, len(batchData))
-
-	// Extract user IDs from this batch to fetch user names
-	var userIDs []int64
-	seenUserIDs := make(map[int64]bool)
-	for _, visitor := range batchData {
-		if userID, ok := visitor["user"].(int64); ok && userID > 0 {
-			if !seenUserIDs[userID] {
-				userIDs = append(userIDs, userID)
-				seenUserIDs[userID] = true
-			}
-		}
-	}
-
-	// Fetch user data for visitors
-	var userData map[int64]map[string]interface{}
-	if len(userIDs) > 0 {
-		log.Printf("Visitors chunk %d: Fetching user data for %d users", chunkNum, len(userIDs))
-		startTime := time.Now()
-		userData = fetchVisitorsUserData(mysqlDB, userIDs)
-		userTime := time.Since(startTime)
-		log.Printf("Visitors chunk %d: Retrieved user data for %d users in %v", chunkNum, len(userData), userTime)
-	}
-
-	var visitorRecords []VisitorRecord
-	for _, visitor := range batchData {
-		// Get user data for this visitor
-		var userName, userCompany interface{}
-		if userID, ok := visitor["user"].(int64); ok && userData != nil {
-			if user, exists := userData[userID]; exists {
-				userName = user["name"]
-				userCompany = user["user_company"] // Use user_company from user table
-			}
-		}
-
-		// Convert data to proper types
-		userID := convertToUInt32(visitor["user"])
-		eventID := convertToUInt32(visitor["event"])
-		editionID := convertToUInt32(visitor["edition"])
-
-		// Create visitor record with proper types
-		visitorRecord := VisitorRecord{
-			UserID:          userID,
-			EventID:         eventID,
-			EditionID:       editionID,
-			UserName:        convertToString(userName),
-			UserCompany:     convertToStringPtr(userCompany),
-			UserDesignation: convertToStringPtr(visitor["visitor_designation"]),
-			UserCity:        convertToUInt32Ptr(visitor["visitor_city"]),
-			UserCountry:     toUpperNullableString(convertToStringPtr(visitor["visitor_country"])),
-			Version:         1,
-		}
-
-		visitorRecords = append(visitorRecords, visitorRecord)
-	}
-
-	// Insert visitors data into ClickHouse
-	if len(visitorRecords) > 0 {
-		log.Printf("Visitors chunk %d: Attempting to insert %d records into event_visitor_ch...", chunkNum, len(visitorRecords))
-
-		visitorInsertErr := retryWithBackoff(
-			func() error {
-				return insertVisitorsDataIntoClickHouse(clickhouseConn, visitorRecords, config.ClickHouseWorkers)
-			},
-			3,
-			fmt.Sprintf("visitors insertion for chunk %d", chunkNum),
-		)
-
-		if visitorInsertErr != nil {
-			log.Printf("Visitors chunk %d: Insertion failed after retries: %v", chunkNum, visitorInsertErr)
-			results <- fmt.Sprintf("Visitors chunk %d: Failed to insert %d records", chunkNum, len(visitorRecords))
+	// Use batching within the chunk
+	offset := 0
+	for {
+		batchData, err := buildVisitorsMigrationData(mysqlDB, startID, endID, config.BatchSize)
+		if err != nil {
+			results <- fmt.Sprintf("Visitors chunk %d batch error: %v", chunkNum, err)
 			return
-		} else {
-			log.Printf("Visitors chunk %d: Successfully inserted %d records into event_visitor_ch", chunkNum, len(visitorRecords))
 		}
-	} else {
-		log.Printf("Visitors chunk %d: No visitor records to insert", chunkNum)
+
+		if len(batchData) == 0 {
+			break
+		}
+
+		processed += len(batchData)
+		progress := float64(processed) / float64(totalRecords) * 100
+		log.Printf("Visitors chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
+
+		// Extract user IDs from this batch to fetch user names
+		var userIDs []int64
+		seenUserIDs := make(map[int64]bool)
+		for _, visitor := range batchData {
+			if userID, ok := visitor["user"].(int64); ok && userID > 0 {
+				if !seenUserIDs[userID] {
+					userIDs = append(userIDs, userID)
+					seenUserIDs[userID] = true
+				}
+			}
+		}
+
+		// Fetch user data for visitors
+		var userData map[int64]map[string]interface{}
+		if len(userIDs) > 0 {
+			log.Printf("Visitors chunk %d: Fetching user data for %d users", chunkNum, len(userIDs))
+			startTime := time.Now()
+			userData = fetchVisitorsUserData(mysqlDB, userIDs)
+			userTime := time.Since(startTime)
+			log.Printf("Visitors chunk %d: Retrieved user data for %d users in %v", chunkNum, len(userData), userTime)
+		}
+
+		var visitorRecords []VisitorRecord
+		for _, visitor := range batchData {
+			// Get user data for this visitor
+			var userName, userCompany interface{}
+			if userID, ok := visitor["user"].(int64); ok && userData != nil {
+				if user, exists := userData[userID]; exists {
+					userName = user["name"]
+					userCompany = user["user_company"] // Use user_company from user table
+				}
+			}
+
+			// Convert data to proper types
+			userID := convertToUInt32(visitor["user"])
+			eventID := convertToUInt32(visitor["event"])
+			editionID := convertToUInt32(visitor["edition"])
+
+			// Create visitor record with proper types
+			visitorRecord := VisitorRecord{
+				UserID:          userID,
+				EventID:         eventID,
+				EditionID:       editionID,
+				UserName:        convertToString(userName),
+				UserCompany:     convertToStringPtr(userCompany),
+				UserDesignation: convertToStringPtr(visitor["visitor_designation"]),
+				UserCity:        convertToUInt32Ptr(visitor["visitor_city"]),
+				UserCountry:     toUpperNullableString(convertToStringPtr(visitor["visitor_country"])),
+				Version:         1,
+			}
+
+			visitorRecords = append(visitorRecords, visitorRecord)
+		}
+
+		// Insert visitors data into ClickHouse
+		if len(visitorRecords) > 0 {
+			log.Printf("Visitors chunk %d: Attempting to insert %d records into event_visitor_ch...", chunkNum, len(visitorRecords))
+
+			visitorInsertErr := retryWithBackoff(
+				func() error {
+					return insertVisitorsDataIntoClickHouse(clickhouseConn, visitorRecords, config.ClickHouseWorkers)
+				},
+				3,
+				fmt.Sprintf("visitors insertion for chunk %d", chunkNum),
+			)
+
+			if visitorInsertErr != nil {
+				log.Printf("Visitors chunk %d: Insertion failed after retries: %v", chunkNum, visitorInsertErr)
+				results <- fmt.Sprintf("Visitors chunk %d: Failed to insert %d records", chunkNum, len(visitorRecords))
+				return
+			} else {
+				log.Printf("Visitors chunk %d: Successfully inserted %d records into event_visitor_ch", chunkNum, len(visitorRecords))
+			}
+		}
+
+		// Get the last ID from this batch for next iteration
+		if len(batchData) > 0 {
+			lastID := batchData[len(batchData)-1]["id"]
+			if lastID != nil {
+				// Update startID for next batch within this chunk
+				if id, ok := lastID.(int64); ok {
+					startID = int(id) + 1
+				}
+			}
+		}
+
+		offset += len(batchData)
+		if len(batchData) < config.BatchSize {
+			break
+		}
 	}
 
 	results <- fmt.Sprintf("Visitors chunk %d: Completed successfully", chunkNum)
@@ -3454,7 +3521,7 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 		semaphore <- struct{}{}
 		go func(chunkNum, start, end int) {
 			defer func() { <-semaphore }()
-			processSpeakersChunk(mysqlDB, clickhouseConn, start, end, chunkNum, results)
+			processSpeakersChunk(mysqlDB, clickhouseConn, config, start, end, chunkNum, results)
 		}(i+1, startID, endID)
 	}
 
@@ -3467,100 +3534,120 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 }
 
 // processes a single chunk of speakers data
-func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, endID int, chunkNum int, results chan<- string) {
+func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing speakers chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
-	// Fetch all data for current chunk
-	batchData, err := buildSpeakersMigrationData(mysqlDB, startID, endID, endID-startID+1)
-	if err != nil {
-		results <- fmt.Sprintf("Speakers chunk %d batch error: %v", chunkNum, err)
-		return
-	}
+	totalRecords := endID - startID + 1
+	processed := 0
 
-	if len(batchData) == 0 {
-		log.Printf("Speakers chunk %d: No data found in range %d-%d", chunkNum, startID, endID)
-		results <- fmt.Sprintf("Speakers chunk %d: No data found", chunkNum)
-		return
-	}
-
-	log.Printf("Speakers chunk %d: Retrieved %d records in chunk", chunkNum, len(batchData))
-
-	// Extract user IDs from this batch to fetch user names
-	var userIDs []int64
-	seenUserIDs := make(map[int64]bool)
-	for _, speaker := range batchData {
-		if userID, ok := speaker["user_id"].(int64); ok && userID > 0 {
-			if !seenUserIDs[userID] {
-				userIDs = append(userIDs, userID)
-				seenUserIDs[userID] = true
-			}
-		}
-	}
-
-	// Fetch user data for speakers
-	var userData map[int64]map[string]interface{}
-	if len(userIDs) > 0 {
-		log.Printf("Speakers chunk %d: Fetching user data for %d users", chunkNum, len(userIDs))
-		startTime := time.Now()
-		userData = fetchSpeakersUserData(mysqlDB, userIDs)
-		userTime := time.Since(startTime)
-		log.Printf("Speakers chunk %d: Retrieved user data for %d users in %v", chunkNum, len(userData), userTime)
-	}
-
-	var speakerRecords []SpeakerRecord
-	for _, speaker := range batchData {
-		// Get user data for this speaker
-		var userName, userCompany, userDesignation, userCity, userCountry interface{}
-		if userID, ok := speaker["user_id"].(int64); ok && userData != nil {
-			if user, exists := userData[userID]; exists {
-				userName = speaker["speaker_name"] // Use speaker_name from speaker table
-				userCompany = user["user_company"] // Use user_company from user table
-				userDesignation = user["designation"]
-				userCity = user["city"]
-				userCountry = strings.ToUpper(safeConvertToString(user["country"]))
-			}
-		}
-
-		userID := convertToUInt32(speaker["user_id"])
-		eventID := convertToUInt32(speaker["event"])
-		editionID := convertToUInt32(speaker["edition"])
-
-		speakerRecord := SpeakerRecord{
-			UserID:          userID,
-			EventID:         eventID,
-			EditionID:       editionID,
-			UserName:        convertToString(userName),
-			UserCompany:     convertToStringPtr(userCompany),
-			UserDesignation: convertToStringPtr(userDesignation),
-			UserCity:        convertToUInt32Ptr(userCity),
-			UserCountry:     toUpperNullableString(convertToStringPtr(userCountry)),
-			Version:         1,
-		}
-
-		speakerRecords = append(speakerRecords, speakerRecord)
-	}
-
-	// Insert speakers data into ClickHouse
-	if len(speakerRecords) > 0 {
-		log.Printf("Speakers chunk %d: Attempting to insert %d records into event_speaker_ch...", chunkNum, len(speakerRecords))
-
-		speakerInsertErr := retryWithBackoff(
-			func() error {
-				return insertSpeakersDataIntoClickHouse(clickhouseConn, speakerRecords, config.ClickHouseWorkers)
-			},
-			3,
-			fmt.Sprintf("speakers insertion for chunk %d", chunkNum),
-		)
-
-		if speakerInsertErr != nil {
-			log.Printf("Speakers chunk %d: Insertion failed after retries: %v", chunkNum, speakerInsertErr)
-			results <- fmt.Sprintf("Speakers chunk %d: Failed to insert %d records", chunkNum, len(speakerRecords))
+	// Use batching within the chunk
+	offset := 0
+	for {
+		batchData, err := buildSpeakersMigrationData(mysqlDB, startID, endID, config.BatchSize)
+		if err != nil {
+			results <- fmt.Sprintf("Speakers chunk %d batch error: %v", chunkNum, err)
 			return
-		} else {
-			log.Printf("Speakers chunk %d: Successfully inserted %d records into event_speaker_ch", chunkNum, len(speakerRecords))
 		}
-	} else {
-		log.Printf("Speakers chunk %d: No speaker records to insert", chunkNum)
+
+		if len(batchData) == 0 {
+			break
+		}
+
+		processed += len(batchData)
+		progress := float64(processed) / float64(totalRecords) * 100
+		log.Printf("Speakers chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
+
+		// Extract user IDs from this batch to fetch user names
+		var userIDs []int64
+		seenUserIDs := make(map[int64]bool)
+		for _, speaker := range batchData {
+			if userID, ok := speaker["user_id"].(int64); ok && userID > 0 {
+				if !seenUserIDs[userID] {
+					userIDs = append(userIDs, userID)
+					seenUserIDs[userID] = true
+				}
+			}
+		}
+
+		// Fetch user data for speakers
+		var userData map[int64]map[string]interface{}
+		if len(userIDs) > 0 {
+			log.Printf("Speakers chunk %d: Fetching user data for %d users", chunkNum, len(userIDs))
+			startTime := time.Now()
+			userData = fetchSpeakersUserData(mysqlDB, userIDs)
+			userTime := time.Since(startTime)
+			log.Printf("Speakers chunk %d: Retrieved user data for %d users in %v", chunkNum, len(userData), userTime)
+		}
+
+		var speakerRecords []SpeakerRecord
+		for _, speaker := range batchData {
+			// Get user data for this speaker
+			var userName, userCompany, userDesignation, userCity, userCountry interface{}
+			if userID, ok := speaker["user_id"].(int64); ok && userData != nil {
+				if user, exists := userData[userID]; exists {
+					userName = speaker["speaker_name"] // Use speaker_name from speaker table
+					userCompany = user["user_company"] // Use user_company from user table
+					userDesignation = user["designation"]
+					userCity = user["city"]
+					userCountry = strings.ToUpper(safeConvertToString(user["country"]))
+				}
+			}
+
+			userID := convertToUInt32(speaker["user_id"])
+			eventID := convertToUInt32(speaker["event"])
+			editionID := convertToUInt32(speaker["edition"])
+
+			speakerRecord := SpeakerRecord{
+				UserID:          userID,
+				EventID:         eventID,
+				EditionID:       editionID,
+				UserName:        convertToString(userName),
+				UserCompany:     convertToStringPtr(userCompany),
+				UserDesignation: convertToStringPtr(userDesignation),
+				UserCity:        convertToUInt32Ptr(userCity),
+				UserCountry:     toUpperNullableString(convertToStringPtr(userCountry)),
+				Version:         1,
+			}
+
+			speakerRecords = append(speakerRecords, speakerRecord)
+		}
+
+		// Insert speakers data into ClickHouse
+		if len(speakerRecords) > 0 {
+			log.Printf("Speakers chunk %d: Attempting to insert %d records into event_speaker_ch...", chunkNum, len(speakerRecords))
+
+			speakerInsertErr := retryWithBackoff(
+				func() error {
+					return insertSpeakersDataIntoClickHouse(clickhouseConn, speakerRecords, config.ClickHouseWorkers)
+				},
+				3,
+				fmt.Sprintf("speakers insertion for chunk %d", chunkNum),
+			)
+
+			if speakerInsertErr != nil {
+				log.Printf("Speakers chunk %d: Insertion failed after retries: %v", chunkNum, speakerInsertErr)
+				results <- fmt.Sprintf("Speakers chunk %d: Failed to insert %d records", chunkNum, len(speakerRecords))
+				return
+			} else {
+				log.Printf("Speakers chunk %d: Successfully inserted %d records into event_speaker_ch", chunkNum, len(speakerRecords))
+			}
+		}
+
+		// Get the last ID from this batch for next iteration
+		if len(batchData) > 0 {
+			lastID := batchData[len(batchData)-1]["id"]
+			if lastID != nil {
+				// Update startID for next batch within this chunk
+				if id, ok := lastID.(int64); ok {
+					startID = int(id) + 1
+				}
+			}
+		}
+
+		offset += len(batchData)
+		if len(batchData) < config.BatchSize {
+			break
+		}
 	}
 
 	results <- fmt.Sprintf("Speakers chunk %d: Completed successfully", chunkNum)
@@ -3569,7 +3656,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 func buildSpeakersMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
-			user_id, event, edition, speaker_name
+			id, user_id, event, edition, speaker_name
 		FROM event_speaker 
 		WHERE id >= %d AND id <= %d 
 		ORDER BY id 
