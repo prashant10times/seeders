@@ -67,22 +67,7 @@ func safeConvertToString(value interface{}) string {
 	return ""
 }
 
-func safeConvertToDateString(value interface{}) string {
-	str := safeConvertToString(value)
-	if str == "" {
-		return "1970-01-01"
-	}
-	return str
-}
-
-func safeConvertToDateTimeString(value interface{}) string {
-	str := safeConvertToString(value)
-	if str == "" {
-		return "1970-01-01 00:00:00"
-	}
-	return str
-}
-
+// safely converts a value to nullable string for nullable fields
 func safeConvertToNullableString(value interface{}) *string {
 	if value == nil {
 		return nil
@@ -101,32 +86,29 @@ func safeConvertToNullableString(value interface{}) *string {
 	return nil
 }
 
-// Special function for edition_type that preserves empty strings as "NA"
-func safeConvertEditionType(value interface{}) string {
-	if value == nil {
-		return "NA"
+// converts a nullable string to uppercase
+func toUpperNullableString(s *string) *string {
+	if s == nil {
+		return nil
 	}
-	if str, ok := value.(string); ok {
-		if str == "" {
-			return "NA"
-		}
-		return str
+	upper := strings.ToUpper(*s)
+	return &upper
+}
+
+func safeConvertToDateString(value interface{}) string {
+	str := safeConvertToString(value)
+	if str == "" {
+		return "1970-01-01"
 	}
-	if bytes, ok := value.([]uint8); ok {
-		str := string(bytes)
-		if str == "" {
-			return "NA"
-		}
-		return str
+	return str
+}
+
+func safeConvertToDateTimeString(value interface{}) string {
+	str := safeConvertToString(value)
+	if str == "" {
+		return "1970-01-01 00:00:00"
 	}
-	if bytes, ok := value.([]byte); ok {
-		str := string(bytes)
-		if str == "" {
-			return "NA"
-		}
-		return str
-	}
-	return "NA"
+	return str
 }
 
 func safeConvertToUInt32(value interface{}) uint32 {
@@ -444,7 +426,7 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		StartDate:            safeConvertToDateString(record["start_date"]),
 		EndDate:              safeConvertToDateString(record["end_date"]),
 		EditionID:            safeConvertToUInt32(record["edition_id"]),
-		EditionCountry:       safeConvertToString(record["edition_country"]),
+		EditionCountry:       strings.ToUpper(safeConvertToString(record["edition_country"])),
 		EditionCity:          safeConvertToUInt32(record["edition_city"]),
 		EditionCityLat:       safeConvertToFloat64(record["edition_city_lat"]),
 		EditionCityLong:      safeConvertToFloat64(record["edition_city_long"]),
@@ -452,11 +434,11 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		CompanyName:          safeConvertToNullableString(record["company_name"]),
 		CompanyDomain:        safeConvertToNullableString(record["company_domain"]),
 		CompanyWebsite:       safeConvertToNullableString(record["company_website"]),
-		CompanyCountry:       safeConvertToNullableString(record["company_country"]),
+		CompanyCountry:       toUpperNullableString(safeConvertToNullableString(record["company_country"])),
 		CompanyCity:          safeConvertToNullableUInt32(record["company_city"]),
 		VenueID:              safeConvertToNullableUInt32(record["venue_id"]),
 		VenueName:            safeConvertToNullableString(record["venue_name"]),
-		VenueCountry:         safeConvertToNullableString(record["venue_country"]),
+		VenueCountry:         toUpperNullableString(safeConvertToNullableString(record["venue_country"])),
 		VenueCity:            safeConvertToNullableUInt32(record["venue_city"]),
 		VenueLat:             safeConvertToNullableFloat64(record["venue_lat"]),
 		VenueLong:            safeConvertToNullableFloat64(record["venue_long"]),
@@ -1618,7 +1600,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"start_date":             eventData["start_date"],
 								"end_date":               eventData["end_date"],
 								"edition_id":             edition["edition_id"],
-								"edition_country":        eventData["country"],
+								"edition_country":        strings.ToUpper(safeConvertToString(eventData["country"])),
 								"edition_city":           edition["edition_city"],
 								"edition_city_lat":       city["event_city_lat"],
 								"edition_city_long":      city["event_city_long"],
@@ -1626,11 +1608,11 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"company_name":           company["company_name"],
 								"company_domain":         company["company_domain"],
 								"company_website":        company["company_website"],
-								"company_country":        company["company_country"],
+								"company_country":        strings.ToUpper(safeConvertToString(company["company_country"])),
 								"company_city":           company["company_city"],
 								"venue_id":               venue["id"],
 								"venue_name":             venue["venue_name"],
-								"venue_country":          venue["venue_country"],
+								"venue_country":          strings.ToUpper(safeConvertToString(venue["venue_country"])),
 								"venue_city":             venue["venue_city"],
 								"venue_lat":              venue["venue_lat"],
 								"venue_long":             venue["venue_long"],
@@ -2430,7 +2412,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID,
 				EventID:        eventID,
 				CompanyWebsite: convertToStringPtr(exhibitor["website"]),
 				CompanyDomain:  convertToStringPtr(companyDomain),
-				CompanyCountry: convertToStringPtr(exhibitor["country"]),
+				CompanyCountry: toUpperNullableString(convertToStringPtr(exhibitor["country"])),
 				CompanyCity:    convertToUInt32Ptr(exhibitor["city"]),
 				FacebookID:     convertToStringPtr(facebookID),
 				LinkedinID:     convertToStringPtr(linkedinID),
@@ -2793,7 +2775,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 		if companyID, ok := sponsor["company_id"].(int64); ok && companyData != nil {
 			if company, exists := companyData[companyID]; exists {
 				companyWebsite = company["website"]
-				companyCountry = company["country"]
+				companyCountry = strings.ToUpper(safeConvertToString(company["country"]))
 				companyCity = company["city"]
 
 				// Extract domain from website
@@ -2823,7 +2805,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 			EventID:        eventID,
 			CompanyWebsite: convertToStringPtr(companyWebsite),
 			CompanyDomain:  convertToStringPtr(companyDomain),
-			CompanyCountry: convertToStringPtr(companyCountry),
+			CompanyCountry: toUpperNullableString(convertToStringPtr(companyCountry)),
 			CompanyCity:    convertToUInt32Ptr(companyCity),
 			FacebookID:     convertToStringPtr(facebookID),
 			LinkedinID:     convertToStringPtr(linkedinID),
@@ -3190,7 +3172,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 			UserCompany:     convertToStringPtr(userCompany),
 			UserDesignation: convertToStringPtr(visitor["visitor_designation"]),
 			UserCity:        convertToUInt32Ptr(visitor["visitor_city"]),
-			UserCountry:     convertToStringPtr(visitor["visitor_country"]),
+			UserCountry:     toUpperNullableString(convertToStringPtr(visitor["visitor_country"])),
 			Version:         1,
 		}
 
@@ -3535,7 +3517,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 				userCompany = user["user_company"] // Use user_company from user table
 				userDesignation = user["designation"]
 				userCity = user["city"]
-				userCountry = user["country"]
+				userCountry = strings.ToUpper(safeConvertToString(user["country"]))
 			}
 		}
 
@@ -3551,7 +3533,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, startID, 
 			UserCompany:     convertToStringPtr(userCompany),
 			UserDesignation: convertToStringPtr(userDesignation),
 			UserCity:        convertToUInt32Ptr(userCity),
-			UserCountry:     convertToStringPtr(userCountry),
+			UserCountry:     toUpperNullableString(convertToStringPtr(userCountry)),
 			Version:         1,
 		}
 
@@ -4119,4 +4101,32 @@ func main() {
 		log.Println("Example: go run main.go -event-edition -chunks=10 -workers=20")
 		os.Exit(1)
 	}
+}
+
+// Special function for edition_type that preserves empty strings as "NA"
+func safeConvertEditionType(value interface{}) string {
+	if value == nil {
+		return "NA"
+	}
+	if str, ok := value.(string); ok {
+		if str == "" {
+			return "NA"
+		}
+		return str
+	}
+	if bytes, ok := value.([]uint8); ok {
+		str := string(bytes)
+		if str == "" {
+			return "NA"
+		}
+		return str
+	}
+	if bytes, ok := value.([]byte); ok {
+		str := string(bytes)
+		if str == "" {
+			return "NA"
+		}
+		return str
+	}
+	return "NA"
 }
