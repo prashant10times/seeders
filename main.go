@@ -556,6 +556,7 @@ func validateConfig(config Config) error {
 }
 
 func setupConnections(config Config) (*sql.DB, *sql.DB, *elasticsearch.Client, error) {
+	fmt.Println()
 	mysqlDB, err := sql.Open("mysql", config.MySQLDSN)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("MySQL connection failed: %v", err)
@@ -574,6 +575,11 @@ func setupConnections(config Config) (*sql.DB, *sql.DB, *elasticsearch.Client, e
 	}
 	mysqlDB.SetConnMaxLifetime(30 * time.Minute)
 	mysqlDB.SetConnMaxIdleTime(10 * time.Minute)
+
+	if err := mysqlDB.Ping(); err != nil {
+		mysqlDB.Close()
+		return nil, nil, nil, fmt.Errorf("MySQL ping failed: %v", err)
+	}
 
 	clickhouseDB, err := sql.Open("clickhouse", config.ClickhouseDSN)
 	if err != nil {
