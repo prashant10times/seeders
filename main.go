@@ -328,12 +328,10 @@ func extractDomainFromWebsite(website interface{}) string {
 	if !strings.Contains(websiteStr, "://") {
 		websiteStr = "https://" + websiteStr
 	}
-	// Parse URL
 	parsedURL, err := url.Parse(websiteStr)
 	if err != nil {
 		return ""
 	}
-	// Extract hostname (domain)
 	host := parsedURL.Hostname()
 	if host == "" {
 		return ""
@@ -341,9 +339,18 @@ func extractDomainFromWebsite(website interface{}) string {
 
 	host = strings.TrimPrefix(strings.ToLower(host), "www.")
 
-	domainRegex := regexp.MustCompile(`^[a-z0-9][a-z0-9\-]{1,63}(\.[a-z0-9][a-z0-9\-]{1,63})*\.[a-z]{2,}$`)
-	if !domainRegex.MatchString(host) {
-		return ""
+	if strings.Contains(host, "@") {
+		parts := strings.Split(host, "@")
+		if len(parts) > 1 {
+			host = parts[len(parts)-1]
+		}
+	}
+
+	domainRegex := regexp.MustCompile(`(?P<domain>[a-z0-9][a-z0-9\-_]*(\.[a-z0-9][a-z0-9\-_]*)*\.[a-z]{2,})$`)
+	matches := domainRegex.FindStringSubmatch(host)
+
+	if len(matches) > 1 {
+		return matches[1]
 	}
 
 	return host
@@ -1576,10 +1583,16 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 							// Get Elasticsearch data
 							esInfoMap := esData[eventID] // If not found, esInfoMap remains nil
 
-							// Extract domain from website
+							// Extract domain from edition website
 							var editionDomain string
 							if editionWebsite != nil {
 								editionDomain = extractDomainFromWebsite(editionWebsite) // If no website, editionDomain remains empty string
+							}
+
+							// Extract domain from company website
+							var companyDomain string
+							if company != nil && company["company_website"] != nil {
+								companyDomain = extractDomainFromWebsite(company["company_website"])
 							}
 
 							// Determine edition type using simplified logic
@@ -1606,7 +1619,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"edition_city_long":      city["event_city_long"],
 								"company_id":             company["id"],
 								"company_name":           company["company_name"],
-								"company_domain":         company["company_domain"],
+								"company_domain":         companyDomain,
 								"company_website":        company["company_website"],
 								"company_country":        strings.ToUpper(safeConvertToString(company["company_country"])),
 								"company_city":           company["company_city"],
