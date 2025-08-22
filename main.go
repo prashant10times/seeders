@@ -556,25 +556,24 @@ func validateConfig(config Config) error {
 }
 
 func setupConnections(config Config) (*sql.DB, *sql.DB, *elasticsearch.Client, error) {
-	fmt.Println()
 	mysqlDB, err := sql.Open("mysql", config.MySQLDSN)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("MySQL connection failed: %v", err)
 	}
 
 	// Set MySQL connection pool settings
-	if config.MySQLMaxOpenConns > 0 {
-		mysqlDB.SetMaxOpenConns(config.MySQLMaxOpenConns)
-	} else {
-		mysqlDB.SetMaxOpenConns(25)
-	}
-	if config.MySQLMaxIdleConns > 0 {
-		mysqlDB.SetMaxIdleConns(config.MySQLMaxIdleConns)
-	} else {
-		mysqlDB.SetMaxIdleConns(15)
-	}
-	mysqlDB.SetConnMaxLifetime(30 * time.Minute)
-	mysqlDB.SetConnMaxIdleTime(10 * time.Minute)
+	// if config.MySQLMaxOpenConns > 0 {
+	// 	mysqlDB.SetMaxOpenConns(config.MySQLMaxOpenConns)
+	// } else {
+	// 	mysqlDB.SetMaxOpenConns(25)
+	// }
+	// if config.MySQLMaxIdleConns > 0 {
+	// 	mysqlDB.SetMaxIdleConns(config.MySQLMaxIdleConns)
+	// } else {
+	// 	mysqlDB.SetMaxIdleConns(15)
+	// }
+	// mysqlDB.SetConnMaxLifetime(30 * time.Minute)
+	// mysqlDB.SetConnMaxIdleTime(10 * time.Minute)
 
 	if err := mysqlDB.Ping(); err != nil {
 		mysqlDB.Close()
