@@ -575,9 +575,9 @@ func setupConnections(config Config) (*sql.DB, *sql.DB, *elasticsearch.Client, e
 	// mysqlDB.SetConnMaxLifetime(30 * time.Minute)
 	// mysqlDB.SetConnMaxIdleTime(10 * time.Minute)
 
-	if err := mysqlDB.Ping(); err != nil {
+	if _, err := mysqlDB.Query("SELECT 1"); err != nil {
 		mysqlDB.Close()
-		return nil, nil, nil, fmt.Errorf("MySQL ping failed: %v", err)
+		return nil, nil, nil, fmt.Errorf("MySQL connection test failed: %v", err)
 	}
 
 	clickhouseDB, err := sql.Open("clickhouse", config.ClickhouseDSN)
