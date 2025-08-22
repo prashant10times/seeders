@@ -772,7 +772,11 @@ func getTotalRecordsAndIDRange(db *sql.DB, table string) (int, int, int, error) 
 	query := fmt.Sprintf("SELECT COUNT(*), MIN(id), MAX(id) FROM %s", table)
 	var count, minId, maxId int
 	err := db.QueryRow(query).Scan(&count, &minId, &maxId)
-	return count, minId, maxId, err
+	if err != nil {
+		fmt.Printf("SQL error in getTotalRecordsAndIDRange for table %s: %v\n", table, err)
+		return 0, 0, 0, fmt.Errorf("failed to get records for table %s: %v", table, err)
+	}
+	return count, minId, maxId, nil
 }
 
 func buildMigrationData(db *sql.DB, table string, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
