@@ -770,12 +770,20 @@ func testClickHouseConnection(clickhouseDB *sql.DB) error {
 
 func getTotalRecordsAndIDRange(db *sql.DB, table string) (int, int, int, error) {
 	query := fmt.Sprintf("SELECT COUNT(*), MIN(id), MAX(id) FROM %s", table)
+	fmt.Printf("Executing query: %s\n", query)
+
+	start := time.Now()
 	var count, minId, maxId int
 	err := db.QueryRow(query).Scan(&count, &minId, &maxId)
+	duration := time.Since(start)
+
 	if err != nil {
 		fmt.Printf("SQL error in getTotalRecordsAndIDRange for table %s: %v\n", table, err)
+		fmt.Printf("Query execution time: %v\n", duration)
 		return 0, 0, 0, fmt.Errorf("failed to get records for table %s: %v", table, err)
 	}
+
+	fmt.Printf("Query completed successfully in %v\n", duration)
 	return count, minId, maxId, nil
 }
 
