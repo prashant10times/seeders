@@ -596,28 +596,41 @@ func convertToUInt16(value interface{}) uint16 {
 // converts a map to EventEditionRecord struct
 func convertToEventEditionRecord(record map[string]interface{}) EventEditionRecord {
 	return EventEditionRecord{
-		EventID:                safeConvertToUInt32(record["event_id"]),
-		EventName:              safeConvertToString(record["event_name"]),
-		EventAbbrName:          safeConvertToNullableString(record["event_abbr_name"]),
-		EventDescription:       safeConvertToNullableString(record["event_description"]),
-		EventPunchline:         safeConvertToNullableString(record["event_punchline"]),
-		StartDate:              safeConvertToDateString(record["start_date"]),
-		EndDate:                safeConvertToDateString(record["end_date"]),
-		EditionID:              safeConvertToUInt32(record["edition_id"]),
-		EditionCountry:         strings.ToUpper(safeConvertToString(record["edition_country"])),
-		EditionCity:            safeConvertToUInt32(record["edition_city"]),
-		EditionCityLat:         safeConvertToFloat64(record["edition_city_lat"]),
-		EditionCityLong:        safeConvertToFloat64(record["edition_city_long"]),
-		CompanyID:              safeConvertToNullableUInt32(record["company_id"]),
-		CompanyName:            safeConvertToNullableString(record["company_name"]),
-		CompanyDomain:          safeConvertToNullableString(record["company_domain"]),
-		CompanyWebsite:         safeConvertToNullableString(record["company_website"]),
-		CompanyCountry:         toUpperNullableString(safeConvertToNullableString(record["company_country"])),
-		CompanyCity:            safeConvertToNullableUInt32(record["company_city"]),
-		VenueID:                safeConvertToNullableUInt32(record["venue_id"]),
-		VenueName:              safeConvertToNullableString(record["venue_name"]),
-		VenueCountry:           toUpperNullableString(safeConvertToNullableString(record["venue_country"])),
-		VenueCity:              safeConvertToNullableUInt32(record["venue_city"]),
+		EventID:          safeConvertToUInt32(record["event_id"]),
+		EventName:        safeConvertToString(record["event_name"]),
+		EventAbbrName:    safeConvertToNullableString(record["event_abbr_name"]),
+		EventDescription: safeConvertToNullableString(record["event_description"]),
+		EventPunchline:   safeConvertToNullableString(record["event_punchline"]),
+		StartDate:        safeConvertToDateString(record["start_date"]),
+		EndDate:          safeConvertToDateString(record["end_date"]),
+		EditionID:        safeConvertToUInt32(record["edition_id"]),
+		EditionCountry:   strings.ToUpper(safeConvertToString(record["edition_country"])),
+		EditionCity:      safeConvertToUInt32(record["edition_city"]),
+		EditionCityName:  safeConvertToString(record["edition_city_name"]),
+		EditionCityLat:   safeConvertToFloat64(record["edition_city_lat"]),
+		EditionCityLong:  safeConvertToFloat64(record["edition_city_long"]),
+		CompanyID:        safeConvertToNullableUInt32(record["company_id"]),
+		CompanyName:      safeConvertToNullableString(record["company_name"]),
+		CompanyDomain:    safeConvertToNullableString(record["company_domain"]),
+		CompanyWebsite:   safeConvertToNullableString(record["company_website"]),
+		CompanyCountry:   toUpperNullableString(safeConvertToNullableString(record["company_country"])),
+		CompanyCity:      safeConvertToNullableUInt32(record["company_city"]),
+		CompanyCityName: func() *string {
+			if val, ok := record["company_city_name"].(*string); ok {
+				return val
+			}
+			return nil
+		}(),
+		VenueID:      safeConvertToNullableUInt32(record["venue_id"]),
+		VenueName:    safeConvertToNullableString(record["venue_name"]),
+		VenueCountry: toUpperNullableString(safeConvertToNullableString(record["venue_country"])),
+		VenueCity:    safeConvertToNullableUInt32(record["venue_city"]),
+		VenueCityName: func() *string {
+			if val, ok := record["venue_city_name"].(*string); ok {
+				return val
+			}
+			return nil
+		}(),
 		VenueLat:               safeConvertToNullableFloat64(record["venue_lat"]),
 		VenueLong:              safeConvertToNullableFloat64(record["venue_long"]),
 		Published:              safeConvertToInt8(record["published"]),
@@ -1636,14 +1649,69 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				}
 			}
 
-			// Fetch city data for all editions
+			// Fetch city data for all editions, companies, and venues
 			var cityData []map[string]interface{}
 			if len(editionData) > 0 {
-				cityIDs := extractCityIDs(editionData)
-				if len(cityIDs) > 0 {
-					log.Printf("Event edition chunk %d: Fetching city data for %d cities", chunkNum, len(cityIDs))
+				// Collect city IDs from edition data
+				editionCityIDs := extractCityIDs(editionData)
+
+				// Collect city IDs from company data
+				var companyCityIDs []int64
+				seenCompanyCityIDs := make(map[int64]bool)
+				for _, company := range companyData {
+					if cityID, ok := company["company_city"].(int64); ok && cityID > 0 {
+						if !seenCompanyCityIDs[cityID] {
+							companyCityIDs = append(companyCityIDs, cityID)
+							seenCompanyCityIDs[cityID] = true
+						}
+					}
+				}
+
+				// Collect city IDs from venue data
+				var venueCityIDs []int64
+				seenVenueCityIDs := make(map[int64]bool)
+				for _, venue := range venueData {
+					if cityID, ok := venue["venue_city"].(int64); ok && cityID > 0 {
+						if !seenVenueCityIDs[cityID] {
+							venueCityIDs = append(venueCityIDs, cityID)
+							seenVenueCityIDs[cityID] = true
+						}
+					}
+				}
+
+				// Combine all city IDs
+				allCityIDs := make([]int64, 0, len(editionCityIDs)+len(companyCityIDs)+len(venueCityIDs))
+				seenAllCityIDs := make(map[int64]bool)
+
+				// Add edition city IDs
+				for _, cityID := range editionCityIDs {
+					if !seenAllCityIDs[cityID] {
+						allCityIDs = append(allCityIDs, cityID)
+						seenAllCityIDs[cityID] = true
+					}
+				}
+
+				// Add company city IDs
+				for _, cityID := range companyCityIDs {
+					if !seenAllCityIDs[cityID] {
+						allCityIDs = append(allCityIDs, cityID)
+						seenAllCityIDs[cityID] = true
+					}
+				}
+
+				// Add venue city IDs
+				for _, cityID := range venueCityIDs {
+					if !seenAllCityIDs[cityID] {
+						allCityIDs = append(allCityIDs, cityID)
+						seenAllCityIDs[cityID] = true
+					}
+				}
+
+				if len(allCityIDs) > 0 {
+					log.Printf("Event edition chunk %d: Fetching city data for %d cities (edition: %d, company: %d, venue: %d)",
+						chunkNum, len(allCityIDs), len(editionCityIDs), len(companyCityIDs), len(venueCityIDs))
 					startTime = time.Now()
-					cityData = fetchCityDataParallel(mysqlDB, cityIDs, config.NumWorkers)
+					cityData = fetchCityDataParallel(mysqlDB, allCityIDs, config.NumWorkers)
 					cityTime := time.Since(startTime)
 					log.Printf("Event edition chunk %d: Retrieved city data for %d cities in %v", chunkNum, len(cityData), cityTime)
 				}
@@ -1757,6 +1825,26 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 
 							}
 
+							// Get company city data
+							var companyCity map[string]interface{}
+							if company != nil && company["company_city"] != nil {
+								if companyCityID, ok := company["company_city"].(int64); ok {
+									if c, exists := cityLookup[companyCityID]; exists {
+										companyCity = c
+									}
+								}
+							}
+
+							// Get venue city data
+							var venueCity map[string]interface{}
+							if venue != nil && venue["venue_city"] != nil {
+								if venueCityID, ok := venue["venue_city"].(int64); ok {
+									if c, exists := cityLookup[venueCityID]; exists {
+										venueCity = c
+									}
+								}
+							}
+
 							// Get Elasticsearch data
 							esInfoMap := esData[eventID] // If not found, esInfoMap remains nil
 
@@ -1782,28 +1870,43 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 
 							// Create record for ClickHouse insertion - include ALL data
 							record := map[string]interface{}{
-								"event_id":                eventData["id"],
-								"event_name":              eventData["event_name"],
-								"event_abbr_name":         eventData["abbr_name"],
-								"event_description":       esInfoMap["event_description"],
-								"event_punchline":         esInfoMap["event_punchline"],
-								"start_date":              eventData["start_date"],
-								"end_date":                eventData["end_date"],
-								"edition_id":              edition["edition_id"],
-								"edition_country":         strings.ToUpper(safeConvertToString(eventData["country"])),
-								"edition_city":            edition["edition_city"],
-								"edition_city_lat":        city["event_city_lat"],
-								"edition_city_long":       city["event_city_long"],
-								"company_id":              company["id"],
-								"company_name":            company["company_name"],
-								"company_domain":          companyDomain,
-								"company_website":         company["company_website"],
-								"company_country":         strings.ToUpper(safeConvertToString(company["company_country"])),
-								"company_city":            company["company_city"],
-								"venue_id":                venue["id"],
-								"venue_name":              venue["venue_name"],
-								"venue_country":           strings.ToUpper(safeConvertToString(venue["venue_country"])),
-								"venue_city":              venue["venue_city"],
+								"event_id":          eventData["id"],
+								"event_name":        eventData["event_name"],
+								"event_abbr_name":   eventData["abbr_name"],
+								"event_description": esInfoMap["event_description"],
+								"event_punchline":   esInfoMap["event_punchline"],
+								"start_date":        eventData["start_date"],
+								"end_date":          eventData["end_date"],
+								"edition_id":        edition["edition_id"],
+								"edition_country":   strings.ToUpper(safeConvertToString(eventData["country"])),
+								"edition_city":      edition["edition_city"],
+								"edition_city_name": safeConvertToString(city["name"]),
+								"edition_city_lat":  city["event_city_lat"],
+								"edition_city_long": city["event_city_long"],
+								"company_id":        company["id"],
+								"company_name":      company["company_name"],
+								"company_domain":    companyDomain,
+								"company_website":   company["company_website"],
+								"company_country":   strings.ToUpper(safeConvertToString(company["company_country"])),
+								"company_city":      company["company_city"],
+								"company_city_name": func() *string {
+									if companyCity != nil && companyCity["name"] != nil {
+										nameStr := safeConvertToString(companyCity["name"])
+										return &nameStr
+									}
+									return nil
+								}(),
+								"venue_id":      venue["id"],
+								"venue_name":    venue["venue_name"],
+								"venue_country": strings.ToUpper(safeConvertToString(venue["venue_country"])),
+								"venue_city":    venue["venue_city"],
+								"venue_city_name": func() *string {
+									if venueCity != nil && venueCity["name"] != nil {
+										nameStr := safeConvertToString(venueCity["name"])
+										return &nameStr
+									}
+									return nil
+								}(),
 								"venue_lat":               venue["venue_lat"],
 								"venue_long":              venue["venue_long"],
 								"published":               eventData["published"],
@@ -2085,7 +2188,7 @@ func fetchCityDataForBatch(db *sql.DB, cityIDs []int64) []map[string]interface{}
 
 	query := fmt.Sprintf(`
 		SELECT 
-			id, geo_lat as event_city_lat, geo_long as event_city_long
+			id, name, geo_lat as event_city_lat, geo_long as event_city_long
 		FROM city 
 		WHERE id IN (%s)`, strings.Join(placeholders, ","))
 
@@ -2440,9 +2543,9 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 		INSERT INTO event_edition_ch_v2 (
 			event_id, event_name, event_abbr_name, event_description, event_punchline,
 			start_date, end_date,
-			edition_id, edition_country, edition_city, edition_city_lat, edition_city_long,
-			company_id, company_name, company_domain, company_website, company_country, company_city,
-			venue_id, venue_name, venue_country, venue_city, venue_lat, venue_long,
+			edition_id, edition_country, edition_city, edition_city_name, edition_city_lat, edition_city_long,
+			company_id, company_name, company_domain, company_website, company_country, company_city, company_city_name,
+			venue_id, venue_name, venue_country, venue_city, venue_city_name, venue_lat, venue_long,
 			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
 			edition_type, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
@@ -2468,6 +2571,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			eventEditionRecord.EditionID,              // edition_id: UInt32 NOT NULL
 			eventEditionRecord.EditionCountry,         // edition_country: LowCardinality(FixedString(2)) NOT NULL
 			eventEditionRecord.EditionCity,            // edition_city: UInt32 NOT NULL
+			eventEditionRecord.EditionCityName,        // edition_city_name: String NOT NULL
 			eventEditionRecord.EditionCityLat,         // edition_city_lat: Float64 NOT NULL
 			eventEditionRecord.EditionCityLong,        // edition_city_long: Float64 NOT NULL
 			eventEditionRecord.CompanyID,              // company_id: Nullable(UInt32)
@@ -2476,10 +2580,12 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			eventEditionRecord.CompanyWebsite,         // company_website: Nullable(String)
 			eventEditionRecord.CompanyCountry,         // company_country: LowCardinality(Nullable(FixedString(2)))
 			eventEditionRecord.CompanyCity,            // company_city: Nullable(UInt32)
+			eventEditionRecord.CompanyCityName,        // company_city_name: Nullable(String)
 			eventEditionRecord.VenueID,                // venue_id: Nullable(UInt32)
 			eventEditionRecord.VenueName,              // venue_name: Nullable(String)
 			eventEditionRecord.VenueCountry,           // venue_country: LowCardinality(Nullable(FixedString(2)))
 			eventEditionRecord.VenueCity,              // venue_city: Nullable(UInt32)
+			eventEditionRecord.VenueCityName,          // venue_city_name: Nullable(String)
 			eventEditionRecord.VenueLat,               // venue_lat: Nullable(Float64)
 			eventEditionRecord.VenueLong,              // venue_long: Nullable(Float64)
 			eventEditionRecord.Published,              // published: Int8 NOT NULL
@@ -4435,6 +4541,7 @@ type EventEditionRecord struct {
 	EditionID              uint32   `ch:"edition_id"`
 	EditionCountry         string   `ch:"edition_country"`   // LowCardinality(FixedString(2)) NOT NULL
 	EditionCity            uint32   `ch:"edition_city"`      // UInt32 NOT NULL
+	EditionCityName        string   `ch:"edition_city_name"` // String NOT NULL
 	EditionCityLat         float64  `ch:"edition_city_lat"`  // Float64 NOT NULL
 	EditionCityLong        float64  `ch:"edition_city_long"` // Float64 NOT NULL
 	CompanyID              *uint32  `ch:"company_id"`
@@ -4443,10 +4550,12 @@ type EventEditionRecord struct {
 	CompanyWebsite         *string  `ch:"company_website"`
 	CompanyCountry         *string  `ch:"company_country"`
 	CompanyCity            *uint32  `ch:"company_city"`
+	CompanyCityName        *string  `ch:"company_city_name"`
 	VenueID                *uint32  `ch:"venue_id"`
 	VenueName              *string  `ch:"venue_name"`
 	VenueCountry           *string  `ch:"venue_country"`
 	VenueCity              *uint32  `ch:"venue_city"`
+	VenueCityName          *string  `ch:"venue_city_name"`
 	VenueLat               *float64 `ch:"venue_lat"`
 	VenueLong              *float64 `ch:"venue_long"`
 	Published              int8     `ch:"published"`              // Int8 NOT NULL
