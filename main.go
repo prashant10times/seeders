@@ -555,7 +555,7 @@ func validateConfig(config Config) error {
 	return nil
 }
 
-func setupConnections(config Config) (*sql.DB, *sql.DB, *elasticsearch.Client, error) {
+func setupConnections(config Config) (*sql.DB, driver.Conn, *elasticsearch.Client, error) {
 	mysqlDB, err := sql.Open("mysql", config.MySQLDSN)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("MySQL connection failed: %v", err)
@@ -580,30 +580,10 @@ func setupConnections(config Config) (*sql.DB, *sql.DB, *elasticsearch.Client, e
 		return nil, nil, nil, fmt.Errorf("MySQL connection test failed: %v", err)
 	}
 
-	clickhouseDB, err := sql.Open("clickhouse", config.ClickhouseDSN)
+	clickhouseDB, err := setupNativeClickHouseConnection(config)
 	if err != nil {
 		mysqlDB.Close()
 		return nil, nil, nil, fmt.Errorf("ClickHouse connection failed: %v", err)
-	}
-
-	// Set ClickHouse connection pool settings
-	if config.ClickHouseMaxOpenConns > 0 {
-		clickhouseDB.SetMaxOpenConns(config.ClickHouseMaxOpenConns)
-	} else {
-		clickhouseDB.SetMaxOpenConns(10)
-	}
-	if config.ClickHouseMaxIdleConns > 0 {
-		clickhouseDB.SetMaxIdleConns(config.ClickHouseMaxIdleConns)
-	} else {
-		clickhouseDB.SetMaxIdleConns(5)
-	}
-	clickhouseDB.SetConnMaxLifetime(30 * time.Minute)
-	clickhouseDB.SetConnMaxIdleTime(10 * time.Minute)
-
-	if err := clickhouseDB.Ping(); err != nil {
-		mysqlDB.Close()
-		clickhouseDB.Close()
-		return nil, nil, nil, fmt.Errorf("ClickHouse ping failed: %v", err)
 	}
 
 	esConfig := elasticsearch.Config{
@@ -645,6 +625,7 @@ func setupNativeClickHouseConnection(config Config) (driver.Conn, error) {
 			Username: config.ClickhouseUser,
 			Password: config.ClickhousePassword,
 		},
+		Protocol: clickhouse.HTTP,
 		Settings: clickhouse.Settings{
 			"max_execution_time": 60,
 		},
@@ -655,6 +636,7 @@ func setupNativeClickHouseConnection(config Config) (driver.Conn, error) {
 	})
 
 	if err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("ClickHouse connection failed: %v", err)
 	}
 
@@ -743,14 +725,18 @@ func testElasticsearchConnection(esClient *elasticsearch.Client, indexName strin
 	return nil
 }
 
-func testClickHouseConnection(clickhouseDB *sql.DB) error {
-	if err := clickhouseDB.Ping(); err != nil {
+func testClickHouseConnection(clickhouseConn driver.Conn) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := clickhouseConn.Ping(ctx); err != nil {
 		return fmt.Errorf("ClickHouse ping failed: %v", err)
 	}
 
-	var result int
+	var result uint8
 	query := "SELECT 1"
-	if err := clickhouseDB.QueryRow(query).Scan(&result); err != nil {
+	row := clickhouseConn.QueryRow(ctx, query)
+	if err := row.Scan(&result); err != nil {
 		return fmt.Errorf("ClickHouse query test failed: %v", err)
 	}
 
@@ -759,16 +745,12 @@ func testClickHouseConnection(clickhouseDB *sql.DB) error {
 	}
 
 	tableQuery := "SELECT count() FROM event_edition_ch LIMIT 1"
-	if _, err := clickhouseDB.Exec(tableQuery); err != nil {
+	if err := clickhouseConn.Exec(ctx, tableQuery); err != nil {
 		return fmt.Errorf("ClickHouse table access test failed: %v", err)
 	}
 
 	log.Println("OK: ClickHouse connection successful")
 	log.Printf("OK: ClickHouse table 'event_edition_ch' is accessible")
-
-	stats := clickhouseDB.Stats()
-	log.Printf("OK: ClickHouse connection pool: Open=%d, InUse=%d, Idle=%d",
-		stats.OpenConnections, stats.InUse, stats.Idle)
 
 	return nil
 }
@@ -4172,40 +4154,15 @@ func main() {
 	}
 
 	if exhibitorOnly {
-		nativeConn, err := setupNativeClickHouseConnection(config)
-		if err != nil {
-			log.Fatal("Failed to setup native ClickHouse connection:", err)
-		}
-		defer nativeConn.Close()
-		processExhibitorOnly(mysqlDB, nativeConn, config)
+		processExhibitorOnly(mysqlDB, clickhouseDB, config)
 	} else if sponsorsOnly {
-		nativeConn, err := setupNativeClickHouseConnection(config)
-		if err != nil {
-			log.Fatal("Failed to setup native ClickHouse connection:", err)
-		}
-		defer nativeConn.Close()
-		processSponsorsOnly(mysqlDB, nativeConn, config)
+		processSponsorsOnly(mysqlDB, clickhouseDB, config)
 	} else if visitorsOnly {
-		nativeConn, err := setupNativeClickHouseConnection(config)
-		if err != nil {
-			log.Fatal("Failed to setup native ClickHouse connection:", err)
-		}
-		defer nativeConn.Close()
-		processVisitorsOnly(mysqlDB, nativeConn, config)
+		processVisitorsOnly(mysqlDB, clickhouseDB, config)
 	} else if speakersOnly {
-		nativeConn, err := setupNativeClickHouseConnection(config)
-		if err != nil {
-			log.Fatal("Failed to setup native ClickHouse connection:", err)
-		}
-		defer nativeConn.Close()
-		processSpeakersOnly(mysqlDB, nativeConn, config)
+		processSpeakersOnly(mysqlDB, clickhouseDB, config)
 	} else if eventEditionOnly {
-		nativeConn, err := setupNativeClickHouseConnection(config)
-		if err != nil {
-			log.Fatal("Failed to setup native ClickHouse connection:", err)
-		}
-		defer nativeConn.Close()
-		processEventEditionOnly(mysqlDB, nativeConn, esClient, config)
+		processEventEditionOnly(mysqlDB, clickhouseDB, esClient, config)
 	} else {
 		log.Println("Error: No specific table mode selected!")
 		log.Println("Please specify one of the following modes:")
