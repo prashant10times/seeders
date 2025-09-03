@@ -76,6 +76,50 @@ func safeConvertToStatusString(value interface{}) string {
 	return status
 }
 
+// safeConvertToNullableUInt8 converts a value to nullable UInt8, handling both numeric and string types
+func safeConvertToNullableUInt8(value interface{}) *uint8 {
+	if value == nil {
+		return nil
+	}
+
+	// Handle direct numeric types first
+	if num, ok := value.(uint8); ok {
+		return &num
+	}
+	if num, ok := value.(uint32); ok {
+		if num <= 255 {
+			result := uint8(num)
+			return &result
+		}
+		return nil
+	}
+	if num, ok := value.(int64); ok {
+		if num >= 0 && num <= 255 {
+			result := uint8(num)
+			return &result
+		}
+		return nil
+	}
+	if num, ok := value.(int); ok {
+		if num >= 0 && num <= 255 {
+			result := uint8(num)
+			return &result
+		}
+		return nil
+	}
+
+	// Handle string conversion
+	str := safeConvertToString(value)
+	if str == "" {
+		return nil
+	}
+	if num, err := strconv.ParseUint(str, 10, 8); err == nil {
+		result := uint8(num)
+		return &result
+	}
+	return nil
+}
+
 // safely converts a value to nullable string for nullable fields
 func safeConvertToNullableString(value interface{}) *string {
 	if value == nil {
@@ -431,51 +475,176 @@ func convertToString(value interface{}) string {
 	return *ptr
 }
 
+func convertToInt8(value interface{}) int8 {
+	if value == nil {
+		return 0
+	}
+
+	switch v := value.(type) {
+	case int8:
+		return v
+	case int16:
+		if v < -128 || v > 127 {
+			return 0
+		}
+		return int8(v)
+	case int32:
+		if v < -128 || v > 127 {
+			return 0
+		}
+		return int8(v)
+	case int64:
+		if v < -128 || v > 127 {
+			return 0
+		}
+		return int8(v)
+	case int:
+		if v < -128 || v > 127 {
+			return 0
+		}
+		return int8(v)
+	case uint8:
+		if v > 127 {
+			return 0
+		}
+		return int8(v)
+	case uint16:
+		if v > 127 {
+			return 0
+		}
+		return int8(v)
+	case uint32:
+		if v > 127 {
+			return 0
+		}
+		return int8(v)
+	case uint64:
+		if v > 127 {
+			return 0
+		}
+		return int8(v)
+	case float64:
+		if v < -128 || v > 127 {
+			return 0
+		}
+		return int8(v)
+	case string:
+		if i, err := strconv.ParseInt(v, 10, 8); err == nil {
+			return int8(i)
+		}
+		return 0
+	default:
+		return 0
+	}
+}
+
+func convertToUInt16(value interface{}) uint16 {
+	if value == nil {
+		return 0
+	}
+
+	switch v := value.(type) {
+	case uint16:
+		return v
+	case uint32:
+		if v > 65535 {
+			return 0
+		}
+		return uint16(v)
+	case uint64:
+		if v > 65535 {
+			return 0
+		}
+		return uint16(v)
+	case int64:
+		if v < 0 || v > 65535 {
+			return 0
+		}
+		return uint16(v)
+	case int32:
+		if v < 0 {
+			return 0
+		}
+		return uint16(v)
+	case int:
+		if v < 0 || v > 65535 {
+			return 0
+		}
+		return uint16(v)
+	case uint8:
+		return uint16(v)
+	case int8:
+		if v < 0 {
+			return 0
+		}
+		return uint16(v)
+	case float64:
+		if v < 0 || v > 65535 {
+			return 0
+		}
+		return uint16(v)
+	case string:
+		if i, err := strconv.ParseUint(v, 10, 16); err == nil {
+			return uint16(i)
+		}
+		return 0
+	default:
+		return 0
+	}
+}
+
 // converts a map to EventEditionRecord struct
 func convertToEventEditionRecord(record map[string]interface{}) EventEditionRecord {
 	return EventEditionRecord{
-		EventID:              safeConvertToUInt32(record["event_id"]),
-		EventName:            safeConvertToString(record["event_name"]),
-		EventAbbrName:        safeConvertToNullableString(record["event_abbr_name"]),
-		EventDescription:     safeConvertToNullableString(record["event_description"]),
-		EventPunchline:       safeConvertToNullableString(record["event_punchline"]),
-		StartDate:            safeConvertToDateString(record["start_date"]),
-		EndDate:              safeConvertToDateString(record["end_date"]),
-		EditionID:            safeConvertToUInt32(record["edition_id"]),
-		EditionCountry:       strings.ToUpper(safeConvertToString(record["edition_country"])),
-		EditionCity:          safeConvertToUInt32(record["edition_city"]),
-		EditionCityLat:       safeConvertToFloat64(record["edition_city_lat"]),
-		EditionCityLong:      safeConvertToFloat64(record["edition_city_long"]),
-		CompanyID:            safeConvertToNullableUInt32(record["company_id"]),
-		CompanyName:          safeConvertToNullableString(record["company_name"]),
-		CompanyDomain:        safeConvertToNullableString(record["company_domain"]),
-		CompanyWebsite:       safeConvertToNullableString(record["company_website"]),
-		CompanyCountry:       toUpperNullableString(safeConvertToNullableString(record["company_country"])),
-		CompanyCity:          safeConvertToNullableUInt32(record["company_city"]),
-		VenueID:              safeConvertToNullableUInt32(record["venue_id"]),
-		VenueName:            safeConvertToNullableString(record["venue_name"]),
-		VenueCountry:         toUpperNullableString(safeConvertToNullableString(record["venue_country"])),
-		VenueCity:            safeConvertToNullableUInt32(record["venue_city"]),
-		VenueLat:             safeConvertToNullableFloat64(record["venue_lat"]),
-		VenueLong:            safeConvertToNullableFloat64(record["venue_long"]),
-		Published:            safeConvertToInt8(record["published"]),
-		Status:               safeConvertToStatusString(record["status"]),
-		EditionsAudianceType: safeConvertToUInt16(record["editions_audiance_type"]),
-		EditionFunctionality: safeConvertToString(record["edition_functionality"]),
-		EditionWebsite:       safeConvertToNullableString(record["edition_website"]),
-		EditionDomain:        safeConvertToNullableString(record["edition_domain"]),
-		EditionType:          safeConvertEditionType(record["edition_type"]),
-		EventFollowers:       safeConvertToNullableUInt32(record["event_followers"]),
-		EditionFollowers:     safeConvertToNullableUInt32(record["edition_followers"]),
-		EventExhibitor:       safeConvertToNullableUInt32(record["event_exhibitor"]),
-		EditionExhibitor:     safeConvertToNullableUInt32(record["edition_exhibitor"]),
-		EventSponsor:         safeConvertToNullableUInt32(record["event_sponsor"]),
-		EditionSponsor:       safeConvertToNullableUInt32(record["edition_sponsor"]),
-		EventSpeaker:         safeConvertToNullableUInt32(record["event_speaker"]),
-		EditionSpeaker:       safeConvertToNullableUInt32(record["edition_speaker"]),
-		EventCreated:         safeConvertToDateTimeString(record["event_created"]),
-		EditionCreated:       safeConvertToDateTimeString(record["edition_created"]),
-		Version:              safeConvertToUInt32(record["version"]),
+		EventID:                safeConvertToUInt32(record["event_id"]),
+		EventName:              safeConvertToString(record["event_name"]),
+		EventAbbrName:          safeConvertToNullableString(record["event_abbr_name"]),
+		EventDescription:       safeConvertToNullableString(record["event_description"]),
+		EventPunchline:         safeConvertToNullableString(record["event_punchline"]),
+		StartDate:              safeConvertToDateString(record["start_date"]),
+		EndDate:                safeConvertToDateString(record["end_date"]),
+		EditionID:              safeConvertToUInt32(record["edition_id"]),
+		EditionCountry:         strings.ToUpper(safeConvertToString(record["edition_country"])),
+		EditionCity:            safeConvertToUInt32(record["edition_city"]),
+		EditionCityLat:         safeConvertToFloat64(record["edition_city_lat"]),
+		EditionCityLong:        safeConvertToFloat64(record["edition_city_long"]),
+		CompanyID:              safeConvertToNullableUInt32(record["company_id"]),
+		CompanyName:            safeConvertToNullableString(record["company_name"]),
+		CompanyDomain:          safeConvertToNullableString(record["company_domain"]),
+		CompanyWebsite:         safeConvertToNullableString(record["company_website"]),
+		CompanyCountry:         toUpperNullableString(safeConvertToNullableString(record["company_country"])),
+		CompanyCity:            safeConvertToNullableUInt32(record["company_city"]),
+		VenueID:                safeConvertToNullableUInt32(record["venue_id"]),
+		VenueName:              safeConvertToNullableString(record["venue_name"]),
+		VenueCountry:           toUpperNullableString(safeConvertToNullableString(record["venue_country"])),
+		VenueCity:              safeConvertToNullableUInt32(record["venue_city"]),
+		VenueLat:               safeConvertToNullableFloat64(record["venue_lat"]),
+		VenueLong:              safeConvertToNullableFloat64(record["venue_long"]),
+		Published:              safeConvertToInt8(record["published"]),
+		Status:                 safeConvertToStatusString(record["status"]),
+		EditionsAudianceType:   safeConvertToUInt16(record["editions_audiance_type"]),
+		EditionFunctionality:   safeConvertToString(record["edition_functionality"]),
+		EditionWebsite:         safeConvertToNullableString(record["edition_website"]),
+		EditionDomain:          safeConvertToNullableString(record["edition_domain"]),
+		EditionType:            safeConvertEditionType(record["edition_type"]),
+		EventFollowers:         safeConvertToNullableUInt32(record["event_followers"]),
+		EditionFollowers:       safeConvertToNullableUInt32(record["edition_followers"]),
+		EventExhibitor:         safeConvertToNullableUInt32(record["event_exhibitor"]),
+		EditionExhibitor:       safeConvertToNullableUInt32(record["edition_exhibitor"]),
+		EventSponsor:           safeConvertToNullableUInt32(record["event_sponsor"]),
+		EditionSponsor:         safeConvertToNullableUInt32(record["edition_sponsor"]),
+		EventSpeaker:           safeConvertToNullableUInt32(record["event_speaker"]),
+		EditionSpeaker:         safeConvertToNullableUInt32(record["edition_speaker"]),
+		EventCreated:           safeConvertToDateTimeString(record["event_created"]),
+		EditionCreated:         safeConvertToDateTimeString(record["edition_created"]),
+		EventHybrid:            safeConvertToNullableUInt8(record["event_hybrid"]),
+		IsBranded:              safeConvertToNullableUInt32(record["isBranded"]),
+		Maturity:               safeConvertToNullableString(record["maturity"]),
+		EventPricing:           safeConvertToNullableString(record["event_pricing"]),
+		EventLogo:              safeConvertToNullableString(record["event_logo"]),
+		EventEstimatedVisitors: safeConvertToNullableString(record["event_estimatedVisitors"]),
+		EventFrequency:         safeConvertToNullableString(record["event_frequency"]),
+		Version:                safeConvertToUInt32(record["version"]),
 	}
 }
 
@@ -753,13 +922,13 @@ func testClickHouseConnection(clickhouseConn driver.Conn) error {
 		return fmt.Errorf("ClickHouse query returned unexpected result: %d", result)
 	}
 
-	tableQuery := "SELECT count() FROM event_edition_ch LIMIT 1"
+	tableQuery := "SELECT count() FROM event_edition_ch_v2 LIMIT 1"
 	if err := clickhouseConn.Exec(ctx, tableQuery); err != nil {
 		return fmt.Errorf("ClickHouse table access test failed: %v", err)
 	}
 
 	log.Println("OK: ClickHouse connection successful")
-	log.Printf("OK: ClickHouse table 'event_edition_ch' is accessible")
+	log.Printf("OK: ClickHouse table 'event_edition_ch_v2' is accessible")
 
 	return nil
 }
@@ -1613,47 +1782,54 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 
 							// Create record for ClickHouse insertion - include ALL data
 							record := map[string]interface{}{
-								"event_id":               eventData["id"],
-								"event_name":             eventData["event_name"],
-								"event_abbr_name":        eventData["abbr_name"],
-								"event_description":      esInfoMap["event_description"],
-								"event_punchline":        esInfoMap["event_punchline"],
-								"start_date":             eventData["start_date"],
-								"end_date":               eventData["end_date"],
-								"edition_id":             edition["edition_id"],
-								"edition_country":        strings.ToUpper(safeConvertToString(eventData["country"])),
-								"edition_city":           edition["edition_city"],
-								"edition_city_lat":       city["event_city_lat"],
-								"edition_city_long":      city["event_city_long"],
-								"company_id":             company["id"],
-								"company_name":           company["company_name"],
-								"company_domain":         companyDomain,
-								"company_website":        company["company_website"],
-								"company_country":        strings.ToUpper(safeConvertToString(company["company_country"])),
-								"company_city":           company["company_city"],
-								"venue_id":               venue["id"],
-								"venue_name":             venue["venue_name"],
-								"venue_country":          strings.ToUpper(safeConvertToString(venue["venue_country"])),
-								"venue_city":             venue["venue_city"],
-								"venue_lat":              venue["venue_lat"],
-								"venue_long":             venue["venue_long"],
-								"published":              eventData["published"],
-								"status":                 eventData["status"],
-								"editions_audiance_type": eventData["event_audience"],
-								"edition_functionality":  eventData["functionality"],
-								"edition_website":        edition["edition_website"],
-								"edition_domain":         editionDomain,
-								"event_followers":        esInfoMap["event_following"],
-								"edition_followers":      esInfoMap["event_following"],
-								"event_exhibitor":        esInfoMap["event_exhibitors"],
-								"edition_exhibitor":      esInfoMap["edition_exhibitor"],
-								"event_sponsor":          esInfoMap["event_totalSponsor"],
-								"edition_sponsor":        esInfoMap["edition_sponsor"],
-								"event_speaker":          esInfoMap["event_speakers"],
-								"edition_speaker":        esInfoMap["edition_speaker"],
-								"event_created":          eventData["created"],
-								"edition_created":        edition["edition_created"],
-								"version":                1,
+								"event_id":                eventData["id"],
+								"event_name":              eventData["event_name"],
+								"event_abbr_name":         eventData["abbr_name"],
+								"event_description":       esInfoMap["event_description"],
+								"event_punchline":         esInfoMap["event_punchline"],
+								"start_date":              eventData["start_date"],
+								"end_date":                eventData["end_date"],
+								"edition_id":              edition["edition_id"],
+								"edition_country":         strings.ToUpper(safeConvertToString(eventData["country"])),
+								"edition_city":            edition["edition_city"],
+								"edition_city_lat":        city["event_city_lat"],
+								"edition_city_long":       city["event_city_long"],
+								"company_id":              company["id"],
+								"company_name":            company["company_name"],
+								"company_domain":          companyDomain,
+								"company_website":         company["company_website"],
+								"company_country":         strings.ToUpper(safeConvertToString(company["company_country"])),
+								"company_city":            company["company_city"],
+								"venue_id":                venue["id"],
+								"venue_name":              venue["venue_name"],
+								"venue_country":           strings.ToUpper(safeConvertToString(venue["venue_country"])),
+								"venue_city":              venue["venue_city"],
+								"venue_lat":               venue["venue_lat"],
+								"venue_long":              venue["venue_long"],
+								"published":               eventData["published"],
+								"status":                  eventData["status"],
+								"editions_audiance_type":  eventData["event_audience"],
+								"edition_functionality":   eventData["functionality"],
+								"edition_website":         edition["edition_website"],
+								"edition_domain":          editionDomain,
+								"event_followers":         esInfoMap["event_following"],
+								"edition_followers":       esInfoMap["event_following"],
+								"event_exhibitor":         esInfoMap["event_exhibitors"],
+								"edition_exhibitor":       esInfoMap["edition_exhibitor"],
+								"event_sponsor":           esInfoMap["event_totalSponsor"],
+								"edition_sponsor":         esInfoMap["edition_sponsor"],
+								"event_speaker":           esInfoMap["event_speakers"],
+								"edition_speaker":         esInfoMap["edition_speaker"],
+								"event_created":           eventData["created"],
+								"edition_created":         edition["edition_created"],
+								"event_hybrid":            esInfoMap["event_hybrid"],
+								"isBranded":               nil, // Not available from current data sources
+								"maturity":                nil, // Not available from current data sources
+								"event_pricing":           esInfoMap["event_pricing"],
+								"event_logo":              esInfoMap["event_logo"],
+								"event_estimatedVisitors": nil, // Not available from current data sources
+								"event_frequency":         esInfoMap["event_frequency"],
+								"version":                 1,
 							}
 
 							// Set edition_type with default value if nil
@@ -2005,7 +2181,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			},
 		},
 		"size":    len(eventIDs),
-		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline"},
+		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing"},
 	}
 
 	queryJSON, _ := json.Marshal(query)
@@ -2077,7 +2253,35 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 					}
 				}
 			}
-			return uint32(0)
+			return nil // Return nil instead of 0 for failed conversions
+		}
+
+		// Helper function to convert string to uint8 with fallback
+		convertStringToUInt8 := func(key string) interface{} {
+			if val, exists := source[key]; exists && val != nil {
+				// Handle float64 values directly (common from Elasticsearch)
+				if floatVal, ok := val.(float64); ok {
+					if floatVal >= 0 && floatVal <= 255 && floatVal == float64(uint8(floatVal)) {
+						return uint8(floatVal)
+					}
+					return nil
+				}
+				// Handle other numeric types
+				if intVal, ok := val.(int); ok {
+					if intVal >= 0 && intVal <= 255 {
+						return uint8(intVal)
+					}
+					return nil
+				}
+				// Handle string conversion as fallback
+				strVal := convertToString(val)
+				if strVal != "" {
+					if num, err := strconv.ParseUint(strVal, 10, 8); err == nil {
+						return uint8(num)
+					}
+				}
+			}
+			return nil // Return nil instead of 0 for failed conversions
 		}
 
 		results[eventIDInt] = map[string]interface{}{
@@ -2091,6 +2295,10 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			"edition_sponsor":    convertStringToUInt32("totalSponsor"),
 			"edition_speaker":    convertStringToUInt32("speakers"),
 			"edition_followers":  convertStringToUInt32("following"),
+			"event_frequency":    convertToString(source["frequency"]),
+			"event_hybrid":       convertStringToUInt8("hybrid"),
+			"event_logo":         convertToString(source["logo"]),
+			"event_pricing":      convertToString(source["pricing"]),
 		}
 	}
 
@@ -2178,7 +2386,7 @@ collectLoop:
 	return results
 }
 
-// inserts event edition data into event_edition_ch
+// inserts event edition data into event_edition_ch_v2
 func insertEventEditionDataIntoClickHouse(clickhouseConn driver.Conn, records []map[string]interface{}, numWorkers int) error {
 	if len(records) == 0 {
 		return nil
@@ -2229,7 +2437,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_edition_ch (
+		INSERT INTO event_edition_ch_v2 (
 			event_id, event_name, event_abbr_name, event_description, event_punchline,
 			start_date, end_date,
 			edition_id, edition_country, edition_city, edition_city_lat, edition_city_long,
@@ -2238,7 +2446,8 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
 			edition_type, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
-			event_created, edition_created, version
+			event_created, edition_created, event_hybrid, isBranded, maturity,
+			event_pricing, event_logo, event_estimatedVisitors, event_frequency, version
 		)
 	`)
 	if err != nil {
@@ -2249,48 +2458,55 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 		eventEditionRecord := convertToEventEditionRecord(record)
 
 		err := batch.Append(
-			eventEditionRecord.EventID,              // event_id: UInt32 NOT NULL
-			eventEditionRecord.EventName,            // event_name: String NOT NULL
-			eventEditionRecord.EventAbbrName,        // event_abbr_name: Nullable(String)
-			eventEditionRecord.EventDescription,     // event_description: Nullable(String)
-			eventEditionRecord.EventPunchline,       // event_punchline: Nullable(String)
-			eventEditionRecord.StartDate,            // start_date: Date NOT NULL
-			eventEditionRecord.EndDate,              // end_date: Date NOT NULL
-			eventEditionRecord.EditionID,            // edition_id: UInt32 NOT NULL
-			eventEditionRecord.EditionCountry,       // edition_country: LowCardinality(FixedString(2)) NOT NULL
-			eventEditionRecord.EditionCity,          // edition_city: UInt32 NOT NULL
-			eventEditionRecord.EditionCityLat,       // edition_city_lat: Float64 NOT NULL
-			eventEditionRecord.EditionCityLong,      // edition_city_long: Float64 NOT NULL
-			eventEditionRecord.CompanyID,            // company_id: Nullable(UInt32)
-			eventEditionRecord.CompanyName,          // company_name: Nullable(String)
-			eventEditionRecord.CompanyDomain,        // company_domain: Nullable(String)
-			eventEditionRecord.CompanyWebsite,       // company_website: Nullable(String)
-			eventEditionRecord.CompanyCountry,       // company_country: LowCardinality(Nullable(FixedString(2)))
-			eventEditionRecord.CompanyCity,          // company_city: Nullable(UInt32)
-			eventEditionRecord.VenueID,              // venue_id: Nullable(UInt32)
-			eventEditionRecord.VenueName,            // venue_name: Nullable(String)
-			eventEditionRecord.VenueCountry,         // venue_country: LowCardinality(Nullable(FixedString(2)))
-			eventEditionRecord.VenueCity,            // venue_city: Nullable(UInt32)
-			eventEditionRecord.VenueLat,             // venue_lat: Nullable(Float64)
-			eventEditionRecord.VenueLong,            // venue_long: Nullable(Float64)
-			eventEditionRecord.Published,            // published: Int8 NOT NULL
-			eventEditionRecord.Status,               // status: LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
-			eventEditionRecord.EditionsAudianceType, // editions_audiance_type: UInt16 NOT NULL
-			eventEditionRecord.EditionFunctionality, // edition_functionality: LowCardinality(String) NOT NULL
-			eventEditionRecord.EditionWebsite,       // edition_website: Nullable(String)
-			eventEditionRecord.EditionDomain,        // edition_domain: Nullable(String)
-			eventEditionRecord.EditionType,          // edition_type: LowCardinality(Nullable(String)) DEFAULT 'NA'
-			eventEditionRecord.EventFollowers,       // event_followers: Nullable(UInt32)
-			eventEditionRecord.EditionFollowers,     // edition_followers: Nullable(UInt32)
-			eventEditionRecord.EventExhibitor,       // event_exhibitor: Nullable(UInt32)
-			eventEditionRecord.EditionExhibitor,     // edition_exhibitor: Nullable(UInt32)
-			eventEditionRecord.EventSponsor,         // event_sponsor: Nullable(UInt32)
-			eventEditionRecord.EditionSponsor,       // edition_sponsor: Nullable(UInt32)
-			eventEditionRecord.EventSpeaker,         // event_speaker: Nullable(UInt32)
-			eventEditionRecord.EditionSpeaker,       // edition_speaker: Nullable(UInt32)
-			eventEditionRecord.EventCreated,         // event_created: DateTime NOT NULL
-			eventEditionRecord.EditionCreated,       // edition_created: DateTime NOT NULL
-			eventEditionRecord.Version,              // version: UInt32 NOT NULL DEFAULT 1
+			eventEditionRecord.EventID,                // event_id: UInt32 NOT NULL
+			eventEditionRecord.EventName,              // event_name: String NOT NULL
+			eventEditionRecord.EventAbbrName,          // event_abbr_name: Nullable(String)
+			eventEditionRecord.EventDescription,       // event_description: Nullable(String)
+			eventEditionRecord.EventPunchline,         // event_punchline: Nullable(String)
+			eventEditionRecord.StartDate,              // start_date: Date NOT NULL
+			eventEditionRecord.EndDate,                // end_date: Date NOT NULL
+			eventEditionRecord.EditionID,              // edition_id: UInt32 NOT NULL
+			eventEditionRecord.EditionCountry,         // edition_country: LowCardinality(FixedString(2)) NOT NULL
+			eventEditionRecord.EditionCity,            // edition_city: UInt32 NOT NULL
+			eventEditionRecord.EditionCityLat,         // edition_city_lat: Float64 NOT NULL
+			eventEditionRecord.EditionCityLong,        // edition_city_long: Float64 NOT NULL
+			eventEditionRecord.CompanyID,              // company_id: Nullable(UInt32)
+			eventEditionRecord.CompanyName,            // company_name: Nullable(String)
+			eventEditionRecord.CompanyDomain,          // company_domain: Nullable(String)
+			eventEditionRecord.CompanyWebsite,         // company_website: Nullable(String)
+			eventEditionRecord.CompanyCountry,         // company_country: LowCardinality(Nullable(FixedString(2)))
+			eventEditionRecord.CompanyCity,            // company_city: Nullable(UInt32)
+			eventEditionRecord.VenueID,                // venue_id: Nullable(UInt32)
+			eventEditionRecord.VenueName,              // venue_name: Nullable(String)
+			eventEditionRecord.VenueCountry,           // venue_country: LowCardinality(Nullable(FixedString(2)))
+			eventEditionRecord.VenueCity,              // venue_city: Nullable(UInt32)
+			eventEditionRecord.VenueLat,               // venue_lat: Nullable(Float64)
+			eventEditionRecord.VenueLong,              // venue_long: Nullable(Float64)
+			eventEditionRecord.Published,              // published: Int8 NOT NULL
+			eventEditionRecord.Status,                 // status: LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
+			eventEditionRecord.EditionsAudianceType,   // editions_audiance_type: UInt16 NOT NULL
+			eventEditionRecord.EditionFunctionality,   // edition_functionality: LowCardinality(String) NOT NULL
+			eventEditionRecord.EditionWebsite,         // edition_website: Nullable(String)
+			eventEditionRecord.EditionDomain,          // edition_domain: Nullable(String)
+			eventEditionRecord.EditionType,            // edition_type: LowCardinality(Nullable(String)) DEFAULT 'NA'
+			eventEditionRecord.EventFollowers,         // event_followers: Nullable(UInt32)
+			eventEditionRecord.EditionFollowers,       // edition_followers: Nullable(UInt32)
+			eventEditionRecord.EventExhibitor,         // event_exhibitor: Nullable(UInt32)
+			eventEditionRecord.EditionExhibitor,       // edition_exhibitor: Nullable(UInt32)
+			eventEditionRecord.EventSponsor,           // event_sponsor: Nullable(UInt32)
+			eventEditionRecord.EditionSponsor,         // edition_sponsor: Nullable(UInt32)
+			eventEditionRecord.EventSpeaker,           // event_speaker: Nullable(UInt32)
+			eventEditionRecord.EditionSpeaker,         // edition_speaker: Nullable(UInt32)
+			eventEditionRecord.EventCreated,           // event_created: DateTime NOT NULL
+			eventEditionRecord.EditionCreated,         // edition_created: DateTime NOT NULL
+			eventEditionRecord.EventHybrid,            // event_hybrid: Nullable(UInt32)
+			eventEditionRecord.IsBranded,              // isBranded: Nullable(UInt32)
+			eventEditionRecord.Maturity,               // maturity: LowCardinality(Nullable(String))
+			eventEditionRecord.EventPricing,           // event_pricing: LowCardinality(Nullable(String))
+			eventEditionRecord.EventLogo,              // event_logo: Nullable(String)
+			eventEditionRecord.EventEstimatedVisitors, // event_estimatedVisitors: LowCardinality(Nullable(String))
+			eventEditionRecord.EventFrequency,         // event_frequency: LowCardinality(Nullable(String))
+			eventEditionRecord.Version,                // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)
@@ -3554,6 +3770,61 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 	log.Println("Speakers processing completed!")
 }
 
+func processEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
+	log.Println("=== Starting EVENTTYPE_EVENT_CH ONLY Processing ===")
+
+	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "eventtype_event")
+	if err != nil {
+		log.Fatal("Failed to get total records and ID range from eventtype_event:", err)
+	}
+
+	log.Printf("Total eventtype_event records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
+
+	if config.NumChunks <= 0 {
+		config.NumChunks = 5 // Default to 5 chunks if not specified
+	}
+
+	chunkSize := (maxID - minID + 1) / config.NumChunks
+	if chunkSize == 0 {
+		chunkSize = 1
+	}
+
+	log.Printf("Processing eventtype_event_ch data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
+
+	results := make(chan string, config.NumChunks)
+	semaphore := make(chan struct{}, config.NumWorkers)
+
+	for i := 0; i < config.NumChunks; i++ {
+		startID := minID + (i * chunkSize)
+		endID := startID + chunkSize - 1
+
+		// last chunk to include remaining records
+		if i == config.NumChunks-1 {
+			endID = maxID
+		}
+
+		// delay between chunk launches to reduce ClickHouse load
+		if i > 0 {
+			delay := 3 * time.Second
+			log.Printf("Waiting %v before launching eventtype_event_ch chunk %d...", delay, i+1)
+			time.Sleep(delay)
+		}
+
+		semaphore <- struct{}{}
+		go func(chunkNum, start, end int) {
+			defer func() { <-semaphore }()
+			processEventTypeEventChChunk(mysqlDB, clickhouseConn, config, start, end, chunkNum, results)
+		}(i+1, startID, endID)
+	}
+
+	for i := 0; i < config.NumChunks; i++ {
+		result := <-results
+		log.Printf("EventTypeEventCh Result: %s", result)
+	}
+
+	log.Println("EventTypeEventCh processing completed!")
+}
+
 // processes a single chunk of speakers data
 func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing speakers chunk %d: ID range %d-%d", chunkNum, startID, endID)
@@ -3674,6 +3945,86 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 	results <- fmt.Sprintf("Speakers chunk %d: Completed successfully", chunkNum)
 }
 
+// processes a single chunk of eventtype_event_ch data
+func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config, startID, endID int, chunkNum int, results chan<- string) {
+	log.Printf("Processing eventtype_event_ch chunk %d: ID range %d-%d", chunkNum, startID, endID)
+
+	totalRecords := endID - startID + 1
+	processed := 0
+
+	// Use batching within the chunk
+	offset := 0
+	for {
+		batchData, err := buildEventTypeEventChMigrationData(mysqlDB, startID, endID, config.BatchSize)
+		if err != nil {
+			results <- fmt.Sprintf("EventTypeEventCh chunk %d batch error: %v", chunkNum, err)
+			return
+		}
+
+		if len(batchData) == 0 {
+			break
+		}
+
+		processed += len(batchData)
+		progress := float64(processed) / float64(totalRecords) * 100
+		log.Printf("EventTypeEventCh chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
+
+		var eventTypeEventChRecords []EventTypeEventChRecord
+		for _, record := range batchData {
+			eventTypeEventChRecord := EventTypeEventChRecord{
+				EventTypeID:   convertToUInt32(record["eventtype_id"]),
+				EventID:       convertToUInt32(record["event_id"]),
+				Published:     convertToInt8(record["published"]),
+				Name:          convertToString(record["name"]),
+				URL:           convertToString(record["url"]),
+				EventAudience: convertToUInt16(record["event_audience"]),
+				Version:       1,
+			}
+
+			eventTypeEventChRecords = append(eventTypeEventChRecords, eventTypeEventChRecord)
+		}
+
+		// Insert eventtype_event_ch data into ClickHouse
+		if len(eventTypeEventChRecords) > 0 {
+			log.Printf("EventTypeEventCh chunk %d: Attempting to insert %d records into eventtype_event_ch...", chunkNum, len(eventTypeEventChRecords))
+
+			insertErr := retryWithBackoff(
+				func() error {
+					return insertEventTypeEventChDataIntoClickHouse(clickhouseConn, eventTypeEventChRecords, config.ClickHouseWorkers)
+				},
+				3,
+				fmt.Sprintf("eventtype_event_ch insertion for chunk %d", chunkNum),
+			)
+
+			if insertErr != nil {
+				log.Printf("EventTypeEventCh chunk %d: Insertion failed after retries: %v", chunkNum, insertErr)
+				results <- fmt.Sprintf("EventTypeEventCh chunk %d: Failed to insert %d records", chunkNum, len(eventTypeEventChRecords))
+				return
+			} else {
+				log.Printf("EventTypeEventCh chunk %d: Successfully inserted %d records into eventtype_event_ch", chunkNum, len(eventTypeEventChRecords))
+			}
+		}
+
+		// Get the last ID from this batch for next iteration
+		if len(batchData) > 0 {
+			lastID := batchData[len(batchData)-1]["eventtype_id"]
+			if lastID != nil {
+				// Update startID for next batch within this chunk
+				if id, ok := lastID.(int64); ok {
+					startID = int(id) + 1
+				}
+			}
+		}
+
+		offset += len(batchData)
+		if len(batchData) < config.BatchSize {
+			break
+		}
+	}
+
+	results <- fmt.Sprintf("EventTypeEventCh chunk %d: Completed successfully", chunkNum)
+}
+
 func buildSpeakersMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
@@ -3681,6 +4032,59 @@ func buildSpeakersMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 		FROM event_speaker 
 		WHERE id >= %d AND id <= %d 
 		ORDER BY id 
+		LIMIT %d`, startID, endID, batchSize)
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, err
+		}
+
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			val := values[i]
+			if val == nil {
+				row[col] = nil
+			} else {
+				row[col] = val
+			}
+		}
+		results = append(results, row)
+	}
+
+	return results, nil
+}
+
+func buildEventTypeEventChMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
+	query := fmt.Sprintf(`
+		SELECT 
+			ee.eventtype_id,
+			ee.event_id,
+			ee.published,
+			et.name,
+			et.url,
+			et.event_audience
+		FROM eventtype_event ee
+		INNER JOIN event_type et ON ee.eventtype_id = et.id
+		WHERE ee.id >= %d AND ee.id <= %d 
+		ORDER BY ee.id 
 		LIMIT %d`, startID, endID, batchSize)
 
 	rows, err := db.Query(query)
@@ -3880,6 +4284,87 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 	return nil
 }
 
+func insertEventTypeEventChDataIntoClickHouse(clickhouseConn driver.Conn, eventTypeEventChRecords []EventTypeEventChRecord, numWorkers int) error {
+	if len(eventTypeEventChRecords) == 0 {
+		return nil
+	}
+
+	if numWorkers <= 1 {
+		return insertEventTypeEventChDataSingleWorker(clickhouseConn, eventTypeEventChRecords)
+	}
+
+	batchSize := (len(eventTypeEventChRecords) + numWorkers - 1) / numWorkers
+	results := make(chan error, numWorkers)
+	semaphore := make(chan struct{}, numWorkers)
+
+	for i := 0; i < numWorkers; i++ {
+		start := i * batchSize
+		end := start + batchSize
+		if end > len(eventTypeEventChRecords) {
+			end = len(eventTypeEventChRecords)
+		}
+		if start >= len(eventTypeEventChRecords) {
+			break
+		}
+
+		semaphore <- struct{}{}
+		go func(start, end int) {
+			defer func() { <-semaphore }()
+			batch := eventTypeEventChRecords[start:end]
+			err := insertEventTypeEventChDataSingleWorker(clickhouseConn, batch)
+			results <- err
+		}(start, end)
+	}
+
+	for i := 0; i < numWorkers && i*batchSize < len(eventTypeEventChRecords); i++ {
+		if err := <-results; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTypeEventChRecords []EventTypeEventChRecord) error {
+	if len(eventTypeEventChRecords) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	batch, err := clickhouseConn.PrepareBatch(ctx, `
+		INSERT INTO eventtype_event_ch (
+			eventtype_id, event_id, published, name, url, event_audience, version
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
+	}
+
+	for _, record := range eventTypeEventChRecords {
+		err := batch.Append(
+			record.EventTypeID,   // eventtype_id: UInt32
+			record.EventID,       // event_id: UInt32
+			record.Published,     // published: Int8
+			record.Name,          // name: LowCardinality(String)
+			record.URL,           // url: String
+			record.EventAudience, // event_audience: UInt16
+			record.Version,       // version: UInt32 DEFAULT 1
+		)
+		if err != nil {
+			return fmt.Errorf("failed to append record to batch: %v", err)
+		}
+	}
+
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
+	}
+
+	log.Printf("OK: Successfully inserted %d eventtype_event_ch records", len(eventTypeEventChRecords))
+	return nil
+}
+
 // represents a sponsor record for ClickHouse insertion
 type SponsorRecord struct {
 	CompanyID      *uint32 `ch:"company_id"`
@@ -3940,48 +4425,65 @@ type VisitorRecord struct {
 
 // EventEditionRecord represents an event edition record for ClickHouse insertion
 type EventEditionRecord struct {
-	EventID              uint32   `ch:"event_id"`
-	EventName            string   `ch:"event_name"`
-	EventAbbrName        *string  `ch:"event_abbr_name"`
-	EventDescription     *string  `ch:"event_description"`
-	EventPunchline       *string  `ch:"event_punchline"`
-	StartDate            string   `ch:"start_date"` // Date NOT NULL
-	EndDate              string   `ch:"end_date"`   // Date NOT NULL
-	EditionID            uint32   `ch:"edition_id"`
-	EditionCountry       string   `ch:"edition_country"`   // LowCardinality(FixedString(2)) NOT NULL
-	EditionCity          uint32   `ch:"edition_city"`      // UInt32 NOT NULL
-	EditionCityLat       float64  `ch:"edition_city_lat"`  // Float64 NOT NULL
-	EditionCityLong      float64  `ch:"edition_city_long"` // Float64 NOT NULL
-	CompanyID            *uint32  `ch:"company_id"`
-	CompanyName          *string  `ch:"company_name"`
-	CompanyDomain        *string  `ch:"company_domain"`
-	CompanyWebsite       *string  `ch:"company_website"`
-	CompanyCountry       *string  `ch:"company_country"`
-	CompanyCity          *uint32  `ch:"company_city"`
-	VenueID              *uint32  `ch:"venue_id"`
-	VenueName            *string  `ch:"venue_name"`
-	VenueCountry         *string  `ch:"venue_country"`
-	VenueCity            *uint32  `ch:"venue_city"`
-	VenueLat             *float64 `ch:"venue_lat"`
-	VenueLong            *float64 `ch:"venue_long"`
-	Published            int8     `ch:"published"`              // Int8 NOT NULL
-	Status               string   `ch:"status"`                 // LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
-	EditionsAudianceType uint16   `ch:"editions_audiance_type"` // UInt16 NOT NULL
-	EditionFunctionality string   `ch:"edition_functionality"`  // LowCardinality(String) NOT NULL
-	EditionWebsite       *string  `ch:"edition_website"`
-	EditionDomain        *string  `ch:"edition_domain"`
-	EditionType          string   `ch:"edition_type"` // LowCardinality(Nullable(String)) DEFAULT 'NA'
-	EventFollowers       *uint32  `ch:"event_followers"`
-	EditionFollowers     *uint32  `ch:"edition_followers"`
-	EventExhibitor       *uint32  `ch:"event_exhibitor"`
-	EditionExhibitor     *uint32  `ch:"edition_exhibitor"`
-	EventSponsor         *uint32  `ch:"event_sponsor"`
-	EditionSponsor       *uint32  `ch:"edition_sponsor"`
-	EventSpeaker         *uint32  `ch:"event_speaker"`
-	EditionSpeaker       *uint32  `ch:"edition_speaker"`
-	EventCreated         string   `ch:"event_created"`   // DateTime NOT NULL
-	EditionCreated       string   `ch:"edition_created"` // DateTime NOT NULL
-	Version              uint32   `ch:"version"`
+	EventID                uint32   `ch:"event_id"`
+	EventName              string   `ch:"event_name"`
+	EventAbbrName          *string  `ch:"event_abbr_name"`
+	EventDescription       *string  `ch:"event_description"`
+	EventPunchline         *string  `ch:"event_punchline"`
+	StartDate              string   `ch:"start_date"` // Date NOT NULL
+	EndDate                string   `ch:"end_date"`   // Date NOT NULL
+	EditionID              uint32   `ch:"edition_id"`
+	EditionCountry         string   `ch:"edition_country"`   // LowCardinality(FixedString(2)) NOT NULL
+	EditionCity            uint32   `ch:"edition_city"`      // UInt32 NOT NULL
+	EditionCityLat         float64  `ch:"edition_city_lat"`  // Float64 NOT NULL
+	EditionCityLong        float64  `ch:"edition_city_long"` // Float64 NOT NULL
+	CompanyID              *uint32  `ch:"company_id"`
+	CompanyName            *string  `ch:"company_name"`
+	CompanyDomain          *string  `ch:"company_domain"`
+	CompanyWebsite         *string  `ch:"company_website"`
+	CompanyCountry         *string  `ch:"company_country"`
+	CompanyCity            *uint32  `ch:"company_city"`
+	VenueID                *uint32  `ch:"venue_id"`
+	VenueName              *string  `ch:"venue_name"`
+	VenueCountry           *string  `ch:"venue_country"`
+	VenueCity              *uint32  `ch:"venue_city"`
+	VenueLat               *float64 `ch:"venue_lat"`
+	VenueLong              *float64 `ch:"venue_long"`
+	Published              int8     `ch:"published"`              // Int8 NOT NULL
+	Status                 string   `ch:"status"`                 // LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
+	EditionsAudianceType   uint16   `ch:"editions_audiance_type"` // UInt16 NOT NULL
+	EditionFunctionality   string   `ch:"edition_functionality"`  // LowCardinality(String) NOT NULL
+	EditionWebsite         *string  `ch:"edition_website"`
+	EditionDomain          *string  `ch:"edition_domain"`
+	EditionType            string   `ch:"edition_type"` // LowCardinality(Nullable(String)) DEFAULT 'NA'
+	EventFollowers         *uint32  `ch:"event_followers"`
+	EditionFollowers       *uint32  `ch:"edition_followers"`
+	EventExhibitor         *uint32  `ch:"event_exhibitor"`
+	EditionExhibitor       *uint32  `ch:"edition_exhibitor"`
+	EventSponsor           *uint32  `ch:"event_sponsor"`
+	EditionSponsor         *uint32  `ch:"edition_sponsor"`
+	EventSpeaker           *uint32  `ch:"event_speaker"`
+	EditionSpeaker         *uint32  `ch:"edition_speaker"`
+	EventCreated           string   `ch:"event_created"`           // DateTime NOT NULL
+	EditionCreated         string   `ch:"edition_created"`         // DateTime NOT NULL
+	EventHybrid            *uint8   `ch:"event_hybrid"`            // Nullable(UInt8)
+	IsBranded              *uint32  `ch:"isBranded"`               // Nullable(UInt32)
+	Maturity               *string  `ch:"maturity"`                // LowCardinality(Nullable(String))
+	EventPricing           *string  `ch:"event_pricing"`           // LowCardinality(Nullable(String))
+	EventLogo              *string  `ch:"event_logo"`              // Nullable(String)
+	EventEstimatedVisitors *string  `ch:"event_estimatedVisitors"` // LowCardinality(Nullable(String))
+	EventFrequency         *string  `ch:"event_frequency"`         // LowCardinality(Nullable(String))
+	Version                uint32   `ch:"version"`
+}
+
+type EventTypeEventChRecord struct {
+	EventTypeID   uint32 `ch:"eventtype_id"`
+	EventID       uint32 `ch:"event_id"`
+	Published     int8   `ch:"published"`
+	Name          string `ch:"name"`           // LowCardinality(String)
+	URL           string `ch:"url"`            // String
+	EventAudience uint16 `ch:"event_audience"` // UInt16
+	Version       uint32 `ch:"version"`
 }
 
 func main() {
@@ -3996,6 +4498,7 @@ func main() {
 	var visitorsOnly bool
 	var speakersOnly bool
 	var eventEditionOnly bool
+	var eventTypeEventChOnly bool
 
 	flag.IntVar(&numChunks, "chunks", 5, "Number of chunks to process data in (default: 5)")
 	flag.IntVar(&batchSize, "batch", 5000, "MySQL batch size for fetching data (default: 5000)")
@@ -4007,6 +4510,7 @@ func main() {
 	flag.BoolVar(&visitorsOnly, "visitors", false, "Process only visitors data (default: false)")
 	flag.BoolVar(&speakersOnly, "speakers", false, "Process only speakers data (default: false)")
 	flag.BoolVar(&eventEditionOnly, "event-edition", false, "Process only event edition data (default: false)")
+	flag.BoolVar(&eventTypeEventChOnly, "eventtype", false, "Process only eventtype data (default: false)")
 
 	flag.BoolVar(&showHelp, "help", false, "Show help information")
 	flag.Parse()
@@ -4020,6 +4524,7 @@ func main() {
 		log.Println("  -exhibitors       # Process exhibitors data")
 		log.Println("  -visitors         # Process visitors data")
 		log.Println("  -speakers         # Process speakers data")
+		log.Println("  -eventtype # Process eventtype data")
 		log.Println("\nOptions:")
 		log.Println("  -chunks int")
 		log.Println("        Number of chunks to process data in (default: 5)")
@@ -4048,6 +4553,7 @@ func main() {
 		log.Println("  go run main.go -exhibitors -chunks=8 -workers=15 -batch=20000")
 		log.Println("  go run main.go -visitors -chunks=3 -workers=8 -batch=5000")
 		log.Println("  go run main.go -speakers -chunks=6 -workers=12 -batch=15000")
+		log.Println("  go run main.go -eventtype -chunks=5 -workers=10 -batch=10000")
 		return
 	}
 
@@ -4120,6 +4626,8 @@ func main() {
 		log.Printf("Mode: SPEAKERS ONLY")
 	} else if eventEditionOnly {
 		log.Printf("Mode: EVENT EDITION ONLY")
+	} else if eventTypeEventChOnly {
+		log.Printf("Mode: EVENT TYPE ONLY")
 	}
 
 	if sponsorsOnly {
@@ -4130,6 +4638,8 @@ func main() {
 		log.Printf("Elasticsearch: Skipped (not needed for visitors)")
 	} else if exhibitorOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for exhibitors)")
+	} else if eventTypeEventChOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for event Type)")
 	}
 	log.Printf("==============================\n")
 
@@ -4146,7 +4656,7 @@ func main() {
 		log.Fatalf("ClickHouse connection test failed: %v", err)
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly {
+	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly {
 		if err := testElasticsearchConnection(esClient, config.IndexName); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -4159,6 +4669,8 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for visitors processing)")
 		} else if exhibitorOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for exhibitors processing)")
+		} else if eventTypeEventChOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for eventtype_event_ch processing)")
 		}
 	}
 
@@ -4172,6 +4684,8 @@ func main() {
 		processSpeakersOnly(mysqlDB, clickhouseDB, config)
 	} else if eventEditionOnly {
 		processEventEditionOnly(mysqlDB, clickhouseDB, esClient, config)
+	} else if eventTypeEventChOnly {
+		processEventTypeEventChOnly(mysqlDB, clickhouseDB, config)
 	} else {
 		log.Println("Error: No specific table mode selected!")
 		log.Println("Please specify one of the following modes:")
@@ -4180,6 +4694,7 @@ func main() {
 		log.Println("  -exhibitors       # Process exhibitors data")
 		log.Println("  -visitors         # Process visitors data")
 		log.Println("  -speakers         # Process speakers data")
+		log.Println("  -eventtype        # Process eventtype data")
 		log.Println("")
 		log.Println("Example: go run main.go -event-edition -chunks=10 -workers=20")
 		os.Exit(1)
