@@ -67,6 +67,15 @@ func safeConvertToString(value interface{}) string {
 	return ""
 }
 
+// safeConvertToStatusString converts a value to status string with default 'A' for empty values
+func safeConvertToStatusString(value interface{}) string {
+	status := safeConvertToString(value)
+	if status == "" {
+		return "A" // Default status value as per ClickHouse schema
+	}
+	return status
+}
+
 // safely converts a value to nullable string for nullable fields
 func safeConvertToNullableString(value interface{}) *string {
 	if value == nil {
@@ -450,7 +459,7 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		VenueLat:             safeConvertToNullableFloat64(record["venue_lat"]),
 		VenueLong:            safeConvertToNullableFloat64(record["venue_long"]),
 		Published:            safeConvertToInt8(record["published"]),
-		Status:               safeConvertToString(record["status"]),
+		Status:               safeConvertToStatusString(record["status"]),
 		EditionsAudianceType: safeConvertToUInt16(record["editions_audiance_type"]),
 		EditionFunctionality: safeConvertToString(record["edition_functionality"]),
 		EditionWebsite:       safeConvertToNullableString(record["edition_website"]),
