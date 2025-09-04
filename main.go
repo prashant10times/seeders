@@ -321,6 +321,35 @@ func safeConvertToNullableFloat64(value interface{}) *float64 {
 	return nil
 }
 
+// converts a float64 value to a decimal string for ClickHouse Decimal(3,2) field
+func safeConvertFloat64ToDecimalString(value interface{}) *string {
+	if value == nil {
+		return nil
+	}
+
+	var floatVal float64
+	switch v := value.(type) {
+	case float64:
+		floatVal = v
+	case float32:
+		floatVal = float64(v)
+	case int64:
+		floatVal = float64(v)
+	case int:
+		floatVal = float64(v)
+	case uint32:
+		floatVal = float64(v)
+	case uint64:
+		floatVal = float64(v)
+	default:
+		return nil
+	}
+
+	// Format to 2 decimal places for Decimal(3,2)
+	result := fmt.Sprintf("%.2f", floatVal)
+	return &result
+}
+
 // converts a value to uint32
 func convertToUInt32(value interface{}) uint32 {
 	if value == nil {
@@ -674,6 +703,7 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		EventLogo:              safeConvertToNullableString(record["event_logo"]),
 		EventEstimatedVisitors: safeConvertToNullableString(record["event_estimatedVisitors"]),
 		EventFrequency:         safeConvertToNullableString(record["event_frequency"]),
+		EventAvgRating:         safeConvertFloat64ToDecimalString(record["event_avgRating"]),
 		Version:                safeConvertToUInt32(record["version"]),
 	}
 }
@@ -1958,6 +1988,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"event_logo":              esInfoMap["event_logo"],
 								"event_estimatedVisitors": nil, // Not available from current data sources
 								"event_frequency":         esInfoMap["event_frequency"],
+								"event_avgRating":         esInfoMap["avg_rating"],
 								"version":                 1,
 							}
 
@@ -2361,7 +2392,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			},
 		},
 		"size":    len(eventIDs),
-		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition"},
+		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating"},
 	}
 
 	queryJSON, _ := json.Marshal(query)
@@ -2496,6 +2527,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			"event_logo":         convertToString(source["logo"]),
 			"event_pricing":      convertToString(source["pricing"]),
 			"total_edition":      convertedTotalEdition,
+			"avg_rating":         source["avg_rating"], // Add avg_rating field from Elasticsearch
 		}
 	}
 
@@ -2645,7 +2677,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_edition_ch (
-			event_id, event_name, event_abbr_name, event_description, event_punchline,
+			event_id, event_name, event_abbr_name, event_description, event_punchline, event_avgRating,
 			start_date, end_date,
 			edition_id, edition_country, edition_city, edition_city_name, edition_city_lat, edition_city_long,
 			company_id, company_name, company_domain, company_website, company_country, company_city, company_city_name,
@@ -2658,6 +2690,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 		)
 	`)
 	if err != nil {
+		log.Printf("ERROR: Failed to prepare ClickHouse batch for event_edition_ch: %v", err)
 		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
 	}
 
@@ -2670,6 +2703,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			eventEditionRecord.EventAbbrName,          // event_abbr_name: Nullable(String)
 			eventEditionRecord.EventDescription,       // event_description: Nullable(String)
 			eventEditionRecord.EventPunchline,         // event_punchline: Nullable(String)
+			eventEditionRecord.EventAvgRating,         // event_avgRating: Nullable(Decimal(3,2))
 			eventEditionRecord.StartDate,              // start_date: Date NOT NULL
 			eventEditionRecord.EndDate,                // end_date: Date NOT NULL
 			eventEditionRecord.EditionID,              // edition_id: UInt32 NOT NULL
@@ -2719,11 +2753,15 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			eventEditionRecord.Version,                // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
+			log.Printf("ERROR: Failed to append record to batch: %v", err)
+			log.Printf("Record data: EventID=%d, EventName=%s, EventAvgRating=%v",
+				eventEditionRecord.EventID, eventEditionRecord.EventName, eventEditionRecord.EventAvgRating)
 			return fmt.Errorf("failed to append record to batch: %v", err)
 		}
 	}
 
 	if err := batch.Send(); err != nil {
+		log.Printf("ERROR: Failed to send ClickHouse batch: %v", err)
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
@@ -5114,8 +5152,9 @@ type EventEditionRecord struct {
 	EventAbbrName          *string  `ch:"event_abbr_name"`
 	EventDescription       *string  `ch:"event_description"`
 	EventPunchline         *string  `ch:"event_punchline"`
-	StartDate              string   `ch:"start_date"` // Date NOT NULL
-	EndDate                string   `ch:"end_date"`   // Date NOT NULL
+	EventAvgRating         *string  `ch:"event_avgRating"` // Nullable(Decimal(3,2))
+	StartDate              string   `ch:"start_date"`      // Date NOT NULL
+	EndDate                string   `ch:"end_date"`        // Date NOT NULL
 	EditionID              uint32   `ch:"edition_id"`
 	EditionCountry         string   `ch:"edition_country"`   // LowCardinality(FixedString(2)) NOT NULL
 	EditionCity            uint32   `ch:"edition_city"`      // UInt32 NOT NULL
