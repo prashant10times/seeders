@@ -943,13 +943,13 @@ func testClickHouseConnection(clickhouseConn driver.Conn) error {
 		return fmt.Errorf("ClickHouse query returned unexpected result: %d", result)
 	}
 
-	tableQuery := "SELECT count() FROM event_edition_ch_v2 LIMIT 1"
+	tableQuery := "SELECT count() FROM event_edition_ch LIMIT 1"
 	if err := clickhouseConn.Exec(ctx, tableQuery); err != nil {
 		return fmt.Errorf("ClickHouse table access test failed: %v", err)
 	}
 
 	log.Println("OK: ClickHouse connection successful")
-	log.Printf("OK: ClickHouse table 'event_edition_ch_v2' is accessible")
+	log.Printf("OK: ClickHouse table 'event_edition_ch' is accessible")
 
 	return nil
 }
@@ -2584,7 +2584,7 @@ collectLoop:
 	return results
 }
 
-// inserts event edition data into event_edition_ch_v2
+// inserts event edition data into event_edition_ch
 func insertEventEditionDataIntoClickHouse(clickhouseConn driver.Conn, records []map[string]interface{}, numWorkers int) error {
 	if len(records) == 0 {
 		return nil
@@ -2635,7 +2635,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_edition_ch_v2 (
+		INSERT INTO event_edition_ch (
 			event_id, event_name, event_abbr_name, event_description, event_punchline,
 			start_date, end_date,
 			edition_id, edition_country, edition_city, edition_city_name, edition_city_lat, edition_city_long,
@@ -2825,6 +2825,39 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config C
 				log.Printf("Exhibitor chunk %d: Retrieved social media data for %d companies in %v", chunkNum, len(socialData), socialTime)
 			}
 
+			// Collect city IDs from exhibitor data
+			var exhibitorCityIDs []int64
+			seenCityIDs := make(map[int64]bool)
+			for _, exhibitor := range batchData {
+				if cityID, ok := exhibitor["city"].(int64); ok && cityID > 0 {
+					if !seenCityIDs[cityID] {
+						exhibitorCityIDs = append(exhibitorCityIDs, cityID)
+						seenCityIDs[cityID] = true
+					}
+				}
+			}
+
+			// Fetch city data for exhibitor cities
+			var cityData []map[string]interface{}
+			var cityLookup map[int64]map[string]interface{}
+			if len(exhibitorCityIDs) > 0 {
+				log.Printf("Exhibitor chunk %d: Fetching city data for %d cities", chunkNum, len(exhibitorCityIDs))
+				startTime := time.Now()
+				cityData = fetchCityDataParallel(mysqlDB, exhibitorCityIDs, config.NumWorkers)
+				cityTime := time.Since(startTime)
+				log.Printf("Exhibitor chunk %d: Retrieved city data for %d cities in %v", chunkNum, len(cityData), cityTime)
+
+				// Create city lookup map
+				cityLookup = make(map[int64]map[string]interface{})
+				if len(cityData) > 0 {
+					for _, city := range cityData {
+						if cityID, ok := city["id"].(int64); ok {
+							cityLookup[cityID] = city
+						}
+					}
+				}
+			}
+
 			var exhibitorRecords []ExhibitorRecord
 			for _, exhibitor := range batchData {
 				var companyDomain string
@@ -2845,6 +2878,15 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config C
 					}
 				}
 
+				// Get city data for this exhibitor
+				var companyCityName *string
+				if cityID, ok := exhibitor["city"].(int64); ok && cityLookup != nil {
+					if city, exists := cityLookup[cityID]; exists && city["name"] != nil {
+						nameStr := safeConvertToString(city["name"])
+						companyCityName = &nameStr
+					}
+				}
+
 				// Convert data to proper types for protocol
 				companyID := convertToUInt32Ptr(exhibitor["company_id"])
 				editionID := convertToUInt32(exhibitor["edition_id"])
@@ -2852,18 +2894,19 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config C
 
 				// Create exhibitor record with proper types
 				exhibitorRecord := ExhibitorRecord{
-					CompanyID:      companyID,
-					CompanyIDName:  getCompanyNameOrDefault(exhibitor["company_name"]),
-					EditionID:      editionID,
-					EventID:        eventID,
-					CompanyWebsite: convertToStringPtr(exhibitor["website"]),
-					CompanyDomain:  convertToStringPtr(companyDomain),
-					CompanyCountry: toUpperNullableString(convertToStringPtr(exhibitor["country"])),
-					CompanyCity:    convertToUInt32Ptr(exhibitor["city"]),
-					FacebookID:     convertToStringPtr(facebookID),
-					LinkedinID:     convertToStringPtr(linkedinID),
-					TwitterID:      convertToStringPtr(twitterID),
-					Version:        1,
+					CompanyID:       companyID,
+					CompanyIDName:   getCompanyNameOrDefault(exhibitor["company_name"]),
+					EditionID:       editionID,
+					EventID:         eventID,
+					CompanyWebsite:  convertToStringPtr(exhibitor["website"]),
+					CompanyDomain:   convertToStringPtr(companyDomain),
+					CompanyCountry:  toUpperNullableString(convertToStringPtr(exhibitor["country"])),
+					CompanyCity:     convertToUInt32Ptr(exhibitor["city"]),
+					CompanyCityName: companyCityName,
+					FacebookID:      convertToStringPtr(facebookID),
+					LinkedinID:      convertToStringPtr(linkedinID),
+					TwitterID:       convertToStringPtr(twitterID),
+					Version:         1,
 				}
 
 				exhibitorRecords = append(exhibitorRecords, exhibitorRecord)
@@ -3085,7 +3128,7 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_exhibitor_ch (
 			company_id, company_id_name, edition_id, event_id, company_website,
-			company_domain, company_country, company_city, facebook_id,
+			company_domain, company_country, company_city, company_city_name, facebook_id,
 			linkedin_id, twitter_id, version
 		)
 	`)
@@ -3095,18 +3138,19 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 
 	for _, record := range exhibitorRecords {
 		err := batch.Append(
-			record.CompanyID,      // company_id: Nullable(UInt32)
-			record.CompanyIDName,  // company_id_name: String NOT NULL
-			record.EditionID,      // edition_id: UInt32 NOT NULL
-			record.EventID,        // event_id: UInt32 NOT NULL
-			record.CompanyWebsite, // company_website: Nullable(String)
-			record.CompanyDomain,  // company_domain: Nullable(String)
-			record.CompanyCountry, // company_country: LowCardinality(FixedString(2))
-			record.CompanyCity,    // company_city: Nullable(UInt32)
-			record.FacebookID,     // facebook_id: Nullable(String)
-			record.LinkedinID,     // linkedin_id: Nullable(String)
-			record.TwitterID,      // twitter_id: Nullable(String)
-			record.Version,        // version: UInt32 NOT NULL DEFAULT 1
+			record.CompanyID,       // company_id: Nullable(UInt32)
+			record.CompanyIDName,   // company_id_name: String NOT NULL
+			record.EditionID,       // edition_id: UInt32 NOT NULL
+			record.EventID,         // event_id: UInt32 NOT NULL
+			record.CompanyWebsite,  // company_website: Nullable(String)
+			record.CompanyDomain,   // company_domain: Nullable(String)
+			record.CompanyCountry,  // company_country: LowCardinality(FixedString(2))
+			record.CompanyCity,     // company_city: Nullable(UInt32)
+			record.CompanyCityName, // company_city_name: LowCardinality(Nullable(String))
+			record.FacebookID,      // facebook_id: Nullable(String)
+			record.LinkedinID,      // linkedin_id: Nullable(String)
+			record.TwitterID,       // twitter_id: Nullable(String)
+			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)
@@ -3237,6 +3281,39 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			log.Printf("Sponsors chunk %d: Retrieved company data for %d companies in %v", chunkNum, len(companyData), companyTime)
 		}
 
+		// Collect city IDs from sponsor company data
+		var sponsorCityIDs []int64
+		seenCityIDs := make(map[int64]bool)
+		for _, company := range companyData {
+			if cityID, ok := company["city"].(int64); ok && cityID > 0 {
+				if !seenCityIDs[cityID] {
+					sponsorCityIDs = append(sponsorCityIDs, cityID)
+					seenCityIDs[cityID] = true
+				}
+			}
+		}
+
+		// Fetch city data for sponsor cities
+		var cityData []map[string]interface{}
+		var cityLookup map[int64]map[string]interface{}
+		if len(sponsorCityIDs) > 0 {
+			log.Printf("Sponsors chunk %d: Fetching city data for %d cities", chunkNum, len(sponsorCityIDs))
+			startTime := time.Now()
+			cityData = fetchCityDataParallel(mysqlDB, sponsorCityIDs, config.NumWorkers)
+			cityTime := time.Since(startTime)
+			log.Printf("Sponsors chunk %d: Retrieved city data for %d cities in %v", chunkNum, len(cityData), cityTime)
+
+			// Create city lookup map
+			cityLookup = make(map[int64]map[string]interface{})
+			if len(cityData) > 0 {
+				for _, city := range cityData {
+					if cityID, ok := city["id"].(int64); ok {
+						cityLookup[cityID] = city
+					}
+				}
+			}
+		}
+
 		var sponsorRecords []SponsorRecord
 		for _, sponsor := range batchData {
 			// Get company data for this sponsor
@@ -3261,6 +3338,17 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 				}
 			}
 
+			// Get city data for this sponsor
+			var companyCityName *string
+			if companyCity != nil {
+				if cityID, ok := companyCity.(int64); ok && cityLookup != nil {
+					if city, exists := cityLookup[cityID]; exists && city["name"] != nil {
+						nameStr := safeConvertToString(city["name"])
+						companyCityName = &nameStr
+					}
+				}
+			}
+
 			// Convert data to proper types
 			companyID := convertToUInt32Ptr(sponsor["company_id"])
 			editionID := convertToUInt32(sponsor["event_edition"])
@@ -3268,18 +3356,19 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 
 			// Create sponsor record with proper types
 			sponsorRecord := SponsorRecord{
-				CompanyID:      companyID,
-				CompanyIDName:  getCompanyNameOrDefault(sponsor["name"]),
-				EditionID:      editionID,
-				EventID:        eventID,
-				CompanyWebsite: convertToStringPtr(companyWebsite),
-				CompanyDomain:  convertToStringPtr(companyDomain),
-				CompanyCountry: toUpperNullableString(convertToStringPtr(companyCountry)),
-				CompanyCity:    convertToUInt32Ptr(companyCity),
-				FacebookID:     convertToStringPtr(facebookID),
-				LinkedinID:     convertToStringPtr(linkedinID),
-				TwitterID:      convertToStringPtr(twitterID),
-				Version:        1,
+				CompanyID:       companyID,
+				CompanyIDName:   getCompanyNameOrDefault(sponsor["name"]),
+				EditionID:       editionID,
+				EventID:         eventID,
+				CompanyWebsite:  convertToStringPtr(companyWebsite),
+				CompanyDomain:   convertToStringPtr(companyDomain),
+				CompanyCountry:  toUpperNullableString(convertToStringPtr(companyCountry)),
+				CompanyCity:     convertToUInt32Ptr(companyCity),
+				CompanyCityName: companyCityName,
+				FacebookID:      convertToStringPtr(facebookID),
+				LinkedinID:      convertToStringPtr(linkedinID),
+				TwitterID:       convertToStringPtr(twitterID),
+				Version:         1,
 			}
 
 			sponsorRecords = append(sponsorRecords, sponsorRecord)
@@ -3500,7 +3589,7 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_sponsors_ch (
 			company_id, company_id_name, edition_id, event_id, company_website,
-			company_domain, company_country, company_city, facebook_id,
+			company_domain, company_country, company_city, company_city_name, facebook_id,
 			linkedin_id, twitter_id, version
 		)
 	`)
@@ -3510,18 +3599,19 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 
 	for _, record := range sponsorRecords {
 		err := batch.Append(
-			record.CompanyID,      // company_id: Nullable(UInt32)
-			record.CompanyIDName,  // company_id_name: String NOT NULL
-			record.EditionID,      // edition_id: UInt32 NOT NULL
-			record.EventID,        // event_id: UInt32 NOT NULL
-			record.CompanyWebsite, // company_website: Nullable(String)
-			record.CompanyDomain,  // company_domain: Nullable(String)
-			record.CompanyCountry, // company_country: LowCardinality(FixedString(2))
-			record.CompanyCity,    // company_city: Nullable(UInt32)
-			record.FacebookID,     // facebook_id: Nullable(String)
-			record.LinkedinID,     // linkedin_id: Nullable(String)
-			record.TwitterID,      // twitter_id: Nullable(String)
-			record.Version,        // version: UInt32 NOT NULL DEFAULT 1
+			record.CompanyID,       // company_id: Nullable(UInt32)
+			record.CompanyIDName,   // company_id_name: String NOT NULL
+			record.EditionID,       // edition_id: UInt32 NOT NULL
+			record.EventID,         // event_id: UInt32 NOT NULL
+			record.CompanyWebsite,  // company_website: Nullable(String)
+			record.CompanyDomain,   // company_domain: Nullable(String)
+			record.CompanyCountry,  // company_country: LowCardinality(FixedString(2))
+			record.CompanyCity,     // company_city: Nullable(UInt32)
+			record.CompanyCityName, // company_city_name: LowCardinality(Nullable(String))
+			record.FacebookID,      // facebook_id: Nullable(String)
+			record.LinkedinID,      // linkedin_id: Nullable(String)
+			record.TwitterID,       // twitter_id: Nullable(String)
+			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)
@@ -3637,6 +3727,39 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			log.Printf("Visitors chunk %d: Retrieved user data for %d users in %v", chunkNum, len(userData), userTime)
 		}
 
+		// Collect city IDs from visitor data
+		var visitorCityIDs []int64
+		seenCityIDs := make(map[int64]bool)
+		for _, visitor := range batchData {
+			if cityID, ok := visitor["visitor_city"].(int64); ok && cityID > 0 {
+				if !seenCityIDs[cityID] {
+					visitorCityIDs = append(visitorCityIDs, cityID)
+					seenCityIDs[cityID] = true
+				}
+			}
+		}
+
+		// Fetch city data for visitor cities
+		var cityData []map[string]interface{}
+		var cityLookup map[int64]map[string]interface{}
+		if len(visitorCityIDs) > 0 {
+			log.Printf("Visitors chunk %d: Fetching city data for %d cities", chunkNum, len(visitorCityIDs))
+			startTime := time.Now()
+			cityData = fetchCityDataParallel(mysqlDB, visitorCityIDs, config.NumWorkers)
+			cityTime := time.Since(startTime)
+			log.Printf("Visitors chunk %d: Retrieved city data for %d cities in %v", chunkNum, len(cityData), cityTime)
+
+			// Create city lookup map
+			cityLookup = make(map[int64]map[string]interface{})
+			if len(cityData) > 0 {
+				for _, city := range cityData {
+					if cityID, ok := city["id"].(int64); ok {
+						cityLookup[cityID] = city
+					}
+				}
+			}
+		}
+
 		var visitorRecords []VisitorRecord
 		for _, visitor := range batchData {
 			// Get user data for this visitor
@@ -3645,6 +3768,15 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 				if user, exists := userData[userID]; exists {
 					userName = user["name"]
 					userCompany = user["user_company"] // Use user_company from user table
+				}
+			}
+
+			// Get city data for this visitor
+			var userCityName *string
+			if cityID, ok := visitor["visitor_city"].(int64); ok && cityLookup != nil {
+				if city, exists := cityLookup[cityID]; exists && city["name"] != nil {
+					nameStr := safeConvertToString(city["name"])
+					userCityName = &nameStr
 				}
 			}
 
@@ -3662,6 +3794,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 				UserCompany:     convertToStringPtr(userCompany),
 				UserDesignation: convertToStringPtr(visitor["visitor_designation"]),
 				UserCity:        convertToUInt32Ptr(visitor["visitor_city"]),
+				UserCityName:    userCityName,
 				UserCountry:     toUpperNullableString(convertToStringPtr(visitor["visitor_country"])),
 				Version:         1,
 			}
@@ -3884,7 +4017,7 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_visitors_ch (
 			user_id, event_id, edition_id, user_name, user_company,
-			user_designation, user_city, user_country, version
+			user_designation, user_city, user_city_name, user_country, version
 		)
 	`)
 	if err != nil {
@@ -3900,6 +4033,7 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 			record.UserCompany,     // user_company: Nullable(String)
 			record.UserDesignation, // user_designation: Nullable(String)
 			record.UserCity,        // user_city: Nullable(UInt32)
+			record.UserCityName,    // user_city_name: LowCardinality(Nullable(String))
 			record.UserCountry,     // user_country: LowCardinality(Nullable(FixedString(2)))
 			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
 		)
@@ -4072,6 +4206,39 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			log.Printf("Speakers chunk %d: Retrieved user data for %d users in %v", chunkNum, len(userData), userTime)
 		}
 
+		// Collect city IDs from speaker user data
+		var speakerCityIDs []int64
+		seenCityIDs := make(map[int64]bool)
+		for _, user := range userData {
+			if cityID, ok := user["city"].(int64); ok && cityID > 0 {
+				if !seenCityIDs[cityID] {
+					speakerCityIDs = append(speakerCityIDs, cityID)
+					seenCityIDs[cityID] = true
+				}
+			}
+		}
+
+		// Fetch city data for speaker cities
+		var cityData []map[string]interface{}
+		var cityLookup map[int64]map[string]interface{}
+		if len(speakerCityIDs) > 0 {
+			log.Printf("Speakers chunk %d: Fetching city data for %d cities", chunkNum, len(speakerCityIDs))
+			startTime := time.Now()
+			cityData = fetchCityDataParallel(mysqlDB, speakerCityIDs, config.NumWorkers)
+			cityTime := time.Since(startTime)
+			log.Printf("Speakers chunk %d: Retrieved city data for %d cities in %v", chunkNum, len(cityData), cityTime)
+
+			// Create city lookup map
+			cityLookup = make(map[int64]map[string]interface{})
+			if len(cityData) > 0 {
+				for _, city := range cityData {
+					if cityID, ok := city["id"].(int64); ok {
+						cityLookup[cityID] = city
+					}
+				}
+			}
+		}
+
 		var speakerRecords []SpeakerRecord
 		for _, speaker := range batchData {
 			// Get user data for this speaker
@@ -4083,6 +4250,17 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 					userDesignation = user["designation"]
 					userCity = user["city"]
 					userCountry = strings.ToUpper(safeConvertToString(user["country"]))
+				}
+			}
+
+			// Get city data for this speaker
+			var userCityName *string
+			if userCity != nil {
+				if cityID, ok := userCity.(int64); ok && cityLookup != nil {
+					if city, exists := cityLookup[cityID]; exists && city["name"] != nil {
+						nameStr := safeConvertToString(city["name"])
+						userCityName = &nameStr
+					}
 				}
 			}
 
@@ -4098,6 +4276,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 				UserCompany:     convertToStringPtr(userCompany),
 				UserDesignation: convertToStringPtr(userDesignation),
 				UserCity:        convertToUInt32Ptr(userCity),
+				UserCityName:    userCityName,
 				UserCountry:     toUpperNullableString(convertToStringPtr(userCountry)),
 				Version:         1,
 			}
@@ -4453,7 +4632,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_speaker_ch (
 			user_id, event_id, edition_id, user_name, user_company,
-			user_designation, user_city, user_country, version
+			user_designation, user_city, user_city_name, user_country, version
 		)
 	`)
 	if err != nil {
@@ -4469,6 +4648,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 			record.UserCompany,     // user_company: Nullable(String)
 			record.UserDesignation, // user_designation: Nullable(String)
 			record.UserCity,        // user_city: Nullable(UInt32)
+			record.UserCityName,    // user_city_name: LowCardinality(Nullable(String))
 			record.UserCountry,     // user_country: LowCardinality(Nullable(FixedString(2)))
 			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
 		)
@@ -4568,18 +4748,19 @@ func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTyp
 
 // represents a sponsor record for ClickHouse insertion
 type SponsorRecord struct {
-	CompanyID      *uint32 `ch:"company_id"`
-	CompanyIDName  string  `ch:"company_id_name"`
-	EditionID      uint32  `ch:"edition_id"`
-	EventID        uint32  `ch:"event_id"`
-	CompanyWebsite *string `ch:"company_website"`
-	CompanyDomain  *string `ch:"company_domain"`
-	CompanyCountry *string `ch:"company_country"`
-	CompanyCity    *uint32 `ch:"company_city"`
-	FacebookID     *string `ch:"facebook_id"`
-	LinkedinID     *string `ch:"linkedin_id"`
-	TwitterID      *string `ch:"twitter_id"`
-	Version        uint32  `ch:"version"`
+	CompanyID       *uint32 `ch:"company_id"`
+	CompanyIDName   string  `ch:"company_id_name"`
+	EditionID       uint32  `ch:"edition_id"`
+	EventID         uint32  `ch:"event_id"`
+	CompanyWebsite  *string `ch:"company_website"`
+	CompanyDomain   *string `ch:"company_domain"`
+	CompanyCountry  *string `ch:"company_country"`
+	CompanyCity     *uint32 `ch:"company_city"`
+	CompanyCityName *string `ch:"company_city_name"`
+	FacebookID      *string `ch:"facebook_id"`
+	LinkedinID      *string `ch:"linkedin_id"`
+	TwitterID       *string `ch:"twitter_id"`
+	Version         uint32  `ch:"version"`
 }
 
 // SpeakerRecord represents a speaker record for ClickHouse insertion
@@ -4591,24 +4772,26 @@ type SpeakerRecord struct {
 	UserCompany     *string `ch:"user_company"`
 	UserDesignation *string `ch:"user_designation"`
 	UserCity        *uint32 `ch:"user_city"`
+	UserCityName    *string `ch:"user_city_name"`
 	UserCountry     *string `ch:"user_country"`
 	Version         uint32  `ch:"version"`
 }
 
 // ExhibitorRecord represents an exhibitor record for ClickHouse insertion
 type ExhibitorRecord struct {
-	CompanyID      *uint32 `ch:"company_id"`
-	CompanyIDName  string  `ch:"company_id_name"`
-	EditionID      uint32  `ch:"edition_id"`
-	EventID        uint32  `ch:"event_id"`
-	CompanyWebsite *string `ch:"company_website"`
-	CompanyDomain  *string `ch:"company_domain"`
-	CompanyCountry *string `ch:"company_country"`
-	CompanyCity    *uint32 `ch:"company_city"`
-	FacebookID     *string `ch:"facebook_id"`
-	LinkedinID     *string `ch:"linkedin_id"`
-	TwitterID      *string `ch:"twitter_id"`
-	Version        uint32  `ch:"version"`
+	CompanyID       *uint32 `ch:"company_id"`
+	CompanyIDName   string  `ch:"company_id_name"`
+	EditionID       uint32  `ch:"edition_id"`
+	EventID         uint32  `ch:"event_id"`
+	CompanyWebsite  *string `ch:"company_website"`
+	CompanyDomain   *string `ch:"company_domain"`
+	CompanyCountry  *string `ch:"company_country"`
+	CompanyCity     *uint32 `ch:"company_city"`
+	CompanyCityName *string `ch:"company_city_name"`
+	FacebookID      *string `ch:"facebook_id"`
+	LinkedinID      *string `ch:"linkedin_id"`
+	TwitterID       *string `ch:"twitter_id"`
+	Version         uint32  `ch:"version"`
 }
 
 // VisitorRecord represents a visitor record for ClickHouse insertion
@@ -4620,6 +4803,7 @@ type VisitorRecord struct {
 	UserCompany     *string `ch:"user_company"`
 	UserDesignation *string `ch:"user_designation"`
 	UserCity        *uint32 `ch:"user_city"`
+	UserCityName    *string `ch:"user_city_name"`
 	UserCountry     *string `ch:"user_country"`
 	Version         uint32  `ch:"version"`
 }
