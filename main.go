@@ -128,6 +128,9 @@ func safeConvertToNullableString(value interface{}) *string {
 	if str, ok := value.(string); ok {
 		return &str
 	}
+	if strPtr, ok := value.(*string); ok {
+		return strPtr
+	}
 	if bytes, ok := value.([]uint8); ok {
 		str := string(bytes)
 		return &str
@@ -1941,7 +1944,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 									val := uint32(0)
 									return &val
 								}(),
-								"maturity":                nil, // Not available from current data sources
+								"maturity":                determineMaturity(esInfoMap["total_edition"]),
 								"event_pricing":           esInfoMap["event_pricing"],
 								"event_logo":              esInfoMap["event_logo"],
 								"event_estimatedVisitors": nil, // Not available from current data sources
@@ -1955,6 +1958,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 							} else {
 								record["edition_type"] = "NA"
 							}
+
 							clickHouseRecords = append(clickHouseRecords, record)
 
 							// Track completeness for reporting (simplified)
@@ -2078,6 +2082,56 @@ func determineEditionType(editionStartDate, currentEditionStartDate interface{},
 		editionType := "past_edition"
 		return &editionType
 	}
+}
+
+// determineMaturity determines the maturity level based on total_edition count
+// new: 1 edition, growing: 2-3 editions, established: 4-8 editions, flagship: 9+ editions
+func determineMaturity(totalEdition interface{}) *string {
+	if totalEdition == nil {
+		return nil
+	}
+
+	var editionCount uint32
+	switch v := totalEdition.(type) {
+	case uint32:
+		editionCount = v
+	case int:
+		if v >= 0 {
+			editionCount = uint32(v)
+		} else {
+			return nil
+		}
+	case int64:
+		if v >= 0 {
+			editionCount = uint32(v)
+		} else {
+			return nil
+		}
+	case float64:
+		if v >= 0 && v == float64(uint32(v)) {
+			editionCount = uint32(v)
+		} else {
+			return nil
+		}
+	default:
+		return nil
+	}
+
+	var maturity string
+	switch {
+	case editionCount == 1:
+		maturity = "new"
+	case editionCount >= 2 && editionCount <= 3:
+		maturity = "growing"
+	case editionCount >= 4 && editionCount <= 8:
+		maturity = "established"
+	case editionCount >= 9:
+		maturity = "flagship"
+	default:
+		return nil
+	}
+
+	return &maturity
 }
 
 func extractCityIDs(editionData []map[string]interface{}) []int64 {
@@ -2298,13 +2352,13 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			},
 		},
 		"size":    len(eventIDs),
-		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing"},
+		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition"},
 	}
 
 	queryJSON, _ := json.Marshal(query)
 
 	// Execute search with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	searchRes, err := esClient.Search(
@@ -2401,6 +2455,22 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			return nil // Return nil instead of 0 for failed conversions
 		}
 
+		// Convert total_edition properly - it comes as float64 from ES, not string
+		var convertedTotalEdition interface{}
+		if rawTotalEdition := source["total_edition"]; rawTotalEdition != nil {
+			if floatVal, ok := rawTotalEdition.(float64); ok {
+				if floatVal >= 0 && floatVal == float64(uint32(floatVal)) {
+					convertedTotalEdition = uint32(floatVal)
+				} else {
+					convertedTotalEdition = nil
+				}
+			} else {
+				convertedTotalEdition = nil
+			}
+		} else {
+			convertedTotalEdition = nil
+		}
+
 		results[eventIDInt] = map[string]interface{}{
 			"event_description":  convertToString(source["description"]),
 			"event_exhibitors":   convertStringToUInt32("exhibitors"),
@@ -2416,6 +2486,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			"event_hybrid":       convertStringToUInt8("hybrid"),
 			"event_logo":         convertToString(source["logo"]),
 			"event_pricing":      convertToString(source["pricing"]),
+			"total_edition":      convertedTotalEdition,
 		}
 	}
 
@@ -2428,11 +2499,11 @@ func fetchElasticsearchDataForEvents(esClient *elasticsearch.Client, indexName s
 	}
 
 	results := make(map[int64]map[string]interface{})
-	batchSize := 1000 //increase batch size for fetching
+	batchSize := 200 //reduced batch size to prevent Elasticsearch timeouts
 
 	expectedBatches := (len(eventIDs) + batchSize - 1) / batchSize
 	resultsChan := make(chan map[int64]map[string]interface{}, expectedBatches)
-	semaphore := make(chan struct{}, 15)
+	semaphore := make(chan struct{}, 5) //reduced concurrency to prevent Elasticsearch overload
 
 	var allResults []map[int64]map[string]interface{}
 	var wg sync.WaitGroup
@@ -2453,16 +2524,26 @@ func fetchElasticsearchDataForEvents(esClient *elasticsearch.Client, indexName s
 				wg.Done()
 			}()
 
+			// Add small delay between batches to reduce Elasticsearch pressure
+			if batchNum > 0 {
+				time.Sleep(100 * time.Millisecond)
+			}
+
 			// Add retry logic for failed batches
 			var batchResults map[int64]map[string]interface{}
-			maxRetries := 2
+			maxRetries := 3 //increased retries
 			for retry := 0; retry <= maxRetries; retry++ {
 				batchResults = fetchElasticsearchBatch(esClient, indexName, eventIDBatch)
 				if len(batchResults) > 0 || retry == maxRetries {
+					if retry > 0 {
+						log.Printf("Elasticsearch batch %d: Success after %d retries, got %d results", batchNum, retry, len(batchResults))
+					}
 					break
 				}
 				if retry < maxRetries {
-					time.Sleep(time.Duration(retry+1) * 2 * time.Second) // Exponential backoff
+					backoffTime := time.Duration(retry+1) * 3 * time.Second // Increased backoff time
+					log.Printf("Elasticsearch batch %d: Retry %d/%d after %v backoff", batchNum, retry+1, maxRetries, backoffTime)
+					time.Sleep(backoffTime)
 				}
 			}
 			resultsChan <- batchResults
