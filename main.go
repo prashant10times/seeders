@@ -631,27 +631,32 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 			}
 			return nil
 		}(),
-		VenueLat:               safeConvertToNullableFloat64(record["venue_lat"]),
-		VenueLong:              safeConvertToNullableFloat64(record["venue_long"]),
-		Published:              safeConvertToInt8(record["published"]),
-		Status:                 safeConvertToStatusString(record["status"]),
-		EditionsAudianceType:   safeConvertToUInt16(record["editions_audiance_type"]),
-		EditionFunctionality:   safeConvertToString(record["edition_functionality"]),
-		EditionWebsite:         safeConvertToNullableString(record["edition_website"]),
-		EditionDomain:          safeConvertToNullableString(record["edition_domain"]),
-		EditionType:            safeConvertEditionType(record["edition_type"]),
-		EventFollowers:         safeConvertToNullableUInt32(record["event_followers"]),
-		EditionFollowers:       safeConvertToNullableUInt32(record["edition_followers"]),
-		EventExhibitor:         safeConvertToNullableUInt32(record["event_exhibitor"]),
-		EditionExhibitor:       safeConvertToNullableUInt32(record["edition_exhibitor"]),
-		EventSponsor:           safeConvertToNullableUInt32(record["event_sponsor"]),
-		EditionSponsor:         safeConvertToNullableUInt32(record["edition_sponsor"]),
-		EventSpeaker:           safeConvertToNullableUInt32(record["event_speaker"]),
-		EditionSpeaker:         safeConvertToNullableUInt32(record["edition_speaker"]),
-		EventCreated:           safeConvertToDateTimeString(record["event_created"]),
-		EditionCreated:         safeConvertToDateTimeString(record["edition_created"]),
-		EventHybrid:            safeConvertToNullableUInt8(record["event_hybrid"]),
-		IsBranded:              safeConvertToNullableUInt32(record["isBranded"]),
+		VenueLat:             safeConvertToNullableFloat64(record["venue_lat"]),
+		VenueLong:            safeConvertToNullableFloat64(record["venue_long"]),
+		Published:            safeConvertToInt8(record["published"]),
+		Status:               safeConvertToStatusString(record["status"]),
+		EditionsAudianceType: safeConvertToUInt16(record["editions_audiance_type"]),
+		EditionFunctionality: safeConvertToString(record["edition_functionality"]),
+		EditionWebsite:       safeConvertToNullableString(record["edition_website"]),
+		EditionDomain:        safeConvertToNullableString(record["edition_domain"]),
+		EditionType:          safeConvertEditionType(record["edition_type"]),
+		EventFollowers:       safeConvertToNullableUInt32(record["event_followers"]),
+		EditionFollowers:     safeConvertToNullableUInt32(record["edition_followers"]),
+		EventExhibitor:       safeConvertToNullableUInt32(record["event_exhibitor"]),
+		EditionExhibitor:     safeConvertToNullableUInt32(record["edition_exhibitor"]),
+		EventSponsor:         safeConvertToNullableUInt32(record["event_sponsor"]),
+		EditionSponsor:       safeConvertToNullableUInt32(record["edition_sponsor"]),
+		EventSpeaker:         safeConvertToNullableUInt32(record["event_speaker"]),
+		EditionSpeaker:       safeConvertToNullableUInt32(record["edition_speaker"]),
+		EventCreated:         safeConvertToDateTimeString(record["event_created"]),
+		EditionCreated:       safeConvertToDateTimeString(record["edition_created"]),
+		EventHybrid:          safeConvertToNullableUInt8(record["event_hybrid"]),
+		IsBranded: func() *uint32 {
+			if val, ok := record["isBranded"].(*uint32); ok {
+				return val
+			}
+			return nil
+		}(),
 		Maturity:               safeConvertToNullableString(record["maturity"]),
 		EventPricing:           safeConvertToNullableString(record["event_pricing"]),
 		EventLogo:              safeConvertToNullableString(record["event_logo"]),
@@ -966,7 +971,7 @@ func getTotalRecordsAndIDRange(db *sql.DB, table string) (int, int, int, error) 
 }
 
 func buildMigrationData(db *sql.DB, table string, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
-	query := fmt.Sprintf("SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, country, published, status, event_audience, functionality, created FROM %s WHERE id >= %d AND id <= %d ORDER BY id LIMIT %d", table, startID, endID, batchSize)
+	query := fmt.Sprintf("SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, country, published, status, event_audience, functionality, brand_id, created FROM %s WHERE id >= %d AND id <= %d ORDER BY id LIMIT %d", table, startID, endID, batchSize)
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -1907,26 +1912,35 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 									}
 									return nil
 								}(),
-								"venue_lat":               venue["venue_lat"],
-								"venue_long":              venue["venue_long"],
-								"published":               eventData["published"],
-								"status":                  eventData["status"],
-								"editions_audiance_type":  eventData["event_audience"],
-								"edition_functionality":   eventData["functionality"],
-								"edition_website":         edition["edition_website"],
-								"edition_domain":          editionDomain,
-								"event_followers":         esInfoMap["event_following"],
-								"edition_followers":       esInfoMap["event_following"],
-								"event_exhibitor":         esInfoMap["event_exhibitors"],
-								"edition_exhibitor":       esInfoMap["edition_exhibitor"],
-								"event_sponsor":           esInfoMap["event_totalSponsor"],
-								"edition_sponsor":         esInfoMap["edition_sponsor"],
-								"event_speaker":           esInfoMap["event_speakers"],
-								"edition_speaker":         esInfoMap["edition_speaker"],
-								"event_created":           eventData["created"],
-								"edition_created":         edition["edition_created"],
-								"event_hybrid":            esInfoMap["event_hybrid"],
-								"isBranded":               nil, // Not available from current data sources
+								"venue_lat":              venue["venue_lat"],
+								"venue_long":             venue["venue_long"],
+								"published":              eventData["published"],
+								"status":                 eventData["status"],
+								"editions_audiance_type": eventData["event_audience"],
+								"edition_functionality":  eventData["functionality"],
+								"edition_website":        edition["edition_website"],
+								"edition_domain":         editionDomain,
+								"event_followers":        esInfoMap["event_following"],
+								"edition_followers":      esInfoMap["event_following"],
+								"event_exhibitor":        esInfoMap["event_exhibitors"],
+								"edition_exhibitor":      esInfoMap["edition_exhibitor"],
+								"event_sponsor":          esInfoMap["event_totalSponsor"],
+								"edition_sponsor":        esInfoMap["edition_sponsor"],
+								"event_speaker":          esInfoMap["event_speakers"],
+								"edition_speaker":        esInfoMap["edition_speaker"],
+								"event_created":          eventData["created"],
+								"edition_created":        edition["edition_created"],
+								"event_hybrid":           esInfoMap["event_hybrid"],
+								"isBranded": func() *uint32 {
+									if eventData["brand_id"] != nil {
+										// If brand_id exists, set isBranded to 1 (true)
+										val := uint32(1)
+										return &val
+									}
+									// If brand_id is null, set isBranded to 0 (false)
+									val := uint32(0)
+									return &val
+								}(),
 								"maturity":                nil, // Not available from current data sources
 								"event_pricing":           esInfoMap["event_pricing"],
 								"event_logo":              esInfoMap["event_logo"],
