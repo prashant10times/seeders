@@ -365,6 +365,70 @@ func convertToUInt32(value interface{}) uint32 {
 	}
 }
 
+// converts a value to uint8
+func convertToUInt8(value interface{}) uint8 {
+	if value == nil {
+		return 0
+	}
+
+	switch v := value.(type) {
+	case uint8:
+		return v
+	case uint16:
+		if v > 255 {
+			return 0
+		}
+		return uint8(v)
+	case uint32:
+		if v > 255 {
+			return 0
+		}
+		return uint8(v)
+	case uint64:
+		if v > 255 {
+			return 0
+		}
+		return uint8(v)
+	case int8:
+		if v < 0 {
+			return 0
+		}
+		return uint8(v)
+	case int16:
+		if v < 0 || v > 255 {
+			return 0
+		}
+		return uint8(v)
+	case int32:
+		if v < 0 || v > 255 {
+			return 0
+		}
+		return uint8(v)
+	case int64:
+		if v < 0 || v > 255 {
+			return 0
+		}
+		return uint8(v)
+	case int:
+		if v < 0 || v > 255 {
+			return 0
+		}
+		return uint8(v)
+	case float64:
+		if v < 0 || v > 255 {
+			return 0
+		}
+		return uint8(v)
+	case string:
+		if i, err := strconv.ParseUint(v, 10, 8); err == nil {
+			return uint8(i)
+		}
+		return 0
+	default:
+		return 0
+	}
+}
+
 func extractDomainFromWebsite(website interface{}) string {
 	if website == nil {
 		return ""
@@ -534,61 +598,6 @@ func convertToInt8(value interface{}) int8 {
 	case string:
 		if i, err := strconv.ParseInt(v, 10, 8); err == nil {
 			return int8(i)
-		}
-		return 0
-	default:
-		return 0
-	}
-}
-
-func convertToUInt16(value interface{}) uint16 {
-	if value == nil {
-		return 0
-	}
-
-	switch v := value.(type) {
-	case uint16:
-		return v
-	case uint32:
-		if v > 65535 {
-			return 0
-		}
-		return uint16(v)
-	case uint64:
-		if v > 65535 {
-			return 0
-		}
-		return uint16(v)
-	case int64:
-		if v < 0 || v > 65535 {
-			return 0
-		}
-		return uint16(v)
-	case int32:
-		if v < 0 {
-			return 0
-		}
-		return uint16(v)
-	case int:
-		if v < 0 || v > 65535 {
-			return 0
-		}
-		return uint16(v)
-	case uint8:
-		return uint16(v)
-	case int8:
-		if v < 0 {
-			return 0
-		}
-		return uint16(v)
-	case float64:
-		if v < 0 || v > 65535 {
-			return 0
-		}
-		return uint16(v)
-	case string:
-		if i, err := strconv.ParseUint(v, 10, 16); err == nil {
-			return uint16(i)
 		}
 		return 0
 	default:
@@ -4108,12 +4117,12 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 func processEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
 	log.Println("=== Starting EVENTTYPE_EVENT_CH ONLY Processing ===")
 
-	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "eventtype_event")
+	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_type_event")
 	if err != nil {
-		log.Fatal("Failed to get total records and ID range from eventtype_event:", err)
+		log.Fatal("Failed to get total records and ID range from event_type_event:", err)
 	}
 
-	log.Printf("Total eventtype_event records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
+	log.Printf("Total event_type_event records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
 
 	if config.NumChunks <= 0 {
 		config.NumChunks = 5 // Default to 5 chunks if not specified
@@ -4357,7 +4366,7 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 				Published:     convertToInt8(record["published"]),
 				Name:          convertToString(record["name"]),
 				URL:           convertToString(record["url"]),
-				EventAudience: convertToUInt16(record["event_audience"]),
+				EventAudience: safeConvertToUInt16(record["event_audience"]),
 				Version:       1,
 			}
 
@@ -4385,14 +4394,16 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 			}
 		}
 
-		// Get the last ID from this batch for next iteration
+		// Update startID for next batch within this chunk (following the same pattern as other working tables)
 		if len(batchData) > 0 {
-			lastID := batchData[len(batchData)-1]["eventtype_id"]
-			if lastID != nil {
-				// Update startID for next batch within this chunk
-				if id, ok := lastID.(int64); ok {
-					startID = int(id) + 1
-				}
+			// Get the last record's ID from the batch and increment it for the next batch
+			lastRecord := batchData[len(batchData)-1]
+			if lastID, ok := lastRecord["id"].(int64); ok {
+				startID = int(lastID) + 1
+			} else if lastID, ok := lastRecord["id"].(int32); ok {
+				startID = int(lastID) + 1
+			} else if lastID, ok := lastRecord["id"].(int); ok {
+				startID = lastID + 1
 			}
 		}
 
@@ -4455,13 +4466,14 @@ func buildSpeakersMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 func buildEventTypeEventChMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
+			ee.id,
 			ee.eventtype_id,
 			ee.event_id,
 			ee.published,
 			et.name,
 			et.url,
 			et.event_audience
-		FROM eventtype_event ee
+		FROM event_type_event ee
 		INNER JOIN event_type et ON ee.eventtype_id = et.id
 		WHERE ee.id >= %d AND ee.id <= %d 
 		ORDER BY ee.id 
@@ -4503,6 +4515,293 @@ func buildEventTypeEventChMigrationData(db *sql.DB, startID, endID int, batchSiz
 	}
 
 	return results, nil
+}
+
+// Event Category Event Ch Processing Functions
+
+func processEventCategoryEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
+	log.Println("=== Starting event_category_ch ONLY Processing ===")
+
+	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_category")
+	if err != nil {
+		log.Fatal("Failed to get total records and ID range from event_category:", err)
+	}
+
+	log.Printf("Total event_category records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
+
+	if config.NumChunks <= 0 {
+		config.NumChunks = 5 // Default to 5 chunks if not specified
+	}
+
+	chunkSize := (maxID - minID + 1) / config.NumChunks
+	if chunkSize == 0 {
+		chunkSize = 1
+	}
+
+	log.Printf("Processing event_category_ch data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
+
+	results := make(chan string, config.NumChunks)
+	semaphore := make(chan struct{}, config.NumWorkers)
+
+	for i := 0; i < config.NumChunks; i++ {
+		startID := minID + (i * chunkSize)
+		endID := startID + chunkSize - 1
+		if i == config.NumChunks-1 {
+			endID = maxID // Last chunk gets remaining records
+		}
+
+		// delay between chunk launches to reduce ClickHouse load
+		if i > 0 {
+			delay := 3 * time.Second
+			log.Printf("Waiting %v before launching event_category_ch chunk %d...", delay, i+1)
+			time.Sleep(delay)
+		}
+
+		semaphore <- struct{}{}
+		go func(chunkNum, start, end int) {
+			defer func() { <-semaphore }()
+			processEventCategoryEventChChunk(mysqlDB, clickhouseConn, config, start, end, chunkNum, results)
+		}(i+1, startID, endID)
+	}
+
+	for i := 0; i < config.NumChunks; i++ {
+		result := <-results
+		log.Printf("EventCategoryEventCh Result: %s", result)
+	}
+
+	log.Println("EventCategoryEventCh processing completed!")
+}
+
+// processes a single chunk of event_category_ch data
+func processEventCategoryEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config, startID, endID int, chunkNum int, results chan<- string) {
+	log.Printf("Processing event_category_ch chunk %d: ID range %d-%d", chunkNum, startID, endID)
+
+	totalRecords := endID - startID + 1
+	processed := 0
+
+	// Use batching within the chunk
+	offset := 0
+	for {
+		batchData, err := buildEventCategoryEventChMigrationData(mysqlDB, startID, endID, config.BatchSize)
+		if err != nil {
+			results <- fmt.Sprintf("EventCategoryEventCh chunk %d batch error: %v", chunkNum, err)
+			return
+		}
+
+		if len(batchData) == 0 {
+			break
+		}
+
+		processed += len(batchData)
+		progress := float64(processed) / float64(totalRecords) * 100
+		log.Printf("EventCategoryEventCh chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
+
+		var eventCategoryEventChRecords []EventCategoryEventChRecord
+		for _, record := range batchData {
+			eventCategoryEventChRecord := EventCategoryEventChRecord{
+				Category:  convertToUInt32(record["category"]),
+				Event:     convertToUInt32(record["event"]),
+				Name:      convertToString(record["name"]),
+				URL:       convertToString(record["url"]),
+				Published: convertToInt8(record["published"]),
+				ShortName: convertToString(record["short_name"]),
+				IsGroup:   convertToUInt8(record["is_group"]),
+				Version:   1,
+			}
+
+			eventCategoryEventChRecords = append(eventCategoryEventChRecords, eventCategoryEventChRecord)
+		}
+
+		// Insert event_category_ch data into ClickHouse
+		if len(eventCategoryEventChRecords) > 0 {
+			log.Printf("EventCategoryEventCh chunk %d: Attempting to insert %d records into event_category_ch...", chunkNum, len(eventCategoryEventChRecords))
+
+			insertErr := retryWithBackoff(
+				func() error {
+					return insertEventCategoryEventChDataIntoClickHouse(clickhouseConn, eventCategoryEventChRecords, config.ClickHouseWorkers)
+				},
+				3,
+				fmt.Sprintf("event_category_ch insertion for chunk %d", chunkNum),
+			)
+
+			if insertErr != nil {
+				log.Printf("EventCategoryEventCh chunk %d: Insertion failed after retries: %v", chunkNum, insertErr)
+				results <- fmt.Sprintf("EventCategoryEventCh chunk %d: Failed to insert %d records", chunkNum, len(eventCategoryEventChRecords))
+				return
+			} else {
+				log.Printf("EventCategoryEventCh chunk %d: Successfully inserted %d records into event_category_ch", chunkNum, len(eventCategoryEventChRecords))
+			}
+		}
+
+		// Update startID for next batch within this chunk (following the same pattern as other working tables)
+		if len(batchData) > 0 {
+			// Get the last record's ID from the batch and increment it for the next batch
+			lastRecord := batchData[len(batchData)-1]
+			if lastID, ok := lastRecord["id"].(int64); ok {
+				startID = int(lastID) + 1
+			} else if lastID, ok := lastRecord["id"].(int32); ok {
+				startID = int(lastID) + 1
+			} else if lastID, ok := lastRecord["id"].(int); ok {
+				startID = lastID + 1
+			}
+		}
+
+		offset += len(batchData)
+		if len(batchData) < config.BatchSize {
+			break
+		}
+	}
+
+	results <- fmt.Sprintf("EventCategoryEventCh chunk %d: Completed successfully", chunkNum)
+}
+
+func buildEventCategoryEventChMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
+	query := fmt.Sprintf(`
+		SELECT 
+			ec.id,
+			ec.category,
+			ec.event,
+			c.published,
+			c.name,
+			c.url,
+			c.short_name,
+			c.is_group
+		FROM event_category ec
+		INNER JOIN category c ON ec.category = c.id
+		WHERE ec.id >= %d AND ec.id <= %d 
+		ORDER BY ec.id 
+		LIMIT %d`, startID, endID, batchSize)
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, err
+		}
+
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			val := values[i]
+			if val == nil {
+				row[col] = nil
+			} else {
+				row[col] = val
+			}
+		}
+		results = append(results, row)
+	}
+
+	return results, nil
+}
+
+func insertEventCategoryEventChDataIntoClickHouse(clickhouseConn driver.Conn, eventCategoryEventChRecords []EventCategoryEventChRecord, numWorkers int) error {
+	if len(eventCategoryEventChRecords) == 0 {
+		return nil
+	}
+
+	if numWorkers <= 1 {
+		return insertEventCategoryEventChDataSingleWorker(clickhouseConn, eventCategoryEventChRecords)
+	}
+
+	// Split records into batches for parallel processing
+	batchSize := len(eventCategoryEventChRecords) / numWorkers
+	if batchSize == 0 {
+		batchSize = 1
+	}
+
+	results := make(chan error, numWorkers)
+	semaphore := make(chan struct{}, numWorkers)
+
+	for i := 0; i < numWorkers; i++ {
+		start := i * batchSize
+		end := start + batchSize
+		if i == numWorkers-1 {
+			end = len(eventCategoryEventChRecords) // Last worker gets remaining records
+		}
+
+		if start >= len(eventCategoryEventChRecords) {
+			break
+		}
+
+		semaphore <- struct{}{}
+		go func(start, end int) {
+			defer func() { <-semaphore }()
+			batch := eventCategoryEventChRecords[start:end]
+			err := insertEventCategoryEventChDataSingleWorker(clickhouseConn, batch)
+			results <- err
+		}(start, end)
+	}
+
+	// Wait for all workers to complete
+	for i := 0; i < numWorkers; i++ {
+		if err := <-results; err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func insertEventCategoryEventChDataSingleWorker(clickhouseConn driver.Conn, eventCategoryEventChRecords []EventCategoryEventChRecord) error {
+	if len(eventCategoryEventChRecords) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	batch, err := clickhouseConn.PrepareBatch(ctx, `
+		INSERT INTO event_category_ch (
+			category, event, name, url, published, short_name, is_group, version
+		)
+	`)
+	if err != nil {
+		log.Printf("ERROR: Failed to prepare ClickHouse batch for event_category_ch: %v", err)
+		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
+	}
+
+	for _, record := range eventCategoryEventChRecords {
+		err := batch.Append(
+			record.Category,  // category: UInt32
+			record.Event,     // event: UInt32
+			record.Name,      // name: LowCardinality(String)
+			record.URL,       // url: String
+			record.Published, // published: Int8
+			record.ShortName, // short_name: String
+			record.IsGroup,   // is_group: UInt8
+			record.Version,   // version: UInt32 DEFAULT 1
+		)
+		if err != nil {
+			log.Printf("ERROR: Failed to append record to batch: %v", err)
+			log.Printf("Record data: Category=%d, Event=%d, Name=%s, URL=%s, Published=%d, ShortName=%s, IsGroup=%d, Version=%d",
+				record.Category, record.Event, record.Name, record.URL, record.Published, record.ShortName, record.IsGroup, record.Version)
+			return fmt.Errorf("failed to append record to batch: %v", err)
+		}
+	}
+
+	if err := batch.Send(); err != nil {
+		log.Printf("ERROR: Failed to send ClickHouse batch: %v", err)
+		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
+	}
+
+	log.Printf("OK: Successfully inserted %d event_category_ch records", len(eventCategoryEventChRecords))
+	return nil
 }
 
 func fetchSpeakersUserData(db *sql.DB, userIDs []int64) map[int64]map[string]interface{} {
@@ -4874,6 +5173,17 @@ type EventTypeEventChRecord struct {
 	Version       uint32 `ch:"version"`
 }
 
+type EventCategoryEventChRecord struct {
+	Category  uint32 `ch:"category"`   // UInt32
+	Event     uint32 `ch:"event"`      // UInt32
+	Name      string `ch:"name"`       // LowCardinality(String)
+	URL       string `ch:"url"`        // String
+	Published int8   `ch:"published"`  // Int8
+	ShortName string `ch:"short_name"` // String
+	IsGroup   uint8  `ch:"is_group"`   // UInt8
+	Version   uint32 `ch:"version"`    // UInt32
+}
+
 func main() {
 	var numChunks int
 	var batchSize int
@@ -4887,6 +5197,7 @@ func main() {
 	var speakersOnly bool
 	var eventEditionOnly bool
 	var eventTypeEventChOnly bool
+	var eventCategoryEventChOnly bool
 
 	flag.IntVar(&numChunks, "chunks", 5, "Number of chunks to process data in (default: 5)")
 	flag.IntVar(&batchSize, "batch", 5000, "MySQL batch size for fetching data (default: 5000)")
@@ -4899,6 +5210,7 @@ func main() {
 	flag.BoolVar(&speakersOnly, "speakers", false, "Process only speakers data (default: false)")
 	flag.BoolVar(&eventEditionOnly, "event-edition", false, "Process only event edition data (default: false)")
 	flag.BoolVar(&eventTypeEventChOnly, "eventtype", false, "Process only eventtype data (default: false)")
+	flag.BoolVar(&eventCategoryEventChOnly, "eventcategory", false, "Process only eventcategory data (default: false)")
 
 	flag.BoolVar(&showHelp, "help", false, "Show help information")
 	flag.Parse()
@@ -4912,7 +5224,8 @@ func main() {
 		log.Println("  -exhibitors       # Process exhibitors data")
 		log.Println("  -visitors         # Process visitors data")
 		log.Println("  -speakers         # Process speakers data")
-		log.Println("  -eventtype # Process eventtype data")
+		log.Println("  -eventtype        # Process eventtype data")
+		log.Println("  -eventcategory    # Process eventcategory data")
 		log.Println("\nOptions:")
 		log.Println("  -chunks int")
 		log.Println("        Number of chunks to process data in (default: 5)")
@@ -5016,6 +5329,8 @@ func main() {
 		log.Printf("Mode: EVENT EDITION ONLY")
 	} else if eventTypeEventChOnly {
 		log.Printf("Mode: EVENT TYPE ONLY")
+	} else if eventCategoryEventChOnly {
+		log.Printf("Mode: EVENT CATEGORY ONLY")
 	}
 
 	if sponsorsOnly {
@@ -5028,6 +5343,8 @@ func main() {
 		log.Printf("Elasticsearch: Skipped (not needed for exhibitors)")
 	} else if eventTypeEventChOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for event Type)")
+	} else if eventCategoryEventChOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for event Category)")
 	}
 	log.Printf("==============================\n")
 
@@ -5059,6 +5376,8 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for exhibitors processing)")
 		} else if eventTypeEventChOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for eventtype_event_ch processing)")
+		} else if eventCategoryEventChOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_category_ch processing)")
 		}
 	}
 
@@ -5074,6 +5393,8 @@ func main() {
 		processEventEditionOnly(mysqlDB, clickhouseDB, esClient, config)
 	} else if eventTypeEventChOnly {
 		processEventTypeEventChOnly(mysqlDB, clickhouseDB, config)
+	} else if eventCategoryEventChOnly {
+		processEventCategoryEventChOnly(mysqlDB, clickhouseDB, config)
 	} else {
 		log.Println("Error: No specific table mode selected!")
 		log.Println("Please specify one of the following modes:")
@@ -5083,6 +5404,7 @@ func main() {
 		log.Println("  -visitors         # Process visitors data")
 		log.Println("  -speakers         # Process speakers data")
 		log.Println("  -eventtype        # Process eventtype data")
+		log.Println("  -eventcategory    # Process eventcategory data")
 		log.Println("")
 		log.Println("Example: go run main.go -event-edition -chunks=10 -workers=20")
 		os.Exit(1)
