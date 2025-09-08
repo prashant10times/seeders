@@ -1986,7 +1986,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"maturity":                determineMaturity(esInfoMap["total_edition"]),
 								"event_pricing":           esInfoMap["event_pricing"],
 								"event_logo":              esInfoMap["event_logo"],
-								"event_estimatedVisitors": nil, // Not available from current data sources
+								"event_estimatedVisitors": esInfoMap["eventEstimatedTag"],
 								"event_frequency":         esInfoMap["event_frequency"],
 								"event_avgRating":         esInfoMap["avg_rating"],
 								"version":                 1,
@@ -2392,7 +2392,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			},
 		},
 		"size":    len(eventIDs),
-		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating"},
+		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag"},
 	}
 
 	queryJSON, _ := json.Marshal(query)
@@ -2527,7 +2527,8 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			"event_logo":         convertToString(source["logo"]),
 			"event_pricing":      convertToString(source["pricing"]),
 			"total_edition":      convertedTotalEdition,
-			"avg_rating":         source["avg_rating"], // Add avg_rating field from Elasticsearch
+			"avg_rating":         source["avg_rating"],
+			"eventEstimatedTag":  convertToString(source["eventEstimatedTag"]),
 		}
 	}
 
