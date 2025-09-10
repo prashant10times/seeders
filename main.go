@@ -39,6 +39,9 @@ func retryWithBackoff(operation func() error, maxRetries int, operationName stri
 		} else {
 			lastError = err
 			log.Printf("Operation %s failed on attempt %d with error: %v", operationName, attempt, err)
+			if strings.Contains(operationName, "insertion") || strings.Contains(operationName, "ClickHouse") {
+				log.Printf("Detailed error for %s: %+v", operationName, err)
+			}
 		}
 
 		if attempt == maxRetries {
@@ -3735,8 +3738,17 @@ func processVisitorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 }
 
 // processes a single chunk of visitors data
-func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config, startID, endID int, chunkNum int, results chan<- string) {
+func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing visitors chunk %d: ID range %d-%d", chunkNum, startID, endID)
+
+	// Create a dedicated ClickHouse connection for this goroutine
+	chConn, err := setupNativeClickHouseConnection(config)
+	if err != nil {
+		log.Printf("Visitors chunk %d: Failed to create ClickHouse connection: %v", chunkNum, err)
+		results <- fmt.Sprintf("Visitors chunk %d: Failed to create ClickHouse connection: %v", chunkNum, err)
+		return
+	}
+	defer chConn.Close()
 
 	totalRecords := endID - startID + 1
 	processed := 0
@@ -3874,7 +3886,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 
 			visitorInsertErr := retryWithBackoff(
 				func() error {
-					return insertVisitorsDataIntoClickHouse(clickhouseConn, visitorRecords, config.ClickHouseWorkers)
+					return insertVisitorsDataIntoClickHouse(chConn, visitorRecords, config.ClickHouseWorkers)
 				},
 				3,
 				fmt.Sprintf("visitors insertion for chunk %d", chunkNum),
@@ -4158,12 +4170,18 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 
 	for i, record := range visitorRecords {
 		if record.EventID == 0 {
+			log.Printf("ERROR: Record details - UserID: %d, EventID: %d, EditionID: %d, UserName: '%s'",
+				record.UserID, record.EventID, record.EditionID, record.UserName)
 			return fmt.Errorf("invalid visitor record at index %d: EventID is 0", i)
 		}
 		if record.EditionID == 0 {
+			log.Printf("ERROR: Record details - UserID: %d, EventID: %d, EditionID: %d, UserName: '%s'",
+				record.UserID, record.EventID, record.EditionID, record.UserName)
 			return fmt.Errorf("invalid visitor record at index %d: EditionID is 0", i)
 		}
 		if record.UserName == "" {
+			log.Printf("ERROR: Record details - UserID: %d, EventID: %d, EditionID: %d, UserName: '%s'",
+				record.UserID, record.EventID, record.EditionID, record.UserName)
 			return fmt.Errorf("invalid visitor record at index %d: UserName is empty", i)
 		}
 	}
@@ -4172,7 +4190,8 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 	defer cancel()
 
 	if err := clickhouseConn.Ping(ctx); err != nil {
-		return fmt.Errorf("ClickHouse connection ping failed: %v", err)
+		log.Printf("ERROR: ClickHouse connection ping failed for visitors insertion")
+		return fmt.Errorf("ClickHouse connection ping failed for event_visitors_ch_v2: %v", err)
 	}
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
@@ -4182,7 +4201,8 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 		)
 	`)
 	if err != nil {
-		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
+		log.Printf("ERROR: Failed to prepare ClickHouse batch for visitors table: %v", err)
+		return fmt.Errorf("failed to prepare ClickHouse batch for event_visitors_ch_v2: %v", err)
 	}
 
 	log.Printf("ClickHouse batch prepared successfully, appending %d records", len(visitorRecords))
@@ -4201,7 +4221,7 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
-			return fmt.Errorf("failed to append record %d to batch (UserID: %d, EventID: %d, EditionID: %d): %v",
+			return fmt.Errorf("failed to append visitor record %d to batch (UserID: %d, EventID: %d, EditionID: %d): %v",
 				i, record.UserID, record.EventID, record.EditionID, err)
 		}
 	}
@@ -4209,7 +4229,12 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 	log.Printf("All %d records appended to batch, sending to ClickHouse...", len(visitorRecords))
 
 	if err := batch.Send(); err != nil {
-		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
+		log.Printf("ERROR: Failed to send ClickHouse batch for visitors")
+		log.Printf("ERROR: Table: event_visitors_ch_v2")
+		log.Printf("ERROR: Records count: %d", len(visitorRecords))
+		log.Printf("ERROR: Send error: %v", err)
+		log.Printf("ERROR: Error type: %T", err)
+		return fmt.Errorf("failed to send ClickHouse batch to event_visitors_ch_v2: %v", err)
 	}
 
 	log.Printf("OK: Successfully inserted %d visitor records", len(visitorRecords))
