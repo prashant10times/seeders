@@ -28,16 +28,21 @@ import (
 
 // retryWithBackoff
 func retryWithBackoff(operation func() error, maxRetries int, operationName string) error {
+	var lastError error
+
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		if err := operation(); err == nil {
 			if attempt > 1 {
 				log.Printf("Operation %s succeeded on attempt %d", operationName, attempt)
 			}
 			return nil
+		} else {
+			lastError = err
+			log.Printf("Operation %s failed on attempt %d with error: %v", operationName, attempt, err)
 		}
 
 		if attempt == maxRetries {
-			return fmt.Errorf("operation %s failed after %d attempts", operationName, maxRetries)
+			return fmt.Errorf("operation %s failed after %d attempts. Last error: %v", operationName, maxRetries, lastError)
 		}
 
 		baseDelay := time.Duration(attempt*attempt) * time.Second
@@ -3739,15 +3744,21 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 	// Use batching within the chunk
 	offset := 0
 	for {
+		log.Printf("Visitors chunk %d: Fetching batch starting from ID %d (range %d-%d)", chunkNum, startID, startID, endID)
+
 		batchData, err := buildVisitorsMigrationData(mysqlDB, startID, endID, config.BatchSize)
 		if err != nil {
+			log.Printf("ERROR: Visitors chunk %d failed to build migration data: %v", chunkNum, err)
 			results <- fmt.Sprintf("Visitors chunk %d batch error: %v", chunkNum, err)
 			return
 		}
 
 		if len(batchData) == 0 {
+			log.Printf("Visitors chunk %d: No more data to process, breaking loop", chunkNum)
 			break
 		}
+
+		log.Printf("Visitors chunk %d: Successfully retrieved %d records from MySQL", chunkNum, len(batchData))
 
 		processed += len(batchData)
 		progress := float64(processed) / float64(totalRecords) * 100
@@ -3773,6 +3784,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			userData = fetchVisitorsUserData(mysqlDB, userIDs)
 			userTime := time.Since(startTime)
 			log.Printf("Visitors chunk %d: Retrieved user data for %d users in %v", chunkNum, len(userData), userTime)
+
 		}
 
 		// Collect city IDs from visitor data
@@ -3810,16 +3822,23 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 
 		var visitorRecords []VisitorRecord
 		for _, visitor := range batchData {
-			// Get user data for this visitor
 			var userName, userCompany interface{}
-			if userID, ok := visitor["user"].(int64); ok && userData != nil {
+			if userID, ok := visitor["user"].(int64); ok && userData != nil && userID > 0 {
 				if user, exists := userData[userID]; exists {
 					userName = user["name"]
-					userCompany = user["user_company"] // Use user_company from user table
+					userCompany = user["user_company"] 
+					if userName == nil || convertToString(userName) == "" {
+						userName = "-----DEFAULT USER NAME-----"
+					}
+				} else {
+					userName = "-----DEFAULT USER NAME-----"
+					userCompany = visitor["visitor_company"] 
 				}
+			} else {
+				userName = "-----DEFAULT USER NAME-----"              
+				userCompany = visitor["visitor_company"]
 			}
 
-			// Get city data for this visitor
 			var userCityName *string
 			if cityID, ok := visitor["visitor_city"].(int64); ok && cityLookup != nil {
 				if city, exists := cityLookup[cityID]; exists && city["name"] != nil {
@@ -3828,17 +3847,17 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 				}
 			}
 
-			// Convert data to proper types
 			userID := convertToUInt32(visitor["user"])
 			eventID := convertToUInt32(visitor["event"])
 			editionID := convertToUInt32(visitor["edition"])
 
-			// Create visitor record with proper types
+			convertedUserName := convertToString(userName)
+
 			visitorRecord := VisitorRecord{
 				UserID:          userID,
 				EventID:         eventID,
 				EditionID:       editionID,
-				UserName:        convertToString(userName),
+				UserName:        convertedUserName,
 				UserCompany:     convertToStringPtr(userCompany),
 				UserDesignation: convertToStringPtr(visitor["visitor_designation"]),
 				UserCity:        convertToUInt32Ptr(visitor["visitor_city"]),
@@ -3850,7 +3869,6 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			visitorRecords = append(visitorRecords, visitorRecord)
 		}
 
-		// Insert visitors data into ClickHouse
 		if len(visitorRecords) > 0 {
 			log.Printf("Visitors chunk %d: Attempting to insert %d records into event_visitor_ch...", chunkNum, len(visitorRecords))
 
@@ -3871,11 +3889,9 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			}
 		}
 
-		// Get the last ID from this batch for next iteration
 		if len(batchData) > 0 {
 			lastID := batchData[len(batchData)-1]["id"]
 			if lastID != nil {
-				// Update startID for next batch within this chunk
 				if id, ok := lastID.(int64); ok {
 					startID = int(id) + 1
 				}
@@ -3892,6 +3908,16 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 }
 
 func buildVisitorsMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
+	if startID < 0 || endID < 0 || startID > endID {
+		return nil, fmt.Errorf("invalid ID range: startID=%d, endID=%d", startID, endID)
+	}
+
+	if batchSize <= 0 {
+		return nil, fmt.Errorf("invalid batch size: %d", batchSize)
+	}
+
+	log.Printf("Building visitors migration data: ID range %d-%d, batch size %d", startID, endID, batchSize)
+
 	query := fmt.Sprintf(`
 		SELECT 
 			id, user, event, edition, visitor_company, visitor_designation, visitor_city, visitor_country
@@ -3900,18 +3926,24 @@ func buildVisitorsMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 		ORDER BY id 
 		LIMIT %d`, startID, endID, batchSize)
 
+	log.Printf("Executing query: %s", query)
+
 	rows, err := db.Query(query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to execute query: %v", err)
 	}
 	defer rows.Close()
 
 	columns, err := rows.Columns()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get column names: %v", err)
 	}
 
+	log.Printf("Query returned columns: %v", columns)
+
 	var results []map[string]interface{}
+	rowCount := 0
+
 	for rows.Next() {
 		values := make([]interface{}, len(columns))
 		valuePtrs := make([]interface{}, len(columns))
@@ -3920,7 +3952,7 @@ func buildVisitorsMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 		}
 
 		if err := rows.Scan(valuePtrs...); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to scan row %d: %v", rowCount, err)
 		}
 
 		row := make(map[string]interface{})
@@ -3932,9 +3964,29 @@ func buildVisitorsMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 				row[col] = val
 			}
 		}
+
+		if row["id"] == nil {
+			log.Printf("WARNING: Row %d has null ID", rowCount)
+		}
+		if row["user"] == nil {
+			log.Printf("WARNING: Row %d has null user", rowCount)
+		}
+		if row["event"] == nil {
+			log.Printf("WARNING: Row %d has null event", rowCount)
+		}
+		if row["edition"] == nil {
+			log.Printf("WARNING: Row %d has null edition", rowCount)
+		}
+
 		results = append(results, row)
+		rowCount++
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error during row iteration: %v", err)
+	}
+
+	log.Printf("Successfully retrieved %d visitor records from MySQL", len(results))
 	return results, nil
 }
 
@@ -4015,16 +4067,37 @@ func fetchVisitorsUserData(db *sql.DB, userIDs []int64) map[int64]map[string]int
 
 func insertVisitorsDataIntoClickHouse(clickhouseConn driver.Conn, visitorRecords []VisitorRecord, numWorkers int) error {
 	if len(visitorRecords) == 0 {
+		log.Printf("WARNING: No visitor records provided for insertion")
 		return nil
 	}
+
+	if numWorkers <= 0 {
+		log.Printf("WARNING: Invalid numWorkers (%d), defaulting to 1", numWorkers)
+		numWorkers = 1
+	}
+
+	if numWorkers > len(visitorRecords) {
+		log.Printf("WARNING: numWorkers (%d) exceeds record count (%d), reducing to %d",
+			numWorkers, len(visitorRecords), len(visitorRecords))
+		numWorkers = len(visitorRecords)
+	}
+
+	log.Printf("Inserting %d visitor records using %d workers", len(visitorRecords), numWorkers)
 
 	if numWorkers <= 1 {
 		return insertVisitorsDataSingleWorker(clickhouseConn, visitorRecords)
 	}
 
 	batchSize := (len(visitorRecords) + numWorkers - 1) / numWorkers
+	log.Printf("Batch size per worker: %d records", batchSize)
+
+	if batchSize == 0 {
+		return fmt.Errorf("calculated batch size is 0 for %d records with %d workers", len(visitorRecords), numWorkers)
+	}
+
 	results := make(chan error, numWorkers)
 	semaphore := make(chan struct{}, numWorkers)
+	activeWorkers := 0
 
 	for i := 0; i < numWorkers; i++ {
 		start := i * batchSize
@@ -4036,31 +4109,71 @@ func insertVisitorsDataIntoClickHouse(clickhouseConn driver.Conn, visitorRecords
 			break
 		}
 
+		batch := visitorRecords[start:end]
+		if len(batch) == 0 {
+			log.Printf("WARNING: Empty batch for worker %d (start: %d, end: %d)", i, start, end)
+			continue
+		}
+
+		activeWorkers++
 		semaphore <- struct{}{}
-		go func(start, end int) {
+		go func(workerID, start, end int) {
 			defer func() { <-semaphore }()
 			batch := visitorRecords[start:end]
+			log.Printf("Worker %d processing batch: %d records (indices %d-%d)", workerID, len(batch), start, end-1)
+
 			err := insertVisitorsDataSingleWorker(clickhouseConn, batch)
+			if err != nil {
+				log.Printf("Worker %d failed: %v", workerID, err)
+			} else {
+				log.Printf("Worker %d completed successfully", workerID)
+			}
 			results <- err
-		}(start, end)
+		}(i+1, start, end)
 	}
 
-	for i := 0; i < numWorkers && i*batchSize < len(visitorRecords); i++ {
+	var lastError error
+	for i := 0; i < activeWorkers; i++ {
 		if err := <-results; err != nil {
-			return err
+			lastError = err
+			log.Printf("Worker %d failed with error: %v", i+1, err)
 		}
 	}
 
+	if lastError != nil {
+		return fmt.Errorf("one or more workers failed during insertion. Last error: %v", lastError)
+	}
+
+	log.Printf("All %d workers completed successfully", activeWorkers)
 	return nil
 }
 
 func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords []VisitorRecord) error {
 	if len(visitorRecords) == 0 {
+		log.Printf("WARNING: No visitor records to insert")
 		return nil
+	}
+
+	log.Printf("Starting ClickHouse insertion for %d visitor records", len(visitorRecords))
+
+	for i, record := range visitorRecords {
+		if record.EventID == 0 {
+			return fmt.Errorf("invalid visitor record at index %d: EventID is 0", i)
+		}
+		if record.EditionID == 0 {
+			return fmt.Errorf("invalid visitor record at index %d: EditionID is 0", i)
+		}
+		if record.UserName == "" {
+			return fmt.Errorf("invalid visitor record at index %d: UserName is empty", i)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	if err := clickhouseConn.Ping(ctx); err != nil {
+		return fmt.Errorf("ClickHouse connection ping failed: %v", err)
+	}
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_visitors_ch (
@@ -4072,7 +4185,9 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
 	}
 
-	for _, record := range visitorRecords {
+	log.Printf("ClickHouse batch prepared successfully, appending %d records", len(visitorRecords))
+
+	for i, record := range visitorRecords {
 		err := batch.Append(
 			record.UserID,          // user_id: UInt32 NOT NULL
 			record.EventID,         // event_id: UInt32 NOT NULL
@@ -4086,9 +4201,12 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
-			return fmt.Errorf("failed to append record to batch: %v", err)
+			return fmt.Errorf("failed to append record %d to batch (UserID: %d, EventID: %d, EditionID: %d): %v",
+				i, record.UserID, record.EventID, record.EditionID, err)
 		}
 	}
+
+	log.Printf("All %d records appended to batch, sending to ClickHouse...", len(visitorRecords))
 
 	if err := batch.Send(); err != nil {
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
@@ -4109,7 +4227,7 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 	log.Printf("Total speakers records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
 
 	if config.NumChunks <= 0 {
-		config.NumChunks = 5 // Default to 5 chunks if not specified
+		config.NumChunks = 5 
 	}
 
 	chunkSize := (maxID - minID + 1) / config.NumChunks
@@ -4126,12 +4244,10 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 		startID := minID + (i * chunkSize)
 		endID := startID + chunkSize - 1
 
-		// last chunk to include remaining records
 		if i == config.NumChunks-1 {
 			endID = maxID
 		}
 
-		// delay between chunk launches to reduce ClickHouse load
 		if i > 0 {
 			delay := 3 * time.Second
 			log.Printf("Waiting %v before launching speakers chunk %d...", delay, i+1)
@@ -4164,7 +4280,7 @@ func processEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, co
 	log.Printf("Total event_type_event records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
 
 	if config.NumChunks <= 0 {
-		config.NumChunks = 5 // Default to 5 chunks if not specified
+		config.NumChunks = 5 
 	}
 
 	chunkSize := (maxID - minID + 1) / config.NumChunks
@@ -4181,12 +4297,10 @@ func processEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, co
 		startID := minID + (i * chunkSize)
 		endID := startID + chunkSize - 1
 
-		// last chunk to include remaining records
 		if i == config.NumChunks-1 {
 			endID = maxID
 		}
 
-		// delay between chunk launches to reduce ClickHouse load
 		if i > 0 {
 			delay := 3 * time.Second
 			log.Printf("Waiting %v before launching eventtype_event_ch chunk %d...", delay, i+1)
@@ -4208,14 +4322,12 @@ func processEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, co
 	log.Println("EventTypeEventCh processing completed!")
 }
 
-// processes a single chunk of speakers data
 func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing speakers chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
 	totalRecords := endID - startID + 1
 	processed := 0
 
-	// Use batching within the chunk
 	offset := 0
 	for {
 		batchData, err := buildSpeakersMigrationData(mysqlDB, startID, endID, config.BatchSize)
@@ -4232,7 +4344,6 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 		progress := float64(processed) / float64(totalRecords) * 100
 		log.Printf("Speakers chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
 
-		// Extract user IDs from this batch to fetch user names
 		var userIDs []int64
 		seenUserIDs := make(map[int64]bool)
 		for _, speaker := range batchData {
@@ -4244,7 +4355,6 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			}
 		}
 
-		// Fetch user data for speakers
 		var userData map[int64]map[string]interface{}
 		if len(userIDs) > 0 {
 			log.Printf("Speakers chunk %d: Fetching user data for %d users", chunkNum, len(userIDs))
@@ -4254,7 +4364,6 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			log.Printf("Speakers chunk %d: Retrieved user data for %d users in %v", chunkNum, len(userData), userTime)
 		}
 
-		// Collect city IDs from speaker user data
 		var speakerCityIDs []int64
 		seenCityIDs := make(map[int64]bool)
 		for _, user := range userData {
@@ -4266,7 +4375,6 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			}
 		}
 
-		// Fetch city data for speaker cities
 		var cityData []map[string]interface{}
 		var cityLookup map[int64]map[string]interface{}
 		if len(speakerCityIDs) > 0 {
@@ -4276,7 +4384,6 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			cityTime := time.Since(startTime)
 			log.Printf("Speakers chunk %d: Retrieved city data for %d cities in %v", chunkNum, len(cityData), cityTime)
 
-			// Create city lookup map
 			cityLookup = make(map[int64]map[string]interface{})
 			if len(cityData) > 0 {
 				for _, city := range cityData {
