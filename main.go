@@ -3826,16 +3826,16 @@ func processVisitorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			if userID, ok := visitor["user"].(int64); ok && userData != nil && userID > 0 {
 				if user, exists := userData[userID]; exists {
 					userName = user["name"]
-					userCompany = user["user_company"] 
+					userCompany = user["user_company"]
 					if userName == nil || convertToString(userName) == "" {
 						userName = "-----DEFAULT USER NAME-----"
 					}
 				} else {
 					userName = "-----DEFAULT USER NAME-----"
-					userCompany = visitor["visitor_company"] 
+					userCompany = visitor["visitor_company"]
 				}
 			} else {
-				userName = "-----DEFAULT USER NAME-----"              
+				userName = "-----DEFAULT USER NAME-----"
 				userCompany = visitor["visitor_company"]
 			}
 
@@ -4227,7 +4227,7 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 	log.Printf("Total speakers records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
 
 	if config.NumChunks <= 0 {
-		config.NumChunks = 5 
+		config.NumChunks = 5
 	}
 
 	chunkSize := (maxID - minID + 1) / config.NumChunks
@@ -4280,7 +4280,7 @@ func processEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, co
 	log.Printf("Total event_type_event records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
 
 	if config.NumChunks <= 0 {
-		config.NumChunks = 5 
+		config.NumChunks = 5
 	}
 
 	chunkSize := (maxID - minID + 1) / config.NumChunks
