@@ -4295,7 +4295,7 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 }
 
 func processEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
-	log.Println("=== Starting EVENTTYPE_EVENT_CH ONLY Processing ===")
+	log.Println("=== Starting event_type_ch ONLY Processing ===")
 
 	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_type_event")
 	if err != nil {
@@ -4313,7 +4313,7 @@ func processEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, co
 		chunkSize = 1
 	}
 
-	log.Printf("Processing eventtype_event_ch data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
+	log.Printf("Processing event_type_ch data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
 
 	results := make(chan string, config.NumChunks)
 	semaphore := make(chan struct{}, config.NumWorkers)
@@ -4328,7 +4328,7 @@ func processEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, co
 
 		if i > 0 {
 			delay := 3 * time.Second
-			log.Printf("Waiting %v before launching eventtype_event_ch chunk %d...", delay, i+1)
+			log.Printf("Waiting %v before launching event_type_ch chunk %d...", delay, i+1)
 			time.Sleep(delay)
 		}
 
@@ -4505,9 +4505,9 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 	results <- fmt.Sprintf("Speakers chunk %d: Completed successfully", chunkNum)
 }
 
-// processes a single chunk of eventtype_event_ch data
+// processes a single chunk of event_type_ch data
 func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config, startID, endID int, chunkNum int, results chan<- string) {
-	log.Printf("Processing eventtype_event_ch chunk %d: ID range %d-%d", chunkNum, startID, endID)
+	log.Printf("Processing event_type_ch chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
 	totalRecords := endID - startID + 1
 	processed := 0
@@ -4544,16 +4544,16 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 			eventTypeEventChRecords = append(eventTypeEventChRecords, eventTypeEventChRecord)
 		}
 
-		// Insert eventtype_event_ch data into ClickHouse
+		// Insert event_type_ch data into ClickHouse
 		if len(eventTypeEventChRecords) > 0 {
-			log.Printf("EventTypeEventCh chunk %d: Attempting to insert %d records into eventtype_event_ch...", chunkNum, len(eventTypeEventChRecords))
+			log.Printf("EventTypeEventCh chunk %d: Attempting to insert %d records into event_type_ch...", chunkNum, len(eventTypeEventChRecords))
 
 			insertErr := retryWithBackoff(
 				func() error {
 					return insertEventTypeEventChDataIntoClickHouse(clickhouseConn, eventTypeEventChRecords, config.ClickHouseWorkers)
 				},
 				3,
-				fmt.Sprintf("eventtype_event_ch insertion for chunk %d", chunkNum),
+				fmt.Sprintf("event_type_ch insertion for chunk %d", chunkNum),
 			)
 
 			if insertErr != nil {
@@ -4561,7 +4561,7 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 				results <- fmt.Sprintf("EventTypeEventCh chunk %d: Failed to insert %d records", chunkNum, len(eventTypeEventChRecords))
 				return
 			} else {
-				log.Printf("EventTypeEventCh chunk %d: Successfully inserted %d records into eventtype_event_ch", chunkNum, len(eventTypeEventChRecords))
+				log.Printf("EventTypeEventCh chunk %d: Successfully inserted %d records into event_type_ch", chunkNum, len(eventTypeEventChRecords))
 			}
 		}
 
@@ -5185,7 +5185,7 @@ func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTyp
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO eventtype_event_ch (
+		INSERT INTO event_type_ch (
 			eventtype_id, event_id, published, name, url, event_audience, version
 		)
 	`)
@@ -5212,7 +5212,7 @@ func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTyp
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
-	log.Printf("OK: Successfully inserted %d eventtype_event_ch records", len(eventTypeEventChRecords))
+	log.Printf("OK: Successfully inserted %d event_type_ch records", len(eventTypeEventChRecords))
 	return nil
 }
 
@@ -5547,7 +5547,7 @@ func main() {
 		} else if exhibitorOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for exhibitors processing)")
 		} else if eventTypeEventChOnly {
-			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for eventtype_event_ch processing)")
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_type_ch processing)")
 		} else if eventCategoryEventChOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_category_ch processing)")
 		}
