@@ -72,6 +72,25 @@ func safeConvertToString(value interface{}) string {
 	if bytes, ok := value.([]byte); ok {
 		return string(bytes)
 	}
+	// Handle numeric types
+	if intVal, ok := value.(int64); ok {
+		return strconv.FormatInt(intVal, 10)
+	}
+	if intVal, ok := value.(int32); ok {
+		return strconv.FormatInt(int64(intVal), 10)
+	}
+	if intVal, ok := value.(int); ok {
+		return strconv.Itoa(intVal)
+	}
+	if uintVal, ok := value.(uint64); ok {
+		return strconv.FormatUint(uintVal, 10)
+	}
+	if uintVal, ok := value.(uint32); ok {
+		return strconv.FormatUint(uint64(uintVal), 10)
+	}
+	if uintVal, ok := value.(uint); ok {
+		return strconv.FormatUint(uint64(uintVal), 10)
+	}
 	return ""
 }
 
@@ -1530,7 +1549,7 @@ func fetchEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interfa
 		}
 	}
 
-	// Now fetch all edition data with start_date
+
 	editionQuery := fmt.Sprintf(`
 		SELECT 
 			event, id as edition_id, city as edition_city, 
@@ -1538,6 +1557,8 @@ func fetchEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interfa
 			created as edition_created, start_date as edition_start_date
 		FROM event_edition 
 		WHERE event IN (%s)`, strings.Join(placeholders, ","))
+
+	// log.Printf("Fetching editions for %d events: %v", len(eventIDs), eventIDs)
 
 	editionRows, err := db.Query(editionQuery, args...)
 	if err != nil {
@@ -1583,6 +1604,64 @@ func fetchEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interfa
 		results = append(results, row)
 	}
 
+	// log.Printf("Fetched %d editions for %d events", len(results), len(eventIDs))
+	return results
+}
+
+func fetchEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface{} {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, 
+		       country, published, status, event_audience, functionality, brand_id, created 
+		FROM event 
+		WHERE id IN (%s)`, strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("Error fetching event data: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			continue
+		}
+
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			val := values[i]
+			if val == nil {
+				row[col] = nil
+			} else {
+				row[col] = val
+			}
+		}
+		results = append(results, row)
+	}
+
 	return results
 }
 
@@ -1609,6 +1688,16 @@ func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClie
 
 	log.Printf("Processing event edition data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
 
+	// Global deduplication map - shared across all chunks
+	globalUniqueRecords := make(map[string]bool)
+	var globalMutex sync.RWMutex
+
+	// Global counters for tracking total records processed
+	var totalRecordsProcessed int64
+	var totalRecordsSkipped int64
+	var totalRecordsInserted int64
+	var globalCountMutex sync.Mutex
+
 	results := make(chan string, config.NumChunks)
 	semaphore := make(chan struct{}, config.NumWorkers)
 
@@ -1631,7 +1720,7 @@ func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClie
 		semaphore <- struct{}{}
 		go func(chunkNum, start, end int) {
 			defer func() { <-semaphore }()
-			processEventEditionChunk(mysqlDB, clickhouseConn, esClient, config, start, end, chunkNum, results)
+			processEventEditionChunk(mysqlDB, clickhouseConn, esClient, config, start, end, chunkNum, results, globalUniqueRecords, &globalMutex, &totalRecordsProcessed, &totalRecordsSkipped, &totalRecordsInserted, &globalCountMutex)
 		}(i+1, startID, endID)
 	}
 
@@ -1640,11 +1729,72 @@ func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClie
 		log.Printf("Event Edition Result: %s", result)
 	}
 
+	// Print final summary
+	globalCountMutex.Lock()
+	log.Printf("=== FINAL SUMMARY ===")
+	log.Printf("Total records processed: %d", totalRecordsProcessed)
+	log.Printf("Total records skipped (duplicates): %d", totalRecordsSkipped)
+	log.Printf("Total records inserted: %d", totalRecordsInserted)
+	log.Printf("Expected source count: 103749")
+	log.Printf("Difference: %d", 103749-totalRecordsInserted)
+
+	// Check for missing records in source data
+	var nullEventCount int
+	var invalidEventCount int
+	var totalEditionsInSource int
+	var validEventCount int
+
+	// Get total editions in source
+	err = mysqlDB.QueryRow("SELECT COUNT(*) FROM event_edition").Scan(&totalEditionsInSource)
+	if err != nil {
+		log.Printf("Error getting total editions count: %v", err)
+	} else {
+		log.Printf("Total editions in source (event_edition table): %d", totalEditionsInSource)
+	}
+
+	// Check for editions with NULL event values
+	err = mysqlDB.QueryRow("SELECT COUNT(*) FROM event_edition WHERE event IS NULL").Scan(&nullEventCount)
+	if err != nil {
+		log.Printf("Error checking NULL events: %v", err)
+	} else {
+		log.Printf("Editions with NULL event values: %d", nullEventCount)
+	}
+
+	// Check for editions with invalid event IDs (not in event table)
+	err = mysqlDB.QueryRow(`
+		SELECT COUNT(*) 
+		FROM event_edition ee 
+		LEFT JOIN event e ON ee.event = e.id 
+		WHERE ee.event IS NOT NULL AND e.id IS NULL
+	`).Scan(&invalidEventCount)
+	if err != nil {
+		log.Printf("Error checking invalid events: %v", err)
+	} else {
+		log.Printf("Editions with invalid event IDs: %d", invalidEventCount)
+	}
+
+	// Check for editions that should be processed (valid event IDs)
+	err = mysqlDB.QueryRow(`
+		SELECT COUNT(*) 
+		FROM event_edition ee 
+		INNER JOIN event e ON ee.event = e.id
+	`).Scan(&validEventCount)
+	if err != nil {
+		log.Printf("Error checking valid events: %v", err)
+	} else {
+		log.Printf("Editions with valid event IDs: %d", validEventCount)
+	}
+
+	log.Printf("Total missing editions (NULL + invalid): %d", nullEventCount+invalidEventCount)
+	log.Printf("Verification: NULL(%d) + Invalid(%d) + Valid(%d) = Total(%d)",
+		nullEventCount, invalidEventCount, validEventCount, totalEditionsInSource)
+	globalCountMutex.Unlock()
+
 	log.Println("Event Edition processing completed!")
 }
 
 // processes a single chunk of event edition data
-func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config Config, startID, endID int, chunkNum int, results chan<- string) {
+func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config Config, startID, endID int, chunkNum int, results chan<- string, globalUniqueRecords map[string]bool, globalMutex *sync.RWMutex, totalRecordsProcessed *int64, totalRecordsSkipped *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
 	log.Printf("Processing event edition chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
 	totalRecords := endID - startID + 1
@@ -1816,9 +1966,12 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				currentEditionStartDates := make(map[int64]interface{})
 				currentEditionIDs := make(map[int64]int64)
 
+				editionsProcessed := 0
+				editionsSkipped := 0
 				for _, edition := range editionData {
 					if eventID, ok := edition["event"].(int64); ok {
 						eventEditions[eventID] = append(eventEditions[eventID], edition)
+						editionsProcessed++
 						// Storing current edition ID and start date for each event
 						if currentEditionID, exists := edition["current_edition_id"]; exists {
 							if editionID, ok := edition["edition_id"].(int64); ok {
@@ -1828,8 +1981,12 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								}
 							}
 						}
+					} else {
+						editionsSkipped++
+						log.Printf("Event edition chunk %d: Skipping edition - invalid event ID: %v", chunkNum, edition["event"])
 					}
 				}
+				log.Printf("Event edition chunk %d: Editions processed: %d, skipped: %d", chunkNum, editionsProcessed, editionsSkipped)
 
 				// Collect ALL records for ClickHouse insertion
 				var clickHouseRecords []map[string]interface{}
@@ -1837,15 +1994,32 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				partialCount := 0
 				skippedCount := 0
 
-				for eventID, editions := range eventEditions {
-					// Find the event data for this eventID
-					var eventData map[string]interface{}
-					for _, row := range batchData {
-						if id, ok := row["id"].(int64); ok && id == eventID {
-							eventData = row
-							break
+				// Use global deduplication map (no local map needed)
+
+				// log.Printf("Event edition chunk %d: Processing %d events with editions", chunkNum, len(eventEditions))
+
+				// Fetch event data for all events that have editions (not just those in current batch)
+				eventIDsForEditions := make([]int64, 0, len(eventEditions))
+				for eventID := range eventEditions {
+					eventIDsForEditions = append(eventIDsForEditions, eventID)
+				}
+
+				eventDataLookup := make(map[int64]map[string]interface{})
+				if len(eventIDsForEditions) > 0 {
+					log.Printf("Event edition chunk %d: Fetching event data for %d events with editions", chunkNum, len(eventIDsForEditions))
+					eventDataForEditions := fetchEventDataForBatch(mysqlDB, eventIDsForEditions)
+					for _, eventData := range eventDataForEditions {
+						if eventID, ok := eventData["id"].(int64); ok {
+							eventDataLookup[eventID] = eventData
 						}
 					}
+				}
+
+				for eventID, editions := range eventEditions {
+					// log.Printf("Event edition chunk %d: Event %d has %d editions", chunkNum, eventID, len(editions))
+
+					// Get event data from the lookup
+					eventData := eventDataLookup[eventID]
 
 					if eventData != nil {
 						for _, edition := range editions {
@@ -1922,6 +2096,37 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								edition["edition_id"].(int64),
 								currentEditionIDs[eventID],
 							)
+
+							// Create unique key for deduplication (event_id + edition_id)
+							eventIDStr := safeConvertToString(eventData["id"])
+							editionIDStr := safeConvertToString(edition["edition_id"])
+							uniqueKey := eventIDStr + "_" + editionIDStr
+
+							// Debug logging to see what's happening
+							// log.Printf("Event edition chunk %d: Processing - EventID: %s, EditionID: %s, UniqueKey: %s",
+							//	chunkNum, eventIDStr, editionIDStr, uniqueKey)
+
+							// Check if this combination already exists (with read lock)
+							globalMutex.RLock()
+							exists := globalUniqueRecords[uniqueKey]
+							globalMutex.RUnlock()
+
+							if exists {
+								// log.Printf("Event edition chunk %d: Skipping duplicate record - EventID: %s, EditionID: %s, UniqueKey: %s",
+								//	chunkNum, eventIDStr, editionIDStr, uniqueKey)
+								globalCountMutex.Lock()
+								*totalRecordsSkipped++
+								globalCountMutex.Unlock()
+								continue
+							}
+
+							// Mark this combination as seen (with write lock)
+							globalMutex.Lock()
+							globalUniqueRecords[uniqueKey] = true
+							globalMutex.Unlock()
+
+							// log.Printf("Event edition chunk %d: Adding new record - EventID: %s, EditionID: %s, UniqueKey: %s",
+							//	chunkNum, eventIDStr, editionIDStr, uniqueKey)
 
 							// Create record for ClickHouse insertion - include ALL data
 							record := map[string]interface{}{
@@ -2009,6 +2214,12 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 
 							clickHouseRecords = append(clickHouseRecords, record)
 
+							// Update global counters
+							globalCountMutex.Lock()
+							*totalRecordsProcessed++
+							*totalRecordsInserted++
+							globalCountMutex.Unlock()
+
 							// Track completeness for reporting (simplified)
 							if companyID != nil && venueID != nil && cityID != nil {
 								completeCount++
@@ -2018,6 +2229,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 						}
 					} else {
 						skippedCount++
+						log.Printf("Event edition chunk %d: Skipping event %d - no event data found", chunkNum, eventID)
 					}
 				}
 
@@ -2037,6 +2249,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				}
 
 				// Insert collected records into ClickHouse
+				log.Printf("Event edition chunk %d: Total records collected: %d", chunkNum, len(clickHouseRecords))
 				if len(clickHouseRecords) > 0 {
 					log.Printf("Event edition chunk %d: Attempting to insert %d records into ClickHouse...", chunkNum, len(clickHouseRecords))
 
