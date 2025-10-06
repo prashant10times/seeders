@@ -905,14 +905,6 @@ func setupNativeClickHouseConnection(config Config) (driver.Conn, error) {
 		return nil, fmt.Errorf("ClickHouse connection failed: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := conn.Ping(ctx); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("ClickHouse ping failed: %v", err)
-	}
-
 	return conn, nil
 }
 
@@ -994,9 +986,9 @@ func testClickHouseConnection(clickhouseConn driver.Conn) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := clickhouseConn.Ping(ctx); err != nil {
-		return fmt.Errorf("ClickHouse ping failed: %v", err)
-	}
+	// if err := clickhouseConn.Ping(ctx); err != nil {
+	// 	return fmt.Errorf("ClickHouse ping failed: %v", err)
+	// }
 
 	var result uint8
 	query := "SELECT 1"
@@ -1549,7 +1541,6 @@ func fetchEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interfa
 		}
 	}
 
-
 	editionQuery := fmt.Sprintf(`
 		SELECT 
 			event, id as edition_id, city as edition_city, 
@@ -1735,8 +1726,6 @@ func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClie
 	log.Printf("Total records processed: %d", totalRecordsProcessed)
 	log.Printf("Total records skipped (duplicates): %d", totalRecordsSkipped)
 	log.Printf("Total records inserted: %d", totalRecordsInserted)
-	log.Printf("Expected source count: 103749")
-	log.Printf("Difference: %d", 103749-totalRecordsInserted)
 
 	// Check for missing records in source data
 	var nullEventCount int
@@ -4399,13 +4388,13 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := clickhouseConn.Ping(ctx); err != nil {
-		log.Printf("ERROR: ClickHouse connection ping failed for visitors insertion")
-		return fmt.Errorf("ClickHouse connection ping failed for event_visitors_ch_v2: %v", err)
-	}
+	// if err := clickhouseConn.Ping(ctx); err != nil {
+	// 	log.Printf("ERROR: ClickHouse connection ping failed for visitors insertion")
+	// 	return fmt.Errorf("ClickHouse connection ping failed for event_visitors_ch_v2: %v", err)
+	// }
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_visitors_ch (
