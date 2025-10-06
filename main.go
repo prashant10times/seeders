@@ -3208,6 +3208,25 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config C
 					}
 				}
 
+				var companyState *uint32
+				var companyStateName *string
+				if cityID, ok := exhibitor["city"].(int64); ok && cityLookup != nil {
+					if city, exists := cityLookup[cityID]; exists {
+						if city["state_id"] != nil {
+							if stateID, ok := city["state_id"].(int64); ok && stateID > 0 {
+								stateIDUint32 := uint32(stateID)
+								companyState = &stateIDUint32
+							}
+						}
+						if city["state"] != nil {
+							stateStr := safeConvertToString(city["state"])
+							if strings.TrimSpace(stateStr) != "" {
+								companyStateName = &stateStr
+							}
+						}
+					}
+				}
+
 				// Convert data to proper types for protocol
 				companyID := convertToUInt32Ptr(exhibitor["company_id"])
 				editionID := convertToUInt32(exhibitor["edition_id"])
@@ -3215,19 +3234,21 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config C
 
 				// Create exhibitor record with proper types
 				exhibitorRecord := ExhibitorRecord{
-					CompanyID:       companyID,
-					CompanyIDName:   getCompanyNameOrDefault(exhibitor["company_name"]),
-					EditionID:       editionID,
-					EventID:         eventID,
-					CompanyWebsite:  convertToStringPtr(exhibitor["website"]),
-					CompanyDomain:   convertToStringPtr(companyDomain),
-					CompanyCountry:  toUpperNullableString(convertToStringPtr(exhibitor["country"])),
-					CompanyCity:     convertToUInt32Ptr(exhibitor["city"]),
-					CompanyCityName: companyCityName,
-					FacebookID:      convertToStringPtr(facebookID),
-					LinkedinID:      convertToStringPtr(linkedinID),
-					TwitterID:       convertToStringPtr(twitterID),
-					Version:         1,
+					CompanyID:        companyID,
+					CompanyIDName:    getCompanyNameOrDefault(exhibitor["company_name"]),
+					EditionID:        editionID,
+					EventID:          eventID,
+					CompanyWebsite:   convertToStringPtr(exhibitor["website"]),
+					CompanyDomain:    convertToStringPtr(companyDomain),
+					CompanyCountry:   toUpperNullableString(convertToStringPtr(exhibitor["country"])),
+					CompanyState:     companyState,
+					CompanyStateName: companyStateName,
+					CompanyCity:      convertToUInt32Ptr(exhibitor["city"]),
+					CompanyCityName:  companyCityName,
+					FacebookID:       convertToStringPtr(facebookID),
+					LinkedinID:       convertToStringPtr(linkedinID),
+					TwitterID:        convertToStringPtr(twitterID),
+					Version:          1,
 				}
 
 				exhibitorRecords = append(exhibitorRecords, exhibitorRecord)
@@ -3449,7 +3470,7 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_exhibitor_ch (
 			company_id, company_id_name, edition_id, event_id, company_website,
-			company_domain, company_country, company_city, company_city_name, facebook_id,
+			company_domain, company_country, company_state, company_state_name, company_city, company_city_name, facebook_id,
 			linkedin_id, twitter_id, version
 		)
 	`)
@@ -3459,19 +3480,21 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 
 	for _, record := range exhibitorRecords {
 		err := batch.Append(
-			record.CompanyID,       // company_id: Nullable(UInt32)
-			record.CompanyIDName,   // company_id_name: String NOT NULL
-			record.EditionID,       // edition_id: UInt32 NOT NULL
-			record.EventID,         // event_id: UInt32 NOT NULL
-			record.CompanyWebsite,  // company_website: Nullable(String)
-			record.CompanyDomain,   // company_domain: Nullable(String)
-			record.CompanyCountry,  // company_country: LowCardinality(FixedString(2))
-			record.CompanyCity,     // company_city: Nullable(UInt32)
-			record.CompanyCityName, // company_city_name: LowCardinality(Nullable(String))
-			record.FacebookID,      // facebook_id: Nullable(String)
-			record.LinkedinID,      // linkedin_id: Nullable(String)
-			record.TwitterID,       // twitter_id: Nullable(String)
-			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
+			record.CompanyID,        // company_id: Nullable(UInt32)
+			record.CompanyIDName,    // company_id_name: String NOT NULL
+			record.EditionID,        // edition_id: UInt32 NOT NULL
+			record.EventID,          // event_id: UInt32 NOT NULL
+			record.CompanyWebsite,   // company_website: Nullable(String)
+			record.CompanyDomain,    // company_domain: Nullable(String)
+			record.CompanyCountry,   // company_country: LowCardinality(FixedString(2))
+			record.CompanyState,     // company_state: Nullable(UInt32)
+			record.CompanyStateName, // company_state_name: LowCardinality(Nullable(String))
+			record.CompanyCity,      // company_city: Nullable(UInt32)
+			record.CompanyCityName,  // company_city_name: LowCardinality(Nullable(String))
+			record.FacebookID,       // facebook_id: Nullable(String)
+			record.LinkedinID,       // linkedin_id: Nullable(String)
+			record.TwitterID,        // twitter_id: Nullable(String)
+			record.Version,          // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)
@@ -3670,6 +3693,27 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 				}
 			}
 
+			var companyState *uint32
+			var companyStateName *string
+			if companyCity != nil {
+				if cityID, ok := companyCity.(int64); ok && cityLookup != nil {
+					if city, exists := cityLookup[cityID]; exists {
+						if city["state_id"] != nil {
+							if stateID, ok := city["state_id"].(int64); ok && stateID > 0 {
+								stateIDUint32 := uint32(stateID)
+								companyState = &stateIDUint32
+							}
+						}
+						if city["state"] != nil {
+							stateStr := safeConvertToString(city["state"])
+							if strings.TrimSpace(stateStr) != "" {
+								companyStateName = &stateStr
+							}
+						}
+					}
+				}
+			}
+
 			// Convert data to proper types
 			companyID := convertToUInt32Ptr(sponsor["company_id"])
 			editionID := convertToUInt32(sponsor["event_edition"])
@@ -3677,19 +3721,21 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 
 			// Create sponsor record with proper types
 			sponsorRecord := SponsorRecord{
-				CompanyID:       companyID,
-				CompanyIDName:   getCompanyNameOrDefault(sponsor["name"]),
-				EditionID:       editionID,
-				EventID:         eventID,
-				CompanyWebsite:  convertToStringPtr(companyWebsite),
-				CompanyDomain:   convertToStringPtr(companyDomain),
-				CompanyCountry:  toUpperNullableString(convertToStringPtr(companyCountry)),
-				CompanyCity:     convertToUInt32Ptr(companyCity),
-				CompanyCityName: companyCityName,
-				FacebookID:      convertToStringPtr(facebookID),
-				LinkedinID:      convertToStringPtr(linkedinID),
-				TwitterID:       convertToStringPtr(twitterID),
-				Version:         1,
+				CompanyID:        companyID,
+				CompanyIDName:    getCompanyNameOrDefault(sponsor["name"]),
+				EditionID:        editionID,
+				EventID:          eventID,
+				CompanyWebsite:   convertToStringPtr(companyWebsite),
+				CompanyDomain:    convertToStringPtr(companyDomain),
+				CompanyCountry:   toUpperNullableString(convertToStringPtr(companyCountry)),
+				CompanyState:     companyState,
+				CompanyStateName: companyStateName,
+				CompanyCity:      convertToUInt32Ptr(companyCity),
+				CompanyCityName:  companyCityName,
+				FacebookID:       convertToStringPtr(facebookID),
+				LinkedinID:       convertToStringPtr(linkedinID),
+				TwitterID:        convertToStringPtr(twitterID),
+				Version:          1,
 			}
 
 			sponsorRecords = append(sponsorRecords, sponsorRecord)
@@ -3910,7 +3956,7 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_sponsors_ch (
 			company_id, company_id_name, edition_id, event_id, company_website,
-			company_domain, company_country, company_city, company_city_name, facebook_id,
+			company_domain, company_country, company_state, company_state_name, company_city, company_city_name, facebook_id,
 			linkedin_id, twitter_id, version
 		)
 	`)
@@ -3920,19 +3966,21 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 
 	for _, record := range sponsorRecords {
 		err := batch.Append(
-			record.CompanyID,       // company_id: Nullable(UInt32)
-			record.CompanyIDName,   // company_id_name: String NOT NULL
-			record.EditionID,       // edition_id: UInt32 NOT NULL
-			record.EventID,         // event_id: UInt32 NOT NULL
-			record.CompanyWebsite,  // company_website: Nullable(String)
-			record.CompanyDomain,   // company_domain: Nullable(String)
-			record.CompanyCountry,  // company_country: LowCardinality(FixedString(2))
-			record.CompanyCity,     // company_city: Nullable(UInt32)
-			record.CompanyCityName, // company_city_name: LowCardinality(Nullable(String))
-			record.FacebookID,      // facebook_id: Nullable(String)
-			record.LinkedinID,      // linkedin_id: Nullable(String)
-			record.TwitterID,       // twitter_id: Nullable(String)
-			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
+			record.CompanyID,        // company_id: Nullable(UInt32)
+			record.CompanyIDName,    // company_id_name: String NOT NULL
+			record.EditionID,        // edition_id: UInt32 NOT NULL
+			record.EventID,          // event_id: UInt32 NOT NULL
+			record.CompanyWebsite,   // company_website: Nullable(String)
+			record.CompanyDomain,    // company_domain: Nullable(String)
+			record.CompanyCountry,   // company_country: LowCardinality(FixedString(2))
+			record.CompanyState,     // company_state: Nullable(UInt32)
+			record.CompanyStateName, // company_state_name: LowCardinality(Nullable(String))
+			record.CompanyCity,      // company_city: Nullable(UInt32)
+			record.CompanyCityName,  // company_city_name: LowCardinality(Nullable(String))
+			record.FacebookID,       // facebook_id: Nullable(String)
+			record.LinkedinID,       // linkedin_id: Nullable(String)
+			record.TwitterID,        // twitter_id: Nullable(String)
+			record.Version,          // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)
@@ -5531,19 +5579,21 @@ func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTyp
 
 // represents a sponsor record for ClickHouse insertion
 type SponsorRecord struct {
-	CompanyID       *uint32 `ch:"company_id"`
-	CompanyIDName   string  `ch:"company_id_name"`
-	EditionID       uint32  `ch:"edition_id"`
-	EventID         uint32  `ch:"event_id"`
-	CompanyWebsite  *string `ch:"company_website"`
-	CompanyDomain   *string `ch:"company_domain"`
-	CompanyCountry  *string `ch:"company_country"`
-	CompanyCity     *uint32 `ch:"company_city"`
-	CompanyCityName *string `ch:"company_city_name"`
-	FacebookID      *string `ch:"facebook_id"`
-	LinkedinID      *string `ch:"linkedin_id"`
-	TwitterID       *string `ch:"twitter_id"`
-	Version         uint32  `ch:"version"`
+	CompanyID        *uint32 `ch:"company_id"`
+	CompanyIDName    string  `ch:"company_id_name"`
+	EditionID        uint32  `ch:"edition_id"`
+	EventID          uint32  `ch:"event_id"`
+	CompanyWebsite   *string `ch:"company_website"`
+	CompanyDomain    *string `ch:"company_domain"`
+	CompanyCountry   *string `ch:"company_country"`
+	CompanyState     *uint32 `ch:"company_state"`
+	CompanyStateName *string `ch:"company_state_name"`
+	CompanyCity      *uint32 `ch:"company_city"`
+	CompanyCityName  *string `ch:"company_city_name"`
+	FacebookID       *string `ch:"facebook_id"`
+	LinkedinID       *string `ch:"linkedin_id"`
+	TwitterID        *string `ch:"twitter_id"`
+	Version          uint32  `ch:"version"`
 }
 
 // SpeakerRecord represents a speaker record for ClickHouse insertion
@@ -5564,19 +5614,21 @@ type SpeakerRecord struct {
 
 // ExhibitorRecord represents an exhibitor record for ClickHouse insertion
 type ExhibitorRecord struct {
-	CompanyID       *uint32 `ch:"company_id"`
-	CompanyIDName   string  `ch:"company_id_name"`
-	EditionID       uint32  `ch:"edition_id"`
-	EventID         uint32  `ch:"event_id"`
-	CompanyWebsite  *string `ch:"company_website"`
-	CompanyDomain   *string `ch:"company_domain"`
-	CompanyCountry  *string `ch:"company_country"`
-	CompanyCity     *uint32 `ch:"company_city"`
-	CompanyCityName *string `ch:"company_city_name"`
-	FacebookID      *string `ch:"facebook_id"`
-	LinkedinID      *string `ch:"linkedin_id"`
-	TwitterID       *string `ch:"twitter_id"`
-	Version         uint32  `ch:"version"`
+	CompanyID        *uint32 `ch:"company_id"`
+	CompanyIDName    string  `ch:"company_id_name"`
+	EditionID        uint32  `ch:"edition_id"`
+	EventID          uint32  `ch:"event_id"`
+	CompanyWebsite   *string `ch:"company_website"`
+	CompanyDomain    *string `ch:"company_domain"`
+	CompanyCountry   *string `ch:"company_country"`
+	CompanyState     *uint32 `ch:"company_state"`
+	CompanyStateName *string `ch:"company_state_name"`
+	CompanyCity      *uint32 `ch:"company_city"`
+	CompanyCityName  *string `ch:"company_city_name"`
+	FacebookID       *string `ch:"facebook_id"`
+	LinkedinID       *string `ch:"linkedin_id"`
+	TwitterID        *string `ch:"twitter_id"`
+	Version          uint32  `ch:"version"`
 }
 
 // VisitorRecord represents a visitor record for ClickHouse insertion
