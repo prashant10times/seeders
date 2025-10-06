@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -167,6 +169,37 @@ func safeConvertToNullableString(value interface{}) *string {
 		return &str
 	}
 	return nil
+}
+
+// generateEventUUID creates a deterministic UUID from event_id and event_created
+func generateEventUUID(eventID uint32, eventCreated interface{}) string {
+	// Convert event_created to string for consistent input
+	var createdStr string
+	if eventCreated != nil {
+		createdStr = safeConvertToString(eventCreated)
+	}
+
+	// Create input string combining event_id and event_created
+	input := fmt.Sprintf("%d_%s", eventID, createdStr)
+
+	// Generate SHA256 hash of the input
+	hash := sha256.Sum256([]byte(input))
+
+	// Convert first 16 bytes to UUID format (version 5 style)
+	uuid := make([]byte, 16)
+	copy(uuid, hash[:16])
+
+	// Set version (4 bits) and variant (2 bits) for UUID v4 compatibility
+	uuid[6] = (uuid[6] & 0x0f) | 0x40 // Version 4
+	uuid[8] = (uuid[8] & 0x3f) | 0x80 // Variant bits
+
+	// Format as UUID string
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		binary.BigEndian.Uint32(uuid[0:4]),
+		binary.BigEndian.Uint16(uuid[4:6]),
+		binary.BigEndian.Uint16(uuid[6:8]),
+		binary.BigEndian.Uint16(uuid[8:10]),
+		binary.BigEndian.Uint64(append([]byte{0, 0}, uuid[10:16]...))&0xffffffffffff)
 }
 
 // converts a nullable string to uppercase
@@ -664,25 +697,28 @@ func convertToInt8(value interface{}) int8 {
 // converts a map to EventEditionRecord struct
 func convertToEventEditionRecord(record map[string]interface{}) EventEditionRecord {
 	return EventEditionRecord{
-		EventID:          safeConvertToUInt32(record["event_id"]),
-		EventName:        safeConvertToString(record["event_name"]),
-		EventAbbrName:    safeConvertToNullableString(record["event_abbr_name"]),
-		EventDescription: safeConvertToNullableString(record["event_description"]),
-		EventPunchline:   safeConvertToNullableString(record["event_punchline"]),
-		StartDate:        safeConvertToDateString(record["start_date"]),
-		EndDate:          safeConvertToDateString(record["end_date"]),
-		EditionID:        safeConvertToUInt32(record["edition_id"]),
-		EditionCountry:   strings.ToUpper(safeConvertToString(record["edition_country"])),
-		EditionCity:      safeConvertToUInt32(record["edition_city"]),
-		EditionCityName:  safeConvertToString(record["edition_city_name"]),
-		EditionCityLat:   safeConvertToFloat64(record["edition_city_lat"]),
-		EditionCityLong:  safeConvertToFloat64(record["edition_city_long"]),
-		CompanyID:        safeConvertToNullableUInt32(record["company_id"]),
-		CompanyName:      safeConvertToNullableString(record["company_name"]),
-		CompanyDomain:    safeConvertToNullableString(record["company_domain"]),
-		CompanyWebsite:   safeConvertToNullableString(record["company_website"]),
-		CompanyCountry:   toUpperNullableString(safeConvertToNullableString(record["company_country"])),
-		CompanyCity:      safeConvertToNullableUInt32(record["company_city"]),
+		EventID:            safeConvertToUInt32(record["event_id"]),
+		EventUUID:          safeConvertToString(record["event_uuid"]),
+		EventName:          safeConvertToString(record["event_name"]),
+		EventAbbrName:      safeConvertToNullableString(record["event_abbr_name"]),
+		EventDescription:   safeConvertToNullableString(record["event_description"]),
+		EventPunchline:     safeConvertToNullableString(record["event_punchline"]),
+		StartDate:          safeConvertToDateString(record["start_date"]),
+		EndDate:            safeConvertToDateString(record["end_date"]),
+		EditionID:          safeConvertToUInt32(record["edition_id"]),
+		EditionCountry:     strings.ToUpper(safeConvertToString(record["edition_country"])),
+		EditionCity:        safeConvertToUInt32(record["edition_city"]),
+		EditionCityName:    safeConvertToString(record["edition_city_name"]),
+		EditionCityStateID: safeConvertToNullableUInt32(record["edition_city_state_id"]),
+		EditionCityState:   safeConvertToString(record["edition_city_state"]),
+		EditionCityLat:     safeConvertToFloat64(record["edition_city_lat"]),
+		EditionCityLong:    safeConvertToFloat64(record["edition_city_long"]),
+		CompanyID:          safeConvertToNullableUInt32(record["company_id"]),
+		CompanyName:        safeConvertToNullableString(record["company_name"]),
+		CompanyDomain:      safeConvertToNullableString(record["company_domain"]),
+		CompanyWebsite:     safeConvertToNullableString(record["company_website"]),
+		CompanyCountry:     toUpperNullableString(safeConvertToNullableString(record["company_country"])),
+		CompanyCity:        safeConvertToNullableUInt32(record["company_city"]),
 		CompanyCityName: func() *string {
 			if val, ok := record["company_city_name"].(*string); ok {
 				return val
@@ -2040,7 +2076,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								if c, exists := cityLookup[cityID.(int64)]; exists {
 									city = c // If not found->city remains nil
 								}
-
 							}
 
 							// Get company city data
@@ -2120,6 +2155,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 							// Create record for ClickHouse insertion - include ALL data
 							record := map[string]interface{}{
 								"event_id":          eventData["id"],
+								"event_uuid":        generateEventUUID(safeConvertToUInt32(eventData["id"]), eventData["created"]),
 								"event_name":        eventData["event_name"],
 								"event_abbr_name":   eventData["abbr_name"],
 								"event_description": esInfoMap["event_description"],
@@ -2130,6 +2166,25 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"edition_country":   strings.ToUpper(safeConvertToString(eventData["country"])),
 								"edition_city":      edition["edition_city"],
 								"edition_city_name": safeConvertToString(city["name"]),
+								"edition_city_state": func() string {
+									if city != nil && city["state"] != nil {
+										stateStr := safeConvertToString(city["state"])
+										if strings.TrimSpace(stateStr) == "" {
+											return "any"
+										}
+										return stateStr
+									}
+									return "any"
+								}(),
+								"edition_city_state_id": func() interface{} {
+									if city != nil && city["state_id"] != nil {
+										if stateID, ok := city["state_id"].(int64); ok && stateID > 0 {
+											stateIDUint32 := uint32(stateID)
+											return stateIDUint32
+										}
+									}
+									return nil
+								}(),
 								"edition_city_lat":  city["event_city_lat"],
 								"edition_city_long": city["event_city_long"],
 								"company_id":        company["id"],
@@ -2506,7 +2561,7 @@ func fetchCityDataForBatch(db *sql.DB, cityIDs []int64) []map[string]interface{}
 
 	query := fmt.Sprintf(`
 		SELECT 
-			id, name, geo_lat as event_city_lat, geo_long as event_city_long
+			id, name, state, state_id, geo_lat as event_city_lat, geo_long as event_city_long
 		FROM city 
 		WHERE id IN (%s)`, strings.Join(placeholders, ","))
 
@@ -2888,9 +2943,9 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_edition_ch (
-			event_id, event_name, event_abbr_name, event_description, event_punchline, event_avgRating,
+			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating,
 			start_date, end_date,
-			edition_id, edition_country, edition_city, edition_city_name, edition_city_lat, edition_city_long,
+			edition_id, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
 			company_id, company_name, company_domain, company_website, company_country, company_city, company_city_name,
 			venue_id, venue_name, venue_country, venue_city, venue_city_name, venue_lat, venue_long,
 			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
@@ -2910,6 +2965,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 
 		err := batch.Append(
 			eventEditionRecord.EventID,                // event_id: UInt32 NOT NULL
+			eventEditionRecord.EventUUID,              // event_uuid: UUID NOT NULL
 			eventEditionRecord.EventName,              // event_name: String NOT NULL
 			eventEditionRecord.EventAbbrName,          // event_abbr_name: Nullable(String)
 			eventEditionRecord.EventDescription,       // event_description: Nullable(String)
@@ -2921,6 +2977,8 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			eventEditionRecord.EditionCountry,         // edition_country: LowCardinality(FixedString(2)) NOT NULL
 			eventEditionRecord.EditionCity,            // edition_city: UInt32 NOT NULL
 			eventEditionRecord.EditionCityName,        // edition_city_name: String NOT NULL
+			eventEditionRecord.EditionCityStateID,     // edition_city_state_id: Nullable(UInt32)
+			eventEditionRecord.EditionCityState,       // edition_city_state: LowCardinality(String) NOT NULL
 			eventEditionRecord.EditionCityLat,         // edition_city_lat: Float64 NOT NULL
 			eventEditionRecord.EditionCityLong,        // edition_city_long: Float64 NOT NULL
 			eventEditionRecord.CompanyID,              // company_id: Nullable(UInt32)
@@ -5483,6 +5541,7 @@ type VisitorRecord struct {
 // EventEditionRecord represents an event edition record for ClickHouse insertion
 type EventEditionRecord struct {
 	EventID                uint32   `ch:"event_id"`
+	EventUUID              string   `ch:"event_uuid"` // UUID generated from event_id + event_created
 	EventName              string   `ch:"event_name"`
 	EventAbbrName          *string  `ch:"event_abbr_name"`
 	EventDescription       *string  `ch:"event_description"`
@@ -5491,11 +5550,13 @@ type EventEditionRecord struct {
 	StartDate              string   `ch:"start_date"`      // Date NOT NULL
 	EndDate                string   `ch:"end_date"`        // Date NOT NULL
 	EditionID              uint32   `ch:"edition_id"`
-	EditionCountry         string   `ch:"edition_country"`   // LowCardinality(FixedString(2)) NOT NULL
-	EditionCity            uint32   `ch:"edition_city"`      // UInt32 NOT NULL
-	EditionCityName        string   `ch:"edition_city_name"` // String NOT NULL
-	EditionCityLat         float64  `ch:"edition_city_lat"`  // Float64 NOT NULL
-	EditionCityLong        float64  `ch:"edition_city_long"` // Float64 NOT NULL
+	EditionCountry         string   `ch:"edition_country"`       // LowCardinality(FixedString(2)) NOT NULL
+	EditionCity            uint32   `ch:"edition_city"`          // UInt32 NOT NULL
+	EditionCityName        string   `ch:"edition_city_name"`     // String NOT NULL
+	EditionCityStateID     *uint32  `ch:"edition_city_state_id"` // Nullable(UInt32)
+	EditionCityState       string   `ch:"edition_city_state"`    // LowCardinality(String) NOT NULL
+	EditionCityLat         float64  `ch:"edition_city_lat"`      // Float64 NOT NULL
+	EditionCityLong        float64  `ch:"edition_city_long"`     // Float64 NOT NULL
 	CompanyID              *uint32  `ch:"company_id"`
 	CompanyName            *string  `ch:"company_name"`
 	CompanyDomain          *string  `ch:"company_domain"`
