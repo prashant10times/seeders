@@ -4124,6 +4124,25 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config Config, startID
 				}
 			}
 
+			var userStateID *uint32
+			var userState *string
+			if cityID, ok := visitor["visitor_city"].(int64); ok && cityLookup != nil {
+				if city, exists := cityLookup[cityID]; exists {
+					if city["state_id"] != nil {
+						if stateID, ok := city["state_id"].(int64); ok && stateID > 0 {
+							stateIDUint32 := uint32(stateID)
+							userStateID = &stateIDUint32
+						}
+					}
+					if city["state"] != nil {
+						stateStr := safeConvertToString(city["state"])
+						if strings.TrimSpace(stateStr) != "" {
+							userState = &stateStr
+						}
+					}
+				}
+			}
+
 			userID := convertToUInt32(visitor["user"])
 			eventID := convertToUInt32(visitor["event"])
 			editionID := convertToUInt32(visitor["edition"])
@@ -4140,6 +4159,8 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config Config, startID
 				UserCity:        convertToUInt32Ptr(visitor["visitor_city"]),
 				UserCityName:    userCityName,
 				UserCountry:     toUpperNullableString(convertToStringPtr(visitor["visitor_country"])),
+				UserStateID:     userStateID,
+				UserState:       userState,
 				Version:         1,
 			}
 
@@ -4462,7 +4483,7 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_visitors_ch (
 			user_id, event_id, edition_id, user_name, user_company,
-			user_designation, user_city, user_city_name, user_country, version
+			user_designation, user_city, user_city_name, user_country, user_state_id, user_state, version
 		)
 	`)
 	if err != nil {
@@ -4483,6 +4504,8 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 			record.UserCity,        // user_city: Nullable(UInt32)
 			record.UserCityName,    // user_city_name: LowCardinality(Nullable(String))
 			record.UserCountry,     // user_country: LowCardinality(Nullable(FixedString(2)))
+			record.UserStateID,     // user_state_id: UInt32
+			record.UserState,       // user_state: LowCardinality(Nullable(String))
 			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
@@ -4709,6 +4732,27 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 				}
 			}
 
+			var userStateID *uint32
+			var userState *string
+			if userCity != nil {
+				if cityID, ok := userCity.(int64); ok && cityLookup != nil {
+					if city, exists := cityLookup[cityID]; exists {
+						if city["state_id"] != nil {
+							if stateID, ok := city["state_id"].(int64); ok && stateID > 0 {
+								stateIDUint32 := uint32(stateID)
+								userStateID = &stateIDUint32
+							}
+						}
+						if city["state"] != nil {
+							stateStr := safeConvertToString(city["state"])
+							if strings.TrimSpace(stateStr) != "" {
+								userState = &stateStr
+							}
+						}
+					}
+				}
+			}
+
 			userID := convertToUInt32(speaker["user_id"])
 			eventID := convertToUInt32(speaker["event"])
 			editionID := convertToUInt32(speaker["edition"])
@@ -4723,6 +4767,8 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 				UserCity:        convertToUInt32Ptr(userCity),
 				UserCityName:    userCityName,
 				UserCountry:     toUpperNullableString(convertToStringPtr(userCountry)),
+				UserStateID:     userStateID,
+				UserState:       userState,
 				Version:         1,
 			}
 
@@ -5367,7 +5413,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_speaker_ch (
 			user_id, event_id, edition_id, user_name, user_company,
-			user_designation, user_city, user_city_name, user_country, version
+			user_designation, user_city, user_city_name, user_country, user_state_id, user_state, version
 		)
 	`)
 	if err != nil {
@@ -5385,6 +5431,8 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 			record.UserCity,        // user_city: Nullable(UInt32)
 			record.UserCityName,    // user_city_name: LowCardinality(Nullable(String))
 			record.UserCountry,     // user_country: LowCardinality(Nullable(FixedString(2)))
+			record.UserStateID,     // user_state_id: UInt32
+			record.UserState,       // user_state: LowCardinality(Nullable(String))
 			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
@@ -5509,6 +5557,8 @@ type SpeakerRecord struct {
 	UserCity        *uint32 `ch:"user_city"`
 	UserCityName    *string `ch:"user_city_name"`
 	UserCountry     *string `ch:"user_country"`
+	UserStateID     *uint32 `ch:"user_state_id"`
+	UserState       *string `ch:"user_state"`
 	Version         uint32  `ch:"version"`
 }
 
@@ -5540,6 +5590,8 @@ type VisitorRecord struct {
 	UserCity        *uint32 `ch:"user_city"`
 	UserCityName    *string `ch:"user_city_name"`
 	UserCountry     *string `ch:"user_country"`
+	UserStateID     *uint32 `ch:"user_state_id"`
+	UserState       *string `ch:"user_state"`
 	Version         uint32  `ch:"version"`
 }
 
