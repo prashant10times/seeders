@@ -718,6 +718,7 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		CompanyDomain:      safeConvertToNullableString(record["company_domain"]),
 		CompanyWebsite:     safeConvertToNullableString(record["company_website"]),
 		CompanyCountry:     toUpperNullableString(safeConvertToNullableString(record["company_country"])),
+		CompanyState:       safeConvertToNullableString(record["company_state"]),
 		CompanyCity:        safeConvertToNullableUInt32(record["company_city"]),
 		CompanyCityName: func() *string {
 			if val, ok := record["company_city_name"].(*string); ok {
@@ -2019,10 +2020,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				partialCount := 0
 				skippedCount := 0
 
-				// Use global deduplication map (no local map needed)
-
-				// log.Printf("Event edition chunk %d: Processing %d events with editions", chunkNum, len(eventEditions))
-
 				// Fetch event data for all events that have editions (not just those in current batch)
 				eventIDsForEditions := make([]int64, 0, len(eventEditions))
 				for eventID := range eventEditions {
@@ -2041,9 +2038,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				}
 
 				for eventID, editions := range eventEditions {
-					// log.Printf("Event edition chunk %d: Event %d has %d editions", chunkNum, eventID, len(editions))
-
-					// Get event data from the lookup
 					eventData := eventDataLookup[eventID]
 
 					if eventData != nil {
@@ -2192,7 +2186,17 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"company_domain":    companyDomain,
 								"company_website":   company["company_website"],
 								"company_country":   strings.ToUpper(safeConvertToString(company["company_country"])),
-								"company_city":      company["company_city"],
+								"company_state": func() *string {
+									if companyCity != nil && companyCity["state"] != nil {
+										stateStr := safeConvertToString(companyCity["state"])
+										if strings.TrimSpace(stateStr) == "" {
+											return nil
+										}
+										return &stateStr
+									}
+									return nil
+								}(),
+								"company_city": company["company_city"],
 								"company_city_name": func() *string {
 									if companyCity != nil && companyCity["name"] != nil {
 										nameStr := safeConvertToString(companyCity["name"])
@@ -2946,7 +2950,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating,
 			start_date, end_date,
 			edition_id, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
-			company_id, company_name, company_domain, company_website, company_country, company_city, company_city_name,
+			company_id, company_name, company_domain, company_website, company_country, company_state, company_city, company_city_name,
 			venue_id, venue_name, venue_country, venue_city, venue_city_name, venue_lat, venue_long,
 			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
 			edition_type, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
@@ -2986,6 +2990,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			eventEditionRecord.CompanyDomain,          // company_domain: Nullable(String)
 			eventEditionRecord.CompanyWebsite,         // company_website: Nullable(String)
 			eventEditionRecord.CompanyCountry,         // company_country: LowCardinality(Nullable(FixedString(2)))
+			eventEditionRecord.CompanyState,           // company_state: LowCardinality(Nullable(String))
 			eventEditionRecord.CompanyCity,            // company_city: Nullable(UInt32)
 			eventEditionRecord.CompanyCityName,        // company_city_name: Nullable(String)
 			eventEditionRecord.VenueID,                // venue_id: Nullable(UInt32)
@@ -5562,6 +5567,7 @@ type EventEditionRecord struct {
 	CompanyDomain          *string  `ch:"company_domain"`
 	CompanyWebsite         *string  `ch:"company_website"`
 	CompanyCountry         *string  `ch:"company_country"`
+	CompanyState           *string  `ch:"company_state"` // LowCardinality(Nullable(String))
 	CompanyCity            *uint32  `ch:"company_city"`
 	CompanyCityName        *string  `ch:"company_city_name"`
 	VenueID                *uint32  `ch:"venue_id"`
