@@ -749,6 +749,9 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		EditionFollowers:     safeConvertToNullableUInt32(record["edition_followers"]),
 		EventExhibitor:       safeConvertToNullableUInt32(record["event_exhibitor"]),
 		EditionExhibitor:     safeConvertToNullableUInt32(record["edition_exhibitor"]),
+		ExhibitorsUpperBound: safeConvertToNullableUInt32(record["exhibitors_upper_bound"]),
+		ExhibitorsLowerBound: safeConvertToNullableUInt32(record["exhibitors_lower_bound"]),
+		ExhibitorsMean:       safeConvertToNullableUInt32(record["exhibitors_mean"]),
 		EventSponsor:         safeConvertToNullableUInt32(record["event_sponsor"]),
 		EditionSponsor:       safeConvertToNullableUInt32(record["edition_sponsor"]),
 		EventSpeaker:         safeConvertToNullableUInt32(record["event_speaker"]),
@@ -1582,7 +1585,8 @@ func fetchEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interfa
 		SELECT 
 			event, id as edition_id, city as edition_city, 
 			company_id, venue as venue_id, website as edition_website, 
-			created as edition_created, start_date as edition_start_date
+			created as edition_created, start_date as edition_start_date,
+			exhibitors_total
 		FROM event_edition 
 		WHERE event IN (%s)`, strings.Join(placeholders, ","))
 
@@ -1622,10 +1626,15 @@ func fetchEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interfa
 			}
 		}
 
-		// Add current_edition_id to the row
+		// Add current_edition_id and exhibitors_total for current editions only
 		if eventID, ok := row["event"].(int64); ok {
 			if currentEditionID, exists := currentEditionMap[eventID]; exists {
 				row["current_edition_id"] = currentEditionID
+
+				// Only add exhibitors_total if this is the current edition
+				if editionID, ok := row["edition_id"].(int64); ok && editionID == currentEditionID {
+					row["current_edition_exhibitors_total"] = row["exhibitors_total"]
+				}
 			}
 		}
 
@@ -1650,7 +1659,7 @@ func fetchEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface
 
 	query := fmt.Sprintf(`
 		SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, 
-		       country, published, status, event_audience, functionality, brand_id, created 
+		       country, published, status, event_audience, functionality, brand_id, created, event_type 
 		FROM event 
 		WHERE id IN (%s)`, strings.Join(placeholders, ","))
 
@@ -2227,6 +2236,9 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"edition_followers":      esInfoMap["event_following"],
 								"event_exhibitor":        esInfoMap["event_exhibitors"],
 								"edition_exhibitor":      esInfoMap["edition_exhibitor"],
+								"exhibitors_upper_bound": nil,
+								"exhibitors_lower_bound": nil,
+								"exhibitors_mean":        nil,
 								"event_sponsor":          esInfoMap["event_totalSponsor"],
 								"edition_sponsor":        esInfoMap["edition_sponsor"],
 								"event_speaker":          esInfoMap["event_speakers"],
@@ -2253,7 +2265,84 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"version":                 1,
 							}
 
-							// Set edition_type with default value if nil
+							var currentEditionEventType interface{}
+							if currentEditionIDs[eventID] == edition["edition_id"].(int64) {
+								currentEditionEventType = eventData["event_type"]
+
+								exhibitorsCountByOrganizer := edition["current_edition_exhibitors_total"]
+								visitorLeads := esInfoMap["event_following"]
+								eventTypeSourceID := currentEditionEventType
+
+								var exhibitorsCount *int64
+								if exhibitorsCountByOrganizer != nil {
+									if val, ok := exhibitorsCountByOrganizer.(int64); ok {
+										exhibitorsCount = &val
+									}
+								}
+
+								var visitorLeadsInt int64 = 0
+								if visitorLeads != nil {
+									if val, ok := visitorLeads.(uint32); ok {
+										visitorLeadsInt = int64(val)
+									}
+								}
+
+								var eventTypeID *int64
+								if eventTypeSourceID != nil {
+									if val, ok := eventTypeSourceID.(int64); ok {
+										eventTypeID = &val
+									}
+								}
+
+								var upperBound, lowerBound, mean *int64
+
+								if exhibitorsCount != nil && *exhibitorsCount >= 0 {
+									upperBound = exhibitorsCount
+									lowerBound = exhibitorsCount
+								} else {
+									if eventTypeID != nil && *eventTypeID == 1 {
+										if visitorLeadsInt == 0 {
+											upper := int64(100)
+											lower := int64(20)
+											upperBound = &upper
+											lowerBound = &lower
+										} else if visitorLeadsInt >= 1 && visitorLeadsInt <= 100 {
+											upper := int64(500)
+											lower := int64(100)
+											upperBound = &upper
+											lowerBound = &lower
+										} else {
+											upper := int64(1000)
+											lower := int64(500)
+											upperBound = &upper
+											lowerBound = &lower
+										}
+									} else {
+										upperBound = nil
+										lowerBound = nil
+									}
+								}
+
+								if upperBound != nil && lowerBound != nil {
+									meanVal := (*upperBound + *lowerBound) / 2
+									mean = &meanVal
+								} else {
+									mean = nil
+								}
+
+								// Update the record with calculated bounds for current editions
+								if upperBound != nil {
+									record["exhibitors_upper_bound"] = uint32(*upperBound)
+								}
+								if lowerBound != nil {
+									record["exhibitors_lower_bound"] = uint32(*lowerBound)
+								}
+								if mean != nil {
+									record["exhibitors_mean"] = uint32(*mean)
+								}
+
+							}
+
 							if editionType != nil {
 								record["edition_type"] = *editionType
 							} else {
@@ -2954,6 +3043,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			venue_id, venue_name, venue_country, venue_city, venue_city_name, venue_lat, venue_long,
 			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
 			edition_type, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
+			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
 			event_created, edition_created, event_hybrid, isBranded, maturity,
 			event_pricing, event_logo, event_estimatedVisitors, event_frequency, version
@@ -3011,6 +3101,9 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			eventEditionRecord.EditionFollowers,       // edition_followers: Nullable(UInt32)
 			eventEditionRecord.EventExhibitor,         // event_exhibitor: Nullable(UInt32)
 			eventEditionRecord.EditionExhibitor,       // edition_exhibitor: Nullable(UInt32)
+			eventEditionRecord.ExhibitorsUpperBound,   // exhibitors_upper_bound: Nullable(UInt32)
+			eventEditionRecord.ExhibitorsLowerBound,   // exhibitors_lower_bound: Nullable(UInt32)
+			eventEditionRecord.ExhibitorsMean,         // exhibitors_mean: Nullable(UInt32)
 			eventEditionRecord.EventSponsor,           // event_sponsor: Nullable(UInt32)
 			eventEditionRecord.EditionSponsor,         // edition_sponsor: Nullable(UInt32)
 			eventEditionRecord.EventSpeaker,           // event_speaker: Nullable(UInt32)
@@ -5692,6 +5785,9 @@ type EventEditionRecord struct {
 	EditionFollowers       *uint32  `ch:"edition_followers"`
 	EventExhibitor         *uint32  `ch:"event_exhibitor"`
 	EditionExhibitor       *uint32  `ch:"edition_exhibitor"`
+	ExhibitorsUpperBound   *uint32  `ch:"exhibitors_upper_bound"`
+	ExhibitorsLowerBound   *uint32  `ch:"exhibitors_lower_bound"`
+	ExhibitorsMean         *uint32  `ch:"exhibitors_mean"`
 	EventSponsor           *uint32  `ch:"event_sponsor"`
 	EditionSponsor         *uint32  `ch:"edition_sponsor"`
 	EventSpeaker           *uint32  `ch:"event_speaker"`
