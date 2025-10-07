@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,6 +19,9 @@ import (
 	"sync"
 	"time"
 
+	"seeders/shared"
+	"seeders/utils"
+
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/elastic/go-elasticsearch/v6"
@@ -27,38 +29,6 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/kelseyhightower/envconfig"
 )
-
-// retryWithBackoff
-func retryWithBackoff(operation func() error, maxRetries int, operationName string) error {
-	var lastError error
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		if err := operation(); err == nil {
-			if attempt > 1 {
-				log.Printf("Operation %s succeeded on attempt %d", operationName, attempt)
-			}
-			return nil
-		} else {
-			lastError = err
-			log.Printf("Operation %s failed on attempt %d with error: %v", operationName, attempt, err)
-			if strings.Contains(operationName, "insertion") || strings.Contains(operationName, "ClickHouse") {
-				log.Printf("Detailed error for %s: %+v", operationName, err)
-			}
-		}
-
-		if attempt == maxRetries {
-			return fmt.Errorf("operation %s failed after %d attempts. Last error: %v", operationName, maxRetries, lastError)
-		}
-
-		baseDelay := time.Duration(attempt*attempt) * time.Second
-		jitter := time.Duration(rand.Intn(1000)) * time.Millisecond
-		delay := baseDelay + jitter
-
-		log.Printf("Operation %s failed on attempt %d, retrying in %v", operationName, attempt, delay)
-		time.Sleep(delay)
-	}
-	return nil
-}
 
 // safely converts a value to string for non-nullable fields
 func safeConvertToString(value interface{}) string {
@@ -1052,25 +1022,6 @@ func testClickHouseConnection(clickhouseConn driver.Conn) error {
 	return nil
 }
 
-func getTotalRecordsAndIDRange(db *sql.DB, table string) (int, int, int, error) {
-	query := fmt.Sprintf("SELECT COUNT(*), MIN(id), MAX(id) FROM %s", table)
-	fmt.Printf("Executing query: %s\n", query)
-
-	start := time.Now()
-	var count, minId, maxId int
-	err := db.QueryRow(query).Scan(&count, &minId, &maxId)
-	duration := time.Since(start)
-
-	if err != nil {
-		fmt.Printf("SQL error in getTotalRecordsAndIDRange for table %s: %v\n", table, err)
-		fmt.Printf("Query execution time: %v\n", duration)
-		return 0, 0, 0, fmt.Errorf("failed to get records for table %s: %v", table, err)
-	}
-
-	fmt.Printf("Query completed successfully in %v\n", duration)
-	return count, minId, maxId, nil
-}
-
 func buildMigrationData(db *sql.DB, table string, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf("SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, country, published, status, event_audience, functionality, brand_id, created FROM %s WHERE id >= %d AND id <= %d ORDER BY id LIMIT %d", table, startID, endID, batchSize)
 	rows, err := db.Query(query)
@@ -1706,7 +1657,7 @@ func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClie
 	log.Println("=== Starting EVENT EDITION ONLY Processing ===")
 
 	// Get total records and min/max ID's count from event table
-	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event")
+	totalRecords, minID, maxID, err := shared.GetTotalRecordsAndIDRange(mysqlDB, "event")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event:", err)
 	}
@@ -2390,7 +2341,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				if len(clickHouseRecords) > 0 {
 					log.Printf("Event edition chunk %d: Attempting to insert %d records into ClickHouse...", chunkNum, len(clickHouseRecords))
 
-					insertErr := retryWithBackoff(
+					insertErr := shared.RetryWithBackoff(
 						func() error {
 							return insertEventEditionDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers)
 						},
@@ -3139,7 +3090,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 func processExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
 	log.Println("=== Starting EXHIBITOR ONLY Processing ===")
 
-	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_exhibitor")
+	totalRecords, minID, maxID, err := shared.GetTotalRecordsAndIDRange(mysqlDB, "event_exhibitor")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event_exhibitor:", err)
 	}
@@ -3350,7 +3301,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config C
 			// Insert exhibitor data into ClickHouse
 			if len(exhibitorRecords) > 0 {
 				log.Printf("Exhibitor chunk %d: Attempting to insert %d records into event_exhibitor_ch...", chunkNum, len(exhibitorRecords))
-				exhibitorInsertErr := retryWithBackoff(
+				exhibitorInsertErr := shared.RetryWithBackoff(
 					func() error {
 						return insertExhibitorDataIntoClickHouse(clickhouseConn, exhibitorRecords, config.ClickHouseWorkers)
 					},
@@ -3622,7 +3573,7 @@ func extractExhibitorEventIDs(exhibitorData []map[string]interface{}) []int64 {
 func processSponsorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
 	log.Println("=== Starting SPONSORS ONLY Processing ===")
 
-	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_sponsors")
+	totalRecords, minID, maxID, err := shared.GetTotalRecordsAndIDRange(mysqlDB, "event_sponsors")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event_sponsors:", err)
 	}
@@ -3838,7 +3789,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 		if len(sponsorRecords) > 0 {
 			log.Printf("Sponsors chunk %d: Attempting to insert %d records into event_sponsors_ch...", chunkNum, len(sponsorRecords))
 
-			sponsorInsertErr := retryWithBackoff(
+			sponsorInsertErr := shared.RetryWithBackoff(
 				func() error {
 					return insertSponsorsDataIntoClickHouse(clickhouseConn, sponsorRecords, config.ClickHouseWorkers)
 				},
@@ -4091,7 +4042,7 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 func processVisitorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
 	log.Println("=== Starting VISITORS ONLY Processing ===")
 
-	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_visitor")
+	totalRecords, minID, maxID, err := shared.GetTotalRecordsAndIDRange(mysqlDB, "event_visitor")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event_visitor:", err)
 	}
@@ -4311,7 +4262,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config Config, startID
 		if len(visitorRecords) > 0 {
 			log.Printf("Visitors chunk %d: Attempting to insert %d records into event_visitor_ch...", chunkNum, len(visitorRecords))
 
-			visitorInsertErr := retryWithBackoff(
+			visitorInsertErr := shared.RetryWithBackoff(
 				func() error {
 					return insertVisitorsDataIntoClickHouse(chConn, visitorRecords, config.ClickHouseWorkers)
 				},
@@ -4673,7 +4624,7 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
 	log.Println("=== Starting SPEAKERS ONLY Processing ===")
 
-	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_speaker")
+	totalRecords, minID, maxID, err := shared.GetTotalRecordsAndIDRange(mysqlDB, "event_speaker")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event_speaker:", err)
 	}
@@ -4726,7 +4677,7 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Con
 func processEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
 	log.Println("=== Starting event_type_ch ONLY Processing ===")
 
-	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_type_event")
+	totalRecords, minID, maxID, err := shared.GetTotalRecordsAndIDRange(mysqlDB, "event_type_event")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event_type_event:", err)
 	}
@@ -4920,7 +4871,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 		if len(speakerRecords) > 0 {
 			log.Printf("Speakers chunk %d: Attempting to insert %d records into event_speaker_ch...", chunkNum, len(speakerRecords))
 
-			speakerInsertErr := retryWithBackoff(
+			speakerInsertErr := shared.RetryWithBackoff(
 				func() error {
 					return insertSpeakersDataIntoClickHouse(clickhouseConn, speakerRecords, config.ClickHouseWorkers)
 				},
@@ -5000,7 +4951,7 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 		if len(eventTypeEventChRecords) > 0 {
 			log.Printf("EventTypeEventCh chunk %d: Attempting to insert %d records into event_type_ch...", chunkNum, len(eventTypeEventChRecords))
 
-			insertErr := retryWithBackoff(
+			insertErr := shared.RetryWithBackoff(
 				func() error {
 					return insertEventTypeEventChDataIntoClickHouse(clickhouseConn, eventTypeEventChRecords, config.ClickHouseWorkers)
 				},
@@ -5145,7 +5096,7 @@ func buildEventTypeEventChMigrationData(db *sql.DB, startID, endID int, batchSiz
 func processEventCategoryEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Config) {
 	log.Println("=== Starting event_category_ch ONLY Processing ===")
 
-	totalRecords, minID, maxID, err := getTotalRecordsAndIDRange(mysqlDB, "event_category")
+	totalRecords, minID, maxID, err := shared.GetTotalRecordsAndIDRange(mysqlDB, "event_category")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event_category:", err)
 	}
@@ -5239,7 +5190,7 @@ func processEventCategoryEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Con
 		if len(eventCategoryEventChRecords) > 0 {
 			log.Printf("EventCategoryEventCh chunk %d: Attempting to insert %d records into event_category_ch...", chunkNum, len(eventCategoryEventChRecords))
 
-			insertErr := retryWithBackoff(
+			insertErr := shared.RetryWithBackoff(
 				func() error {
 					return insertEventCategoryEventChDataIntoClickHouse(clickhouseConn, eventCategoryEventChRecords, config.ClickHouseWorkers)
 				},
@@ -5839,6 +5790,7 @@ func main() {
 	var eventEditionOnly bool
 	var eventTypeEventChOnly bool
 	var eventCategoryEventChOnly bool
+	var eventRankingOnly bool
 
 	flag.IntVar(&numChunks, "chunks", 5, "Number of chunks to process data in (default: 5)")
 	flag.IntVar(&batchSize, "batch", 5000, "MySQL batch size for fetching data (default: 5000)")
@@ -5852,6 +5804,7 @@ func main() {
 	flag.BoolVar(&eventEditionOnly, "event-edition", false, "Process only event edition data (default: false)")
 	flag.BoolVar(&eventTypeEventChOnly, "eventtype", false, "Process only eventtype data (default: false)")
 	flag.BoolVar(&eventCategoryEventChOnly, "eventcategory", false, "Process only eventcategory data (default: false)")
+	flag.BoolVar(&eventRankingOnly, "eventranking", false, "Process only event ranking data (default: false)")
 
 	flag.BoolVar(&showHelp, "help", false, "Show help information")
 	flag.Parse()
@@ -5972,6 +5925,8 @@ func main() {
 		log.Printf("Mode: EVENT TYPE ONLY")
 	} else if eventCategoryEventChOnly {
 		log.Printf("Mode: EVENT CATEGORY ONLY")
+	} else if eventRankingOnly {
+		log.Printf("Mode: EVENT RANKING ONLY")
 	}
 
 	if sponsorsOnly {
@@ -5986,6 +5941,8 @@ func main() {
 		log.Printf("Elasticsearch: Skipped (not needed for event Type)")
 	} else if eventCategoryEventChOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for event Category)")
+	} else if eventRankingOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for event ranking)")
 	}
 	log.Printf("==============================\n")
 
@@ -6002,7 +5959,7 @@ func main() {
 		log.Fatalf("ClickHouse connection test failed: %v", err)
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly {
+	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventRankingOnly {
 		if err := testElasticsearchConnection(esClient, config.IndexName); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -6019,6 +5976,8 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_type_ch processing)")
 		} else if eventCategoryEventChOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_category_ch processing)")
+		} else if eventRankingOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_ranking_ch processing)")
 		}
 	}
 
@@ -6036,6 +5995,14 @@ func main() {
 		processEventTypeEventChOnly(mysqlDB, clickhouseDB, config)
 	} else if eventCategoryEventChOnly {
 		processEventCategoryEventChOnly(mysqlDB, clickhouseDB, config)
+	} else if eventRankingOnly {
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		utils.ProcessEventRankingOnly(mysqlDB, clickhouseDB, utilsConfig)
 	} else {
 		log.Println("Error: No specific table mode selected!")
 		log.Println("Please specify one of the following modes:")
@@ -6046,6 +6013,7 @@ func main() {
 		log.Println("  -speakers         # Process speakers data")
 		log.Println("  -eventtype        # Process eventtype data")
 		log.Println("  -eventcategory    # Process eventcategory data")
+		log.Println("  -eventranking     # Process event ranking data")
 		log.Println("")
 		log.Println("Example: go run main.go -event-edition -chunks=10 -workers=20")
 		os.Exit(1)
