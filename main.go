@@ -4812,11 +4812,11 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 				UserName:        convertToString(userName),
 				UserCompany:     convertToStringPtr(userCompany),
 				UserDesignation: convertToStringPtr(userDesignation),
+				UserState:       userStateID,
+				UserStateName:   userState,
 				UserCity:        convertToUInt32Ptr(userCity),
 				UserCityName:    userCityName,
 				UserCountry:     toUpperNullableString(convertToStringPtr(userCountry)),
-				UserStateID:     userStateID,
-				UserState:       userState,
 				Version:         1,
 			}
 
@@ -5461,7 +5461,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_speaker_ch (
 			user_id, event_id, edition_id, user_name, user_company,
-			user_designation, user_city, user_city_name, user_country, user_state_id, user_state, version
+			user_designation, user_state, user_state_name, user_city, user_city_name, user_country, version
 		)
 	`)
 	if err != nil {
@@ -5476,11 +5476,11 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 			record.UserName,        // user_name: String NOT NULL
 			record.UserCompany,     // user_company: Nullable(String)
 			record.UserDesignation, // user_designation: Nullable(String)
+			record.UserState,       // user_state: Nullable(UInt32)
+			record.UserStateName,   // user_state_name: LowCardinality(Nullable(String))
 			record.UserCity,        // user_city: Nullable(UInt32)
 			record.UserCityName,    // user_city_name: LowCardinality(Nullable(String))
 			record.UserCountry,     // user_country: LowCardinality(Nullable(FixedString(2)))
-			record.UserStateID,     // user_state_id: UInt32
-			record.UserState,       // user_state: LowCardinality(Nullable(String))
 			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
@@ -5604,11 +5604,11 @@ type SpeakerRecord struct {
 	UserName        string  `ch:"user_name"`
 	UserCompany     *string `ch:"user_company"`
 	UserDesignation *string `ch:"user_designation"`
+	UserState       *uint32 `ch:"user_state"`
+	UserStateName   *string `ch:"user_state_name"`
 	UserCity        *uint32 `ch:"user_city"`
 	UserCityName    *string `ch:"user_city_name"`
 	UserCountry     *string `ch:"user_country"`
-	UserStateID     *uint32 `ch:"user_state_id"`
-	UserState       *string `ch:"user_state"`
 	Version         uint32  `ch:"version"`
 }
 
