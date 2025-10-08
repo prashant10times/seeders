@@ -82,3 +82,11 @@ func SafeConvertToString(value interface{}) string {
 	}
 	return fmt.Sprintf("%v", value)
 }
+
+func SafeConvertToDateTimeString(value interface{}) string {
+	str := SafeConvertToString(value)
+	if str == "" {
+		return "1970-01-01 00:00:00"
+	}
+	return str
+}

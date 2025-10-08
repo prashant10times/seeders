@@ -15,14 +15,14 @@ import (
 
 // EventRankingChRecord represents the structure for event_ranking_ch table
 type EventRankingChRecord struct {
-	ID           uint32    `ch:"id"`
-	EventID      uint32    `ch:"event_id"`
-	Country      string    `ch:"country"` // FixedString(2)
-	Category     *uint32   `ch:"category"`
-	CategoryName string    `ch:"category_name"`
-	EventRank    uint32    `ch:"event_rank"`
-	Created      time.Time `ch:"created"`
-	Version      uint32    `ch:"version"`
+	ID           uint32  `ch:"id"`
+	EventID      uint32  `ch:"event_id"`
+	Country      string  `ch:"country"` // FixedString(2)
+	Category     *uint32 `ch:"category"`
+	CategoryName string  `ch:"category_name"`
+	EventRank    uint32  `ch:"event_rank"`
+	Created      string  `ch:"created"`
+	Version      uint32  `ch:"version"`
 }
 
 // FetchCategoryNameData fetches category names from category table
@@ -139,11 +139,8 @@ func ConvertToEventRankingChRecords(mysqlData []map[string]interface{}, db *sql.
 			}
 		}
 
-		if created, ok := row["created"]; ok && created != nil {
-			if createdTime, ok := created.(time.Time); ok {
-				record.Created = createdTime
-			}
-		}
+		// Created - following the same pattern as other tables
+		record.Created = shared.SafeConvertToDateTimeString(row["created"])
 
 		records = append(records, record)
 	}
@@ -305,9 +302,10 @@ func ProcessEventRankingChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, confi
 	totalRecords := endID - startID + 1
 	processed := 0
 
+	// Use batching within the chunk - following the same pattern as other tables
 	offset := 0
 	for {
-		batchData, err := BuildEventRankingMigrationData(mysqlDB, startID, endID, config.BatchSize, offset)
+		batchData, err := BuildEventRankingMigrationData(mysqlDB, startID, endID, config.BatchSize)
 		if err != nil {
 			results <- fmt.Sprintf("EventRanking chunk %d batch error: %v", chunkNum, err)
 			return
@@ -342,22 +340,36 @@ func ProcessEventRankingChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, confi
 			log.Printf("EventRanking chunk %d: Successfully inserted %d records", chunkNum, len(records))
 		}
 
-		offset += config.BatchSize
+		// Get the last ID from this batch for next iteration
+		if len(batchData) > 0 {
+			lastID := batchData[len(batchData)-1]["id"]
+			if lastID != nil {
+				// Update startID for next batch within this chunk
+				if id, ok := lastID.(int64); ok {
+					startID = int(id) + 1
+				}
+			}
+		}
+
+		offset += len(batchData)
+		if len(batchData) < config.BatchSize {
+			break
+		}
 	}
 
 	results <- fmt.Sprintf("EventRanking chunk %d completed successfully", chunkNum)
 }
 
-func BuildEventRankingMigrationData(mysqlDB *sql.DB, startID, endID int, batchSize int, offset int) ([]map[string]interface{}, error) {
+func BuildEventRankingMigrationData(mysqlDB *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := `
 		SELECT id, event_id, country, category, event_rank, created
 		FROM event_ranking
 		WHERE id >= ? AND id <= ?
 		ORDER BY id
-		LIMIT ? OFFSET ?
+		LIMIT ?
 	`
 
-	rows, err := mysqlDB.Query(query, startID, endID, batchSize, offset)
+	rows, err := mysqlDB.Query(query, startID, endID, batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query event_ranking: %v", err)
 	}
