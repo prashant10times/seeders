@@ -743,6 +743,7 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		InboundScore:                    safeConvertToNullableUInt32(record["inboundScore"]),
 		InternationalScore:              safeConvertToNullableUInt32(record["internationalScore"]),
 		RepeatSentimentChangePercentage: safeConvertToNullableFloat64(record["repeatSentimentChangePercentage"]),
+		AudienceZone:                    safeConvertToNullableString(record["audienceZone"]),
 		EventAvgRating:                  safeConvertFloat64ToDecimalString(record["event_avgRating"]),
 		Version:                         safeConvertToUInt32(record["version"]),
 	}
@@ -2218,6 +2219,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"inboundScore":                    esInfoMap["inboundScore"],
 								"internationalScore":              esInfoMap["internationalScore"],
 								"repeatSentimentChangePercentage": esInfoMap["repeatSentimentChangePercentage"],
+								"audienceZone":                    esInfoMap["audienceZone"],
 								"event_avgRating":                 esInfoMap["avg_rating"],
 								"version":                         1,
 							}
@@ -2707,7 +2709,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			},
 		},
 		"size":    len(eventIDs),
-		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "inboundScore", "internationalScore", "repeatSentimentChangePercentage"},
+		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "inboundScore", "internationalScore", "repeatSentimentChangePercentage", "audienceZone"},
 	}
 
 	queryJSON, _ := json.Marshal(query)
@@ -2869,6 +2871,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			"inboundScore":                    convertStringToUInt32("inboundScore"),
 			"internationalScore":              convertStringToUInt32("internationalScore"),
 			"repeatSentimentChangePercentage": convertToFloat64("repeatSentimentChangePercentage"),
+			"audienceZone":                    convertToString(source["audienceZone"]),
 		}
 	}
 
@@ -3028,7 +3031,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
 			event_created, edition_created, event_hybrid, isBranded, maturity,
-			event_pricing, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, repeatSentimentChangePercentage, version
+			event_pricing, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone, version
 		)
 	`)
 	if err != nil {
@@ -3102,6 +3105,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			eventEditionRecord.InboundScore,                    // inboundScore: Nullable(UInt32)
 			eventEditionRecord.InternationalScore,              // internationalScore: Nullable(UInt32)
 			eventEditionRecord.RepeatSentimentChangePercentage, // repeatSentimentChangePercentage: Nullable(Float64)
+			eventEditionRecord.AudienceZone,                    // audienceZone: LowCardinality(Nullable(String))
 			eventEditionRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
@@ -5789,6 +5793,7 @@ type EventEditionRecord struct {
 	InboundScore                    *uint32  `ch:"inboundScore"`                    // Nullable(UInt32)
 	InternationalScore              *uint32  `ch:"internationalScore"`              // Nullable(UInt32)
 	RepeatSentimentChangePercentage *float64 `ch:"repeatSentimentChangePercentage"` // Nullable(Float64)
+	AudienceZone                    *string  `ch:"audienceZone"`                    // LowCardinality(Nullable(String))
 	Version                         uint32   `ch:"version"`
 }
 
