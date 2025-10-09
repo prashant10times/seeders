@@ -735,15 +735,16 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 			}
 			return nil
 		}(),
-		Maturity:               safeConvertToNullableString(record["maturity"]),
-		EventPricing:           safeConvertToNullableString(record["event_pricing"]),
-		EventLogo:              safeConvertToNullableString(record["event_logo"]),
-		EventEstimatedVisitors: safeConvertToNullableString(record["event_estimatedVisitors"]),
-		EventFrequency:         safeConvertToNullableString(record["event_frequency"]),
-		InboundScore:           safeConvertToNullableUInt32(record["inboundScore"]),
-		InternationalScore:     safeConvertToNullableUInt32(record["internationalScore"]),
-		EventAvgRating:         safeConvertFloat64ToDecimalString(record["event_avgRating"]),
-		Version:                safeConvertToUInt32(record["version"]),
+		Maturity:                        safeConvertToNullableString(record["maturity"]),
+		EventPricing:                    safeConvertToNullableString(record["event_pricing"]),
+		EventLogo:                       safeConvertToNullableString(record["event_logo"]),
+		EventEstimatedVisitors:          safeConvertToNullableString(record["event_estimatedVisitors"]),
+		EventFrequency:                  safeConvertToNullableString(record["event_frequency"]),
+		InboundScore:                    safeConvertToNullableUInt32(record["inboundScore"]),
+		InternationalScore:              safeConvertToNullableUInt32(record["internationalScore"]),
+		RepeatSentimentChangePercentage: safeConvertToNullableFloat64(record["repeatSentimentChangePercentage"]),
+		EventAvgRating:                  safeConvertFloat64ToDecimalString(record["event_avgRating"]),
+		Version:                         safeConvertToUInt32(record["version"]),
 	}
 }
 
@@ -2209,15 +2210,16 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 									val := uint32(0)
 									return &val
 								}(),
-								"maturity":                determineMaturity(esInfoMap["total_edition"]),
-								"event_pricing":           esInfoMap["event_pricing"],
-								"event_logo":              esInfoMap["event_logo"],
-								"event_estimatedVisitors": esInfoMap["eventEstimatedTag"],
-								"event_frequency":         esInfoMap["event_frequency"],
-								"inboundScore":            esInfoMap["inboundScore"],
-								"internationalScore":      esInfoMap["internationalScore"],
-								"event_avgRating":         esInfoMap["avg_rating"],
-								"version":                 1,
+								"maturity":                        determineMaturity(esInfoMap["total_edition"]),
+								"event_pricing":                   esInfoMap["event_pricing"],
+								"event_logo":                      esInfoMap["event_logo"],
+								"event_estimatedVisitors":         esInfoMap["eventEstimatedTag"],
+								"event_frequency":                 esInfoMap["event_frequency"],
+								"inboundScore":                    esInfoMap["inboundScore"],
+								"internationalScore":              esInfoMap["internationalScore"],
+								"repeatSentimentChangePercentage": esInfoMap["repeatSentimentChangePercentage"],
+								"event_avgRating":                 esInfoMap["avg_rating"],
+								"version":                         1,
 							}
 
 							var currentEditionEventType interface{}
@@ -2705,7 +2707,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			},
 		},
 		"size":    len(eventIDs),
-		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "inboundScore", "internationalScore"},
+		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "inboundScore", "internationalScore", "repeatSentimentChangePercentage"},
 	}
 
 	queryJSON, _ := json.Marshal(query)
@@ -2824,26 +2826,49 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			convertedTotalEdition = nil
 		}
 
+		// Helper function to convert score fields to float64
+		convertToFloat64 := func(key string) interface{} {
+			if val, exists := source[key]; exists && val != nil {
+				if floatVal, ok := val.(float64); ok {
+					return floatVal
+				}
+				if intVal, ok := val.(int); ok {
+					return float64(intVal)
+				}
+				if int64Val, ok := val.(int64); ok {
+					return float64(int64Val)
+				}
+				strVal := convertToString(val)
+				if strVal != "" {
+					if num, err := strconv.ParseFloat(strVal, 64); err == nil {
+						return num
+					}
+				}
+			}
+			return nil
+		}
+
 		results[eventIDInt] = map[string]interface{}{
-			"event_description":  convertToString(source["description"]),
-			"event_exhibitors":   convertStringToUInt32("exhibitors"),
-			"event_speakers":     convertStringToUInt32("speakers"),
-			"event_totalSponsor": convertStringToUInt32("totalSponsor"),
-			"event_following":    convertStringToUInt32("following"),
-			"event_punchline":    convertToString(source["punchline"]),
-			"edition_exhibitor":  convertStringToUInt32("exhibitors"),
-			"edition_sponsor":    convertStringToUInt32("totalSponsor"),
-			"edition_speaker":    convertStringToUInt32("speakers"),
-			"edition_followers":  convertStringToUInt32("following"),
-			"event_frequency":    convertToString(source["frequency"]),
-			"event_hybrid":       convertStringToUInt8("hybrid"),
-			"event_logo":         convertToString(source["logo"]),
-			"event_pricing":      convertToString(source["pricing"]),
-			"total_edition":      convertedTotalEdition,
-			"avg_rating":         source["avg_rating"],
-			"eventEstimatedTag":  convertToString(source["eventEstimatedTag"]),
-			"inboundScore":       convertStringToUInt32("inboundScore"),
-			"internationalScore": convertStringToUInt32("internationalScore"),
+			"event_description":               convertToString(source["description"]),
+			"event_exhibitors":                convertStringToUInt32("exhibitors"),
+			"event_speakers":                  convertStringToUInt32("speakers"),
+			"event_totalSponsor":              convertStringToUInt32("totalSponsor"),
+			"event_following":                 convertStringToUInt32("following"),
+			"event_punchline":                 convertToString(source["punchline"]),
+			"edition_exhibitor":               convertStringToUInt32("exhibitors"),
+			"edition_sponsor":                 convertStringToUInt32("totalSponsor"),
+			"edition_speaker":                 convertStringToUInt32("speakers"),
+			"edition_followers":               convertStringToUInt32("following"),
+			"event_frequency":                 convertToString(source["frequency"]),
+			"event_hybrid":                    convertStringToUInt8("hybrid"),
+			"event_logo":                      convertToString(source["logo"]),
+			"event_pricing":                   convertToString(source["pricing"]),
+			"total_edition":                   convertedTotalEdition,
+			"avg_rating":                      source["avg_rating"],
+			"eventEstimatedTag":               convertToString(source["eventEstimatedTag"]),
+			"inboundScore":                    convertStringToUInt32("inboundScore"),
+			"internationalScore":              convertStringToUInt32("internationalScore"),
+			"repeatSentimentChangePercentage": convertToFloat64("repeatSentimentChangePercentage"),
 		}
 	}
 
@@ -3003,7 +3028,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
 			event_created, edition_created, event_hybrid, isBranded, maturity,
-			event_pricing, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, version
+			event_pricing, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, repeatSentimentChangePercentage, version
 		)
 	`)
 	if err != nil {
@@ -3015,68 +3040,69 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 		eventEditionRecord := convertToEventEditionRecord(record)
 
 		err := batch.Append(
-			eventEditionRecord.EventID,                // event_id: UInt32 NOT NULL
-			eventEditionRecord.EventUUID,              // event_uuid: UUID NOT NULL
-			eventEditionRecord.EventName,              // event_name: String NOT NULL
-			eventEditionRecord.EventAbbrName,          // event_abbr_name: Nullable(String)
-			eventEditionRecord.EventDescription,       // event_description: Nullable(String)
-			eventEditionRecord.EventPunchline,         // event_punchline: Nullable(String)
-			eventEditionRecord.EventAvgRating,         // event_avgRating: Nullable(Decimal(3,2))
-			eventEditionRecord.StartDate,              // start_date: Date NOT NULL
-			eventEditionRecord.EndDate,                // end_date: Date NOT NULL
-			eventEditionRecord.EditionID,              // edition_id: UInt32 NOT NULL
-			eventEditionRecord.EditionCountry,         // edition_country: LowCardinality(FixedString(2)) NOT NULL
-			eventEditionRecord.EditionCity,            // edition_city: UInt32 NOT NULL
-			eventEditionRecord.EditionCityName,        // edition_city_name: String NOT NULL
-			eventEditionRecord.EditionCityStateID,     // edition_city_state_id: Nullable(UInt32)
-			eventEditionRecord.EditionCityState,       // edition_city_state: LowCardinality(String) NOT NULL
-			eventEditionRecord.EditionCityLat,         // edition_city_lat: Float64 NOT NULL
-			eventEditionRecord.EditionCityLong,        // edition_city_long: Float64 NOT NULL
-			eventEditionRecord.CompanyID,              // company_id: Nullable(UInt32)
-			eventEditionRecord.CompanyName,            // company_name: Nullable(String)
-			eventEditionRecord.CompanyDomain,          // company_domain: Nullable(String)
-			eventEditionRecord.CompanyWebsite,         // company_website: Nullable(String)
-			eventEditionRecord.CompanyCountry,         // company_country: LowCardinality(Nullable(FixedString(2)))
-			eventEditionRecord.CompanyState,           // company_state: LowCardinality(Nullable(String))
-			eventEditionRecord.CompanyCity,            // company_city: Nullable(UInt32)
-			eventEditionRecord.CompanyCityName,        // company_city_name: Nullable(String)
-			eventEditionRecord.VenueID,                // venue_id: Nullable(UInt32)
-			eventEditionRecord.VenueName,              // venue_name: Nullable(String)
-			eventEditionRecord.VenueCountry,           // venue_country: LowCardinality(Nullable(FixedString(2)))
-			eventEditionRecord.VenueCity,              // venue_city: Nullable(UInt32)
-			eventEditionRecord.VenueCityName,          // venue_city_name: Nullable(String)
-			eventEditionRecord.VenueLat,               // venue_lat: Nullable(Float64)
-			eventEditionRecord.VenueLong,              // venue_long: Nullable(Float64)
-			eventEditionRecord.Published,              // published: Int8 NOT NULL
-			eventEditionRecord.Status,                 // status: LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
-			eventEditionRecord.EditionsAudianceType,   // editions_audiance_type: UInt16 NOT NULL
-			eventEditionRecord.EditionFunctionality,   // edition_functionality: LowCardinality(String) NOT NULL
-			eventEditionRecord.EditionWebsite,         // edition_website: Nullable(String)
-			eventEditionRecord.EditionDomain,          // edition_domain: Nullable(String)
-			eventEditionRecord.EditionType,            // edition_type: LowCardinality(Nullable(String)) DEFAULT 'NA'
-			eventEditionRecord.EventFollowers,         // event_followers: Nullable(UInt32)
-			eventEditionRecord.EditionFollowers,       // edition_followers: Nullable(UInt32)
-			eventEditionRecord.EventExhibitor,         // event_exhibitor: Nullable(UInt32)
-			eventEditionRecord.EditionExhibitor,       // edition_exhibitor: Nullable(UInt32)
-			eventEditionRecord.ExhibitorsUpperBound,   // exhibitors_upper_bound: Nullable(UInt32)
-			eventEditionRecord.ExhibitorsLowerBound,   // exhibitors_lower_bound: Nullable(UInt32)
-			eventEditionRecord.ExhibitorsMean,         // exhibitors_mean: Nullable(UInt32)
-			eventEditionRecord.EventSponsor,           // event_sponsor: Nullable(UInt32)
-			eventEditionRecord.EditionSponsor,         // edition_sponsor: Nullable(UInt32)
-			eventEditionRecord.EventSpeaker,           // event_speaker: Nullable(UInt32)
-			eventEditionRecord.EditionSpeaker,         // edition_speaker: Nullable(UInt32)
-			eventEditionRecord.EventCreated,           // event_created: DateTime NOT NULL
-			eventEditionRecord.EditionCreated,         // edition_created: DateTime NOT NULL
-			eventEditionRecord.EventHybrid,            // event_hybrid: Nullable(UInt32)
-			eventEditionRecord.IsBranded,              // isBranded: Nullable(UInt32)
-			eventEditionRecord.Maturity,               // maturity: LowCardinality(Nullable(String))
-			eventEditionRecord.EventPricing,           // event_pricing: LowCardinality(Nullable(String))
-			eventEditionRecord.EventLogo,              // event_logo: Nullable(String)
-			eventEditionRecord.EventEstimatedVisitors, // event_estimatedVisitors: LowCardinality(Nullable(String))
-			eventEditionRecord.EventFrequency,         // event_frequency: LowCardinality(Nullable(String))
-			eventEditionRecord.InboundScore,           // inboundScore: Nullable(UInt32)
-			eventEditionRecord.InternationalScore,     // internationalScore: Nullable(UInt32)
-			eventEditionRecord.Version,                // version: UInt32 NOT NULL DEFAULT 1
+			eventEditionRecord.EventID,                         // event_id: UInt32 NOT NULL
+			eventEditionRecord.EventUUID,                       // event_uuid: UUID NOT NULL
+			eventEditionRecord.EventName,                       // event_name: String NOT NULL
+			eventEditionRecord.EventAbbrName,                   // event_abbr_name: Nullable(String)
+			eventEditionRecord.EventDescription,                // event_description: Nullable(String)
+			eventEditionRecord.EventPunchline,                  // event_punchline: Nullable(String)
+			eventEditionRecord.EventAvgRating,                  // event_avgRating: Nullable(Decimal(3,2))
+			eventEditionRecord.StartDate,                       // start_date: Date NOT NULL
+			eventEditionRecord.EndDate,                         // end_date: Date NOT NULL
+			eventEditionRecord.EditionID,                       // edition_id: UInt32 NOT NULL
+			eventEditionRecord.EditionCountry,                  // edition_country: LowCardinality(FixedString(2)) NOT NULL
+			eventEditionRecord.EditionCity,                     // edition_city: UInt32 NOT NULL
+			eventEditionRecord.EditionCityName,                 // edition_city_name: String NOT NULL
+			eventEditionRecord.EditionCityStateID,              // edition_city_state_id: Nullable(UInt32)
+			eventEditionRecord.EditionCityState,                // edition_city_state: LowCardinality(String) NOT NULL
+			eventEditionRecord.EditionCityLat,                  // edition_city_lat: Float64 NOT NULL
+			eventEditionRecord.EditionCityLong,                 // edition_city_long: Float64 NOT NULL
+			eventEditionRecord.CompanyID,                       // company_id: Nullable(UInt32)
+			eventEditionRecord.CompanyName,                     // company_name: Nullable(String)
+			eventEditionRecord.CompanyDomain,                   // company_domain: Nullable(String)
+			eventEditionRecord.CompanyWebsite,                  // company_website: Nullable(String)
+			eventEditionRecord.CompanyCountry,                  // company_country: LowCardinality(Nullable(FixedString(2)))
+			eventEditionRecord.CompanyState,                    // company_state: LowCardinality(Nullable(String))
+			eventEditionRecord.CompanyCity,                     // company_city: Nullable(UInt32)
+			eventEditionRecord.CompanyCityName,                 // company_city_name: Nullable(String)
+			eventEditionRecord.VenueID,                         // venue_id: Nullable(UInt32)
+			eventEditionRecord.VenueName,                       // venue_name: Nullable(String)
+			eventEditionRecord.VenueCountry,                    // venue_country: LowCardinality(Nullable(FixedString(2)))
+			eventEditionRecord.VenueCity,                       // venue_city: Nullable(UInt32)
+			eventEditionRecord.VenueCityName,                   // venue_city_name: Nullable(String)
+			eventEditionRecord.VenueLat,                        // venue_lat: Nullable(Float64)
+			eventEditionRecord.VenueLong,                       // venue_long: Nullable(Float64)
+			eventEditionRecord.Published,                       // published: Int8 NOT NULL
+			eventEditionRecord.Status,                          // status: LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
+			eventEditionRecord.EditionsAudianceType,            // editions_audiance_type: UInt16 NOT NULL
+			eventEditionRecord.EditionFunctionality,            // edition_functionality: LowCardinality(String) NOT NULL
+			eventEditionRecord.EditionWebsite,                  // edition_website: Nullable(String)
+			eventEditionRecord.EditionDomain,                   // edition_domain: Nullable(String)
+			eventEditionRecord.EditionType,                     // edition_type: LowCardinality(Nullable(String)) DEFAULT 'NA'
+			eventEditionRecord.EventFollowers,                  // event_followers: Nullable(UInt32)
+			eventEditionRecord.EditionFollowers,                // edition_followers: Nullable(UInt32)
+			eventEditionRecord.EventExhibitor,                  // event_exhibitor: Nullable(UInt32)
+			eventEditionRecord.EditionExhibitor,                // edition_exhibitor: Nullable(UInt32)
+			eventEditionRecord.ExhibitorsUpperBound,            // exhibitors_upper_bound: Nullable(UInt32)
+			eventEditionRecord.ExhibitorsLowerBound,            // exhibitors_lower_bound: Nullable(UInt32)
+			eventEditionRecord.ExhibitorsMean,                  // exhibitors_mean: Nullable(UInt32)
+			eventEditionRecord.EventSponsor,                    // event_sponsor: Nullable(UInt32)
+			eventEditionRecord.EditionSponsor,                  // edition_sponsor: Nullable(UInt32)
+			eventEditionRecord.EventSpeaker,                    // event_speaker: Nullable(UInt32)
+			eventEditionRecord.EditionSpeaker,                  // edition_speaker: Nullable(UInt32)
+			eventEditionRecord.EventCreated,                    // event_created: DateTime NOT NULL
+			eventEditionRecord.EditionCreated,                  // edition_created: DateTime NOT NULL
+			eventEditionRecord.EventHybrid,                     // event_hybrid: Nullable(UInt32)
+			eventEditionRecord.IsBranded,                       // isBranded: Nullable(UInt32)
+			eventEditionRecord.Maturity,                        // maturity: LowCardinality(Nullable(String))
+			eventEditionRecord.EventPricing,                    // event_pricing: LowCardinality(Nullable(String))
+			eventEditionRecord.EventLogo,                       // event_logo: Nullable(String)
+			eventEditionRecord.EventEstimatedVisitors,          // event_estimatedVisitors: LowCardinality(Nullable(String))
+			eventEditionRecord.EventFrequency,                  // event_frequency: LowCardinality(Nullable(String))
+			eventEditionRecord.InboundScore,                    // inboundScore: Nullable(UInt32)
+			eventEditionRecord.InternationalScore,              // internationalScore: Nullable(UInt32)
+			eventEditionRecord.RepeatSentimentChangePercentage, // repeatSentimentChangePercentage: Nullable(Float64)
+			eventEditionRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append record to batch: %v", err)
@@ -5701,68 +5727,69 @@ type VisitorRecord struct {
 
 // EventEditionRecord represents an event edition record for ClickHouse insertion
 type EventEditionRecord struct {
-	EventID                uint32   `ch:"event_id"`
-	EventUUID              string   `ch:"event_uuid"` // UUID generated from event_id + event_created
-	EventName              string   `ch:"event_name"`
-	EventAbbrName          *string  `ch:"event_abbr_name"`
-	EventDescription       *string  `ch:"event_description"`
-	EventPunchline         *string  `ch:"event_punchline"`
-	EventAvgRating         *string  `ch:"event_avgRating"` // Nullable(Decimal(3,2))
-	StartDate              string   `ch:"start_date"`      // Date NOT NULL
-	EndDate                string   `ch:"end_date"`        // Date NOT NULL
-	EditionID              uint32   `ch:"edition_id"`
-	EditionCountry         string   `ch:"edition_country"`       // LowCardinality(FixedString(2)) NOT NULL
-	EditionCity            uint32   `ch:"edition_city"`          // UInt32 NOT NULL
-	EditionCityName        string   `ch:"edition_city_name"`     // String NOT NULL
-	EditionCityStateID     *uint32  `ch:"edition_city_state_id"` // Nullable(UInt32)
-	EditionCityState       string   `ch:"edition_city_state"`    // LowCardinality(String) NOT NULL
-	EditionCityLat         float64  `ch:"edition_city_lat"`      // Float64 NOT NULL
-	EditionCityLong        float64  `ch:"edition_city_long"`     // Float64 NOT NULL
-	CompanyID              *uint32  `ch:"company_id"`
-	CompanyName            *string  `ch:"company_name"`
-	CompanyDomain          *string  `ch:"company_domain"`
-	CompanyWebsite         *string  `ch:"company_website"`
-	CompanyCountry         *string  `ch:"company_country"`
-	CompanyState           *string  `ch:"company_state"` // LowCardinality(Nullable(String))
-	CompanyCity            *uint32  `ch:"company_city"`
-	CompanyCityName        *string  `ch:"company_city_name"`
-	VenueID                *uint32  `ch:"venue_id"`
-	VenueName              *string  `ch:"venue_name"`
-	VenueCountry           *string  `ch:"venue_country"`
-	VenueCity              *uint32  `ch:"venue_city"`
-	VenueCityName          *string  `ch:"venue_city_name"`
-	VenueLat               *float64 `ch:"venue_lat"`
-	VenueLong              *float64 `ch:"venue_long"`
-	Published              int8     `ch:"published"`              // Int8 NOT NULL
-	Status                 string   `ch:"status"`                 // LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
-	EditionsAudianceType   uint16   `ch:"editions_audiance_type"` // UInt16 NOT NULL
-	EditionFunctionality   string   `ch:"edition_functionality"`  // LowCardinality(String) NOT NULL
-	EditionWebsite         *string  `ch:"edition_website"`
-	EditionDomain          *string  `ch:"edition_domain"`
-	EditionType            string   `ch:"edition_type"` // LowCardinality(Nullable(String)) DEFAULT 'NA'
-	EventFollowers         *uint32  `ch:"event_followers"`
-	EditionFollowers       *uint32  `ch:"edition_followers"`
-	EventExhibitor         *uint32  `ch:"event_exhibitor"`
-	EditionExhibitor       *uint32  `ch:"edition_exhibitor"`
-	ExhibitorsUpperBound   *uint32  `ch:"exhibitors_upper_bound"`
-	ExhibitorsLowerBound   *uint32  `ch:"exhibitors_lower_bound"`
-	ExhibitorsMean         *uint32  `ch:"exhibitors_mean"`
-	EventSponsor           *uint32  `ch:"event_sponsor"`
-	EditionSponsor         *uint32  `ch:"edition_sponsor"`
-	EventSpeaker           *uint32  `ch:"event_speaker"`
-	EditionSpeaker         *uint32  `ch:"edition_speaker"`
-	EventCreated           string   `ch:"event_created"`           // DateTime NOT NULL
-	EditionCreated         string   `ch:"edition_created"`         // DateTime NOT NULL
-	EventHybrid            *uint8   `ch:"event_hybrid"`            // Nullable(UInt8)
-	IsBranded              *uint32  `ch:"isBranded"`               // Nullable(UInt32)
-	Maturity               *string  `ch:"maturity"`                // LowCardinality(Nullable(String))
-	EventPricing           *string  `ch:"event_pricing"`           // LowCardinality(Nullable(String))
-	EventLogo              *string  `ch:"event_logo"`              // Nullable(String)
-	EventEstimatedVisitors *string  `ch:"event_estimatedVisitors"` // LowCardinality(Nullable(String))
-	EventFrequency         *string  `ch:"event_frequency"`         // LowCardinality(Nullable(String))
-	InboundScore           *uint32  `ch:"inboundScore"`            // Nullable(UInt32)
-	InternationalScore     *uint32  `ch:"internationalScore"`      // Nullable(UInt32)
-	Version                uint32   `ch:"version"`
+	EventID                         uint32   `ch:"event_id"`
+	EventUUID                       string   `ch:"event_uuid"` // UUID generated from event_id + event_created
+	EventName                       string   `ch:"event_name"`
+	EventAbbrName                   *string  `ch:"event_abbr_name"`
+	EventDescription                *string  `ch:"event_description"`
+	EventPunchline                  *string  `ch:"event_punchline"`
+	EventAvgRating                  *string  `ch:"event_avgRating"` // Nullable(Decimal(3,2))
+	StartDate                       string   `ch:"start_date"`      // Date NOT NULL
+	EndDate                         string   `ch:"end_date"`        // Date NOT NULL
+	EditionID                       uint32   `ch:"edition_id"`
+	EditionCountry                  string   `ch:"edition_country"`       // LowCardinality(FixedString(2)) NOT NULL
+	EditionCity                     uint32   `ch:"edition_city"`          // UInt32 NOT NULL
+	EditionCityName                 string   `ch:"edition_city_name"`     // String NOT NULL
+	EditionCityStateID              *uint32  `ch:"edition_city_state_id"` // Nullable(UInt32)
+	EditionCityState                string   `ch:"edition_city_state"`    // LowCardinality(String) NOT NULL
+	EditionCityLat                  float64  `ch:"edition_city_lat"`      // Float64 NOT NULL
+	EditionCityLong                 float64  `ch:"edition_city_long"`     // Float64 NOT NULL
+	CompanyID                       *uint32  `ch:"company_id"`
+	CompanyName                     *string  `ch:"company_name"`
+	CompanyDomain                   *string  `ch:"company_domain"`
+	CompanyWebsite                  *string  `ch:"company_website"`
+	CompanyCountry                  *string  `ch:"company_country"`
+	CompanyState                    *string  `ch:"company_state"` // LowCardinality(Nullable(String))
+	CompanyCity                     *uint32  `ch:"company_city"`
+	CompanyCityName                 *string  `ch:"company_city_name"`
+	VenueID                         *uint32  `ch:"venue_id"`
+	VenueName                       *string  `ch:"venue_name"`
+	VenueCountry                    *string  `ch:"venue_country"`
+	VenueCity                       *uint32  `ch:"venue_city"`
+	VenueCityName                   *string  `ch:"venue_city_name"`
+	VenueLat                        *float64 `ch:"venue_lat"`
+	VenueLong                       *float64 `ch:"venue_long"`
+	Published                       int8     `ch:"published"`              // Int8 NOT NULL
+	Status                          string   `ch:"status"`                 // LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
+	EditionsAudianceType            uint16   `ch:"editions_audiance_type"` // UInt16 NOT NULL
+	EditionFunctionality            string   `ch:"edition_functionality"`  // LowCardinality(String) NOT NULL
+	EditionWebsite                  *string  `ch:"edition_website"`
+	EditionDomain                   *string  `ch:"edition_domain"`
+	EditionType                     string   `ch:"edition_type"` // LowCardinality(Nullable(String)) DEFAULT 'NA'
+	EventFollowers                  *uint32  `ch:"event_followers"`
+	EditionFollowers                *uint32  `ch:"edition_followers"`
+	EventExhibitor                  *uint32  `ch:"event_exhibitor"`
+	EditionExhibitor                *uint32  `ch:"edition_exhibitor"`
+	ExhibitorsUpperBound            *uint32  `ch:"exhibitors_upper_bound"`
+	ExhibitorsLowerBound            *uint32  `ch:"exhibitors_lower_bound"`
+	ExhibitorsMean                  *uint32  `ch:"exhibitors_mean"`
+	EventSponsor                    *uint32  `ch:"event_sponsor"`
+	EditionSponsor                  *uint32  `ch:"edition_sponsor"`
+	EventSpeaker                    *uint32  `ch:"event_speaker"`
+	EditionSpeaker                  *uint32  `ch:"edition_speaker"`
+	EventCreated                    string   `ch:"event_created"`                   // DateTime NOT NULL
+	EditionCreated                  string   `ch:"edition_created"`                 // DateTime NOT NULL
+	EventHybrid                     *uint8   `ch:"event_hybrid"`                    // Nullable(UInt8)
+	IsBranded                       *uint32  `ch:"isBranded"`                       // Nullable(UInt32)
+	Maturity                        *string  `ch:"maturity"`                        // LowCardinality(Nullable(String))
+	EventPricing                    *string  `ch:"event_pricing"`                   // LowCardinality(Nullable(String))
+	EventLogo                       *string  `ch:"event_logo"`                      // Nullable(String)
+	EventEstimatedVisitors          *string  `ch:"event_estimatedVisitors"`         // LowCardinality(Nullable(String))
+	EventFrequency                  *string  `ch:"event_frequency"`                 // LowCardinality(Nullable(String))
+	InboundScore                    *uint32  `ch:"inboundScore"`                    // Nullable(UInt32)
+	InternationalScore              *uint32  `ch:"internationalScore"`              // Nullable(UInt32)
+	RepeatSentimentChangePercentage *float64 `ch:"repeatSentimentChangePercentage"` // Nullable(Float64)
+	Version                         uint32   `ch:"version"`
 }
 
 type EventTypeEventChRecord struct {
