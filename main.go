@@ -740,6 +740,8 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		EventLogo:              safeConvertToNullableString(record["event_logo"]),
 		EventEstimatedVisitors: safeConvertToNullableString(record["event_estimatedVisitors"]),
 		EventFrequency:         safeConvertToNullableString(record["event_frequency"]),
+		InboundScore:           safeConvertToNullableUInt32(record["inboundScore"]),
+		InternationalScore:     safeConvertToNullableUInt32(record["internationalScore"]),
 		EventAvgRating:         safeConvertFloat64ToDecimalString(record["event_avgRating"]),
 		Version:                safeConvertToUInt32(record["version"]),
 	}
@@ -2212,6 +2214,8 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"event_logo":              esInfoMap["event_logo"],
 								"event_estimatedVisitors": esInfoMap["eventEstimatedTag"],
 								"event_frequency":         esInfoMap["event_frequency"],
+								"inboundScore":            esInfoMap["inboundScore"],
+								"internationalScore":      esInfoMap["internationalScore"],
 								"event_avgRating":         esInfoMap["avg_rating"],
 								"version":                 1,
 							}
@@ -2701,7 +2705,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			},
 		},
 		"size":    len(eventIDs),
-		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag"},
+		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "inboundScore", "internationalScore"},
 	}
 
 	queryJSON, _ := json.Marshal(query)
@@ -2838,6 +2842,8 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			"total_edition":      convertedTotalEdition,
 			"avg_rating":         source["avg_rating"],
 			"eventEstimatedTag":  convertToString(source["eventEstimatedTag"]),
+			"inboundScore":       convertStringToUInt32("inboundScore"),
+			"internationalScore": convertStringToUInt32("internationalScore"),
 		}
 	}
 
@@ -2997,7 +3003,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
 			event_created, edition_created, event_hybrid, isBranded, maturity,
-			event_pricing, event_logo, event_estimatedVisitors, event_frequency, version
+			event_pricing, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, version
 		)
 	`)
 	if err != nil {
@@ -3068,6 +3074,8 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			eventEditionRecord.EventLogo,              // event_logo: Nullable(String)
 			eventEditionRecord.EventEstimatedVisitors, // event_estimatedVisitors: LowCardinality(Nullable(String))
 			eventEditionRecord.EventFrequency,         // event_frequency: LowCardinality(Nullable(String))
+			eventEditionRecord.InboundScore,           // inboundScore: Nullable(UInt32)
+			eventEditionRecord.InternationalScore,     // internationalScore: Nullable(UInt32)
 			eventEditionRecord.Version,                // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
@@ -5752,6 +5760,8 @@ type EventEditionRecord struct {
 	EventLogo              *string  `ch:"event_logo"`              // Nullable(String)
 	EventEstimatedVisitors *string  `ch:"event_estimatedVisitors"` // LowCardinality(Nullable(String))
 	EventFrequency         *string  `ch:"event_frequency"`         // LowCardinality(Nullable(String))
+	InboundScore           *uint32  `ch:"inboundScore"`            // Nullable(UInt32)
+	InternationalScore     *uint32  `ch:"internationalScore"`      // Nullable(UInt32)
 	Version                uint32   `ch:"version"`
 }
 
