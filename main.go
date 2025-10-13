@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -324,6 +325,9 @@ func safeConvertToFloat64(value interface{}) float64 {
 func safeConvertToNullableFloat64(value interface{}) *float64 {
 	if value == nil {
 		return nil
+	}
+	if ptr, ok := value.(*float64); ok {
+		return ptr
 	}
 	if num, ok := value.(float64); ok {
 		return &num
@@ -744,6 +748,15 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		InternationalScore:              safeConvertToNullableUInt32(record["internationalScore"]),
 		RepeatSentimentChangePercentage: safeConvertToNullableFloat64(record["repeatSentimentChangePercentage"]),
 		AudienceZone:                    safeConvertToNullableString(record["audienceZone"]),
+		EventEconomicFoodAndBevarage:    safeConvertToNullableFloat64(record["event_economic_FoodAndBevarage"]),
+		EventEconomicTransportation:     safeConvertToNullableFloat64(record["event_economic_Transportation"]),
+		EventEconomicAccomodation:       safeConvertToNullableFloat64(record["event_economic_Accomodation"]),
+		EventEconomicUtilities:          safeConvertToNullableFloat64(record["event_economic_Utilities"]),
+		EventEconomicFlights:            safeConvertToNullableFloat64(record["event_economic_flights"]),
+		EventEconomicValue:              safeConvertToNullableFloat64(record["event_economic_value"]),
+		EventEconomicDayWiseImpact:      safeConvertToString(record["event_economic_dayWiseEconomicImpact"]),
+		EventEconomicBreakdown:          safeConvertToString(record["event_economic_breakdown"]),
+		EventEconomicImpact:             safeConvertToString(record["event_economic_impact"]),
 		EventAvgRating:                  safeConvertFloat64ToDecimalString(record["event_avgRating"]),
 		Version:                         safeConvertToUInt32(record["version"]),
 	}
@@ -1657,6 +1670,224 @@ func fetchEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface
 	return results
 }
 
+func fetchEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]string {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`SELECT event_id, economic_impact FROM estimate WHERE event_id IN (%s)`, strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("Error fetching batch estimate data: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	result := make(map[int64]string)
+	for rows.Next() {
+		var eventID int64
+		var economicImpact sql.NullString
+		if err := rows.Scan(&eventID, &economicImpact); err != nil {
+			continue
+		}
+		if economicImpact.Valid {
+			result[eventID] = economicImpact.String
+		}
+	}
+
+	return result
+}
+
+func processEconomicImpactDataParallel(estimateDataMap map[int64]string, numWorkers int) map[int64]map[string]interface{} {
+	if len(estimateDataMap) == 0 {
+		return nil
+	}
+
+	type eventData struct {
+		eventID        int64
+		economicImpact string
+	}
+
+	var events []eventData
+	for eventID, economicImpact := range estimateDataMap {
+		events = append(events, eventData{eventID, economicImpact})
+	}
+
+	jobs := make(chan eventData, len(events))
+	results := make(chan map[int64]map[string]interface{}, len(events))
+
+	for w := 0; w < numWorkers; w++ {
+		go func() {
+			for event := range jobs {
+				result := processSingleEconomicImpact(event.eventID, event.economicImpact)
+				results <- result
+			}
+		}()
+	}
+
+	for _, event := range events {
+		jobs <- event
+	}
+	close(jobs)
+
+	finalResult := make(map[int64]map[string]interface{})
+	for i := 0; i < len(events); i++ {
+		result := <-results
+		for eventID, data := range result {
+			finalResult[eventID] = data
+		}
+	}
+
+	return finalResult
+}
+
+func processSingleEconomicImpact(eventID int64, economicImpact string) map[int64]map[string]interface{} {
+	result := make(map[int64]map[string]interface{})
+
+	var economicImpactJSON map[string]interface{}
+	if err := json.Unmarshal([]byte(economicImpact), &economicImpactJSON); err != nil {
+		log.Printf("Event %d: JSON unmarshal error: %v", eventID, err)
+		return result
+	}
+
+	if errorField, exists := economicImpactJSON["error"]; exists && errorField != nil {
+		log.Printf("Skipping event_id %d - economic impact contains error: %v", eventID, errorField)
+		return result
+	}
+
+	total, totalBreakdown, dayWiseFormatted := formatEconomicImpact(eventID, economicImpact)
+
+	processedData := make(map[string]interface{})
+
+	if totalVal, ok := total.(float64); ok {
+		processedData["total"] = totalVal
+	}
+
+	if breakdownMap, ok := totalBreakdown.(map[string]float64); ok {
+
+		if flights, exists := breakdownMap["Flights"]; exists {
+			processedData["flights"] = flights
+		}
+		if foodBeverages, exists := breakdownMap["Food & Beverages"]; exists {
+			processedData["foodBeverages"] = foodBeverages
+		}
+		if transportation, exists := breakdownMap["Transportation"]; exists {
+			processedData["transportation"] = transportation
+		}
+		if utilities, exists := breakdownMap["Utilities"]; exists {
+			processedData["utilities"] = utilities
+		}
+		if accommodation, exists := breakdownMap["Accommodation"]; exists {
+			processedData["accommodation"] = accommodation
+		}
+	}
+
+	if totalBreakdownJSON, err := json.Marshal(totalBreakdown); err == nil {
+		processedData["breakdownJSON"] = string(totalBreakdownJSON)
+	} else {
+		processedData["breakdownJSON"] = "{}"
+	}
+
+	if dayWiseJSON, err := json.Marshal(dayWiseFormatted); err == nil {
+		processedData["dayWiseJSON"] = string(dayWiseJSON)
+	} else {
+		processedData["dayWiseJSON"] = "{}"
+	}
+
+	processedData["rawJSON"] = economicImpact
+
+	result[eventID] = processedData
+	return result
+}
+
+func formatEconomicImpact(eventID int64, economicImpact string) (interface{}, interface{}, interface{}) {
+	var economicImpactJSON map[string]interface{}
+	if err := json.Unmarshal([]byte(economicImpact), &economicImpactJSON); err != nil {
+		log.Printf("Error parsing economic impact JSON for event %d: %v", eventID, err)
+		return 0.0, make(map[string]float64), make(map[string]map[string]interface{})
+	}
+
+	if errorField, exists := economicImpactJSON["error"]; exists && errorField != nil {
+		log.Printf("Error field found in economic impact JSON for event %d: %v", eventID, errorField)
+		return 0.0, make(map[string]float64), make(map[string]map[string]interface{})
+	}
+
+	overallEstimate, ok := economicImpactJSON["AllDayWiseTotal"].(map[string]interface{})
+	if !ok {
+		return 0.0, make(map[string]float64), make(map[string]map[string]interface{})
+	}
+
+	dayTotal, ok := overallEstimate["day total"].(map[string]interface{})
+	if !ok {
+		return 0.0, make(map[string]float64), make(map[string]map[string]interface{})
+	}
+
+	var total float64
+	totalBreakdown := make(map[string]float64)
+
+	for key, value := range dayTotal {
+		if val, ok := value.(float64); ok {
+			roundedVal := math.Round(val*100) / 100
+			if strings.ToLower(key) == "cost" {
+				total = roundedVal
+				continue
+			}
+			totalBreakdown[key] = roundedVal
+		}
+	}
+
+	dayWise, ok := economicImpactJSON["dayWise"].(map[string]interface{})
+	if !ok {
+		return total, totalBreakdown, make(map[string]map[string]interface{})
+	}
+
+	dayWiseFormatted := make(map[string]map[string]interface{})
+	for date, dayData := range dayWise {
+		dayDataMap, ok := dayData.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		dayTotalData, ok := dayDataMap["day total"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		var dayTotal float64
+		dayTotalBreakdown := make(map[string]float64)
+
+		for key, value := range dayTotalData {
+			if val, ok := value.(float64); ok {
+				roundedVal := math.Round(val*100) / 100 // Round to 2 decimal places
+				if strings.ToLower(key) == "cost" {
+					dayTotal = roundedVal
+					continue
+				}
+				dayTotalBreakdown[key] = roundedVal
+			}
+		}
+
+		dateParts := strings.Split(date, "/")
+		if len(dateParts) == 3 {
+			formattedDate := "20" + dateParts[0] + "-" + dateParts[1] + "-" + dateParts[2]
+			dayWiseFormatted[formattedDate] = map[string]interface{}{
+				"total":     dayTotal,
+				"breakdown": dayTotalBreakdown,
+			}
+		}
+	}
+
+	return total, totalBreakdown, dayWiseFormatted
+}
+
 func processEventEditionOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config Config) {
 	log.Println("=== Starting EVENT EDITION ONLY Processing ===")
 
@@ -1818,7 +2049,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 			editionTime := time.Since(startTime)
 			log.Printf("Event edition chunk %d: Retrieved edition data for %d events in %v", chunkNum, len(editionData), editionTime)
 
-			// Fetch company data for all editions
 			var companyData []map[string]interface{}
 			if len(editionData) > 0 {
 				companyIDs := extractCompanyIDs(editionData)
@@ -1844,13 +2074,10 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				}
 			}
 
-			// Fetch city data for all editions, companies, and venues
 			var cityData []map[string]interface{}
 			if len(editionData) > 0 {
-				// Collect city IDs from edition data
 				editionCityIDs := extractCityIDs(editionData)
 
-				// Collect city IDs from company data
 				var companyCityIDs []int64
 				seenCompanyCityIDs := make(map[int64]bool)
 				for _, company := range companyData {
@@ -1862,7 +2089,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 					}
 				}
 
-				// Collect city IDs from venue data
 				var venueCityIDs []int64
 				seenVenueCityIDs := make(map[int64]bool)
 				for _, venue := range venueData {
@@ -1874,11 +2100,9 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 					}
 				}
 
-				// Combine all city IDs
 				allCityIDs := make([]int64, 0, len(editionCityIDs)+len(companyCityIDs)+len(venueCityIDs))
 				seenAllCityIDs := make(map[int64]bool)
 
-				// Add edition city IDs
 				for _, cityID := range editionCityIDs {
 					if !seenAllCityIDs[cityID] {
 						allCityIDs = append(allCityIDs, cityID)
@@ -1886,7 +2110,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 					}
 				}
 
-				// Add company city IDs
 				for _, cityID := range companyCityIDs {
 					if !seenAllCityIDs[cityID] {
 						allCityIDs = append(allCityIDs, cityID)
@@ -1894,7 +2117,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 					}
 				}
 
-				// Add venue city IDs
 				for _, cityID := range venueCityIDs {
 					if !seenAllCityIDs[cityID] {
 						allCityIDs = append(allCityIDs, cityID)
@@ -1912,7 +2134,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				}
 			}
 
-			// Fetch Elasticsearch data for all editions
 			var esData map[int64]map[string]interface{}
 			if len(editionData) > 0 {
 				log.Printf("Event edition chunk %d: Fetching Elasticsearch data for %d events in batches of 200", chunkNum, len(eventIDs))
@@ -1922,7 +2143,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				log.Printf("Event edition chunk %d: Retrieved Elasticsearch data for %d events in %v", chunkNum, len(esData), esTime)
 			}
 
-			// Denormalize data, create lookup maps
 			if len(editionData) > 0 {
 				companyLookup := make(map[int64]map[string]interface{})
 				if len(companyData) > 0 {
@@ -1951,7 +2171,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 					}
 				}
 
-				// Group editions by event_id and create current edition lookup
 				eventEditions := make(map[int64][]map[string]interface{})
 				currentEditionStartDates := make(map[int64]interface{})
 				currentEditionIDs := make(map[int64]int64)
@@ -1962,7 +2181,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 					if eventID, ok := edition["event"].(int64); ok {
 						eventEditions[eventID] = append(eventEditions[eventID], edition)
 						editionsProcessed++
-						// Storing current edition ID and start date for each event
 						if currentEditionID, exists := edition["current_edition_id"]; exists {
 							if editionID, ok := edition["edition_id"].(int64); ok {
 								if currentEditionID.(int64) == editionID {
@@ -1978,13 +2196,11 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				}
 				log.Printf("Event edition chunk %d: Editions processed: %d, skipped: %d", chunkNum, editionsProcessed, editionsSkipped)
 
-				// Collect ALL records for ClickHouse insertion
 				var clickHouseRecords []map[string]interface{}
 				completeCount := 0
 				partialCount := 0
 				skippedCount := 0
 
-				// Fetch event data for all events that have editions (not just those in current batch)
 				eventIDsForEditions := make([]int64, 0, len(eventEditions))
 				for eventID := range eventEditions {
 					eventIDsForEditions = append(eventIDsForEditions, eventID)
@@ -2001,8 +2217,20 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 					}
 				}
 
+				estimateDataMap := make(map[int64]string)
+				if len(eventIDsForEditions) > 0 {
+					estimateDataMap = fetchEstimateDataForBatch(mysqlDB, eventIDsForEditions)
+				}
+
+				processedEconomicData := make(map[int64]map[string]interface{})
+				if len(estimateDataMap) > 0 {
+					processedEconomicData = processEconomicImpactDataParallel(estimateDataMap, config.NumWorkers)
+				}
+
 				for eventID, editions := range eventEditions {
 					eventData := eventDataLookup[eventID]
+
+					economicData := processedEconomicData[eventID]
 
 					if eventData != nil {
 						for _, edition := range editions {
@@ -2011,24 +2239,21 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 							cityID := edition["edition_city"]
 							editionWebsite := edition["edition_website"]
 
-							// Get company data
 							var company map[string]interface{}
 							if companyID != nil {
 								if c, exists := companyLookup[companyID.(int64)]; exists {
-									company = c // If not found->company remains nil
+									company = c
 								}
 							}
 
-							// Get venue data
 							var venue map[string]interface{}
 							if venueID != nil {
 								if v, exists := venueLookup[venueID.(int64)]; exists {
-									venue = v // If not found->venue remains nil
+									venue = v
 								}
 
 							}
 
-							// Get city data
 							var city map[string]interface{}
 							if cityID != nil {
 								if c, exists := cityLookup[cityID.(int64)]; exists {
@@ -2056,8 +2281,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								}
 							}
 
-							// Get Elasticsearch data
-							esInfoMap := esData[eventID] // If not found, esInfoMap remains nil
+							esInfoMap := esData[eventID]
 
 							// Extract domain from edition website
 							var editionDomain string
@@ -2084,33 +2308,21 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 							editionIDStr := safeConvertToString(edition["edition_id"])
 							uniqueKey := eventIDStr + "_" + editionIDStr
 
-							// Debug logging to see what's happening
-							// log.Printf("Event edition chunk %d: Processing - EventID: %s, EditionID: %s, UniqueKey: %s",
-							//	chunkNum, eventIDStr, editionIDStr, uniqueKey)
-
-							// Check if this combination already exists (with read lock)
 							globalMutex.RLock()
 							exists := globalUniqueRecords[uniqueKey]
 							globalMutex.RUnlock()
 
 							if exists {
-								// log.Printf("Event edition chunk %d: Skipping duplicate record - EventID: %s, EditionID: %s, UniqueKey: %s",
-								//	chunkNum, eventIDStr, editionIDStr, uniqueKey)
 								globalCountMutex.Lock()
 								*totalRecordsSkipped++
 								globalCountMutex.Unlock()
 								continue
 							}
 
-							// Mark this combination as seen (with write lock)
 							globalMutex.Lock()
 							globalUniqueRecords[uniqueKey] = true
 							globalMutex.Unlock()
 
-							// log.Printf("Event edition chunk %d: Adding new record - EventID: %s, EditionID: %s, UniqueKey: %s",
-							//	chunkNum, eventIDStr, editionIDStr, uniqueKey)
-
-							// Create record for ClickHouse insertion - include ALL data
 							record := map[string]interface{}{
 								"event_id":          eventData["id"],
 								"event_uuid":        generateEventUUID(safeConvertToUInt32(eventData["id"]), eventData["created"]),
@@ -2289,7 +2501,6 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 									mean = nil
 								}
 
-								// Update the record with calculated bounds for current editions
 								if upperBound != nil {
 									record["exhibitors_upper_bound"] = uint32(*upperBound)
 								}
@@ -2308,15 +2519,56 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								record["edition_type"] = "NA"
 							}
 
+							if economicData != nil {
+								if totalVal, ok := economicData["total"].(float64); ok {
+									record["event_economic_value"] = &totalVal
+								}
+								if flights, ok := economicData["flights"].(float64); ok {
+									record["event_economic_flights"] = &flights
+								}
+								if foodBeverages, ok := economicData["foodBeverages"].(float64); ok {
+									record["event_economic_FoodAndBevarage"] = &foodBeverages
+								}
+								if transportation, ok := economicData["transportation"].(float64); ok {
+									record["event_economic_Transportation"] = &transportation
+								}
+								if utilities, ok := economicData["utilities"].(float64); ok {
+									record["event_economic_Utilities"] = &utilities
+								}
+								if accommodation, ok := economicData["accommodation"].(float64); ok {
+									record["event_economic_Accomodation"] = &accommodation
+								}
+
+								if breakdownJSON, ok := economicData["breakdownJSON"].(string); ok {
+									record["event_economic_breakdown"] = breakdownJSON
+								} else {
+									record["event_economic_breakdown"] = "{}"
+								}
+
+								if dayWiseJSON, ok := economicData["dayWiseJSON"].(string); ok {
+									record["event_economic_dayWiseEconomicImpact"] = dayWiseJSON
+								} else {
+									record["event_economic_dayWiseEconomicImpact"] = "{}"
+								}
+
+								if rawJSON, ok := economicData["rawJSON"].(string); ok {
+									record["event_economic_impact"] = rawJSON
+								} else {
+									record["event_economic_impact"] = "{}"
+								}
+							} else {
+								record["event_economic_breakdown"] = "{}"
+								record["event_economic_dayWiseEconomicImpact"] = "{}"
+								record["event_economic_impact"] = "{}"
+							}
+
 							clickHouseRecords = append(clickHouseRecords, record)
 
-							// Update global counters
 							globalCountMutex.Lock()
 							*totalRecordsProcessed++
 							*totalRecordsInserted++
 							globalCountMutex.Unlock()
 
-							// Track completeness for reporting (simplified)
 							if companyID != nil && venueID != nil && cityID != nil {
 								completeCount++
 							} else {
@@ -3016,7 +3268,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
@@ -3031,7 +3283,9 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
 			event_created, edition_created, event_hybrid, isBranded, maturity,
-			event_pricing, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone, version
+			event_pricing, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
+			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
+			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, version
 		)
 	`)
 	if err != nil {
@@ -3106,6 +3360,15 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			eventEditionRecord.InternationalScore,              // internationalScore: Nullable(UInt32)
 			eventEditionRecord.RepeatSentimentChangePercentage, // repeatSentimentChangePercentage: Nullable(Float64)
 			eventEditionRecord.AudienceZone,                    // audienceZone: LowCardinality(Nullable(String))
+			eventEditionRecord.EventEconomicFoodAndBevarage,    // event_economic_FoodAndBevarage: Nullable(Float64)
+			eventEditionRecord.EventEconomicTransportation,     // event_economic_Transportation: Nullable(Float64)
+			eventEditionRecord.EventEconomicAccomodation,       // event_economic_Accomodation: Nullable(Float64)
+			eventEditionRecord.EventEconomicUtilities,          // event_economic_Utilities: Nullable(Float64)
+			eventEditionRecord.EventEconomicFlights,            // event_economic_flights: Nullable(Float64)
+			eventEditionRecord.EventEconomicValue,              // event_economic_value: Nullable(Float64)
+			eventEditionRecord.EventEconomicDayWiseImpact,      // event_economic_dayWiseEconomicImpact: JSON
+			eventEditionRecord.EventEconomicBreakdown,          // event_economic_breakdown: JSON
+			eventEditionRecord.EventEconomicImpact,             // event_economic_impact: JSON
 			eventEditionRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
@@ -5781,19 +6044,28 @@ type EventEditionRecord struct {
 	EditionSponsor                  *uint32  `ch:"edition_sponsor"`
 	EventSpeaker                    *uint32  `ch:"event_speaker"`
 	EditionSpeaker                  *uint32  `ch:"edition_speaker"`
-	EventCreated                    string   `ch:"event_created"`                   // DateTime NOT NULL
-	EditionCreated                  string   `ch:"edition_created"`                 // DateTime NOT NULL
-	EventHybrid                     *uint8   `ch:"event_hybrid"`                    // Nullable(UInt8)
-	IsBranded                       *uint32  `ch:"isBranded"`                       // Nullable(UInt32)
-	Maturity                        *string  `ch:"maturity"`                        // LowCardinality(Nullable(String))
-	EventPricing                    *string  `ch:"event_pricing"`                   // LowCardinality(Nullable(String))
-	EventLogo                       *string  `ch:"event_logo"`                      // Nullable(String)
-	EventEstimatedVisitors          *string  `ch:"event_estimatedVisitors"`         // LowCardinality(Nullable(String))
-	EventFrequency                  *string  `ch:"event_frequency"`                 // LowCardinality(Nullable(String))
-	InboundScore                    *uint32  `ch:"inboundScore"`                    // Nullable(UInt32)
-	InternationalScore              *uint32  `ch:"internationalScore"`              // Nullable(UInt32)
-	RepeatSentimentChangePercentage *float64 `ch:"repeatSentimentChangePercentage"` // Nullable(Float64)
-	AudienceZone                    *string  `ch:"audienceZone"`                    // LowCardinality(Nullable(String))
+	EventCreated                    string   `ch:"event_created"`                        // DateTime NOT NULL
+	EditionCreated                  string   `ch:"edition_created"`                      // DateTime NOT NULL
+	EventHybrid                     *uint8   `ch:"event_hybrid"`                         // Nullable(UInt8)
+	IsBranded                       *uint32  `ch:"isBranded"`                            // Nullable(UInt32)
+	Maturity                        *string  `ch:"maturity"`                             // LowCardinality(Nullable(String))
+	EventPricing                    *string  `ch:"event_pricing"`                        // LowCardinality(Nullable(String))
+	EventLogo                       *string  `ch:"event_logo"`                           // Nullable(String)
+	EventEstimatedVisitors          *string  `ch:"event_estimatedVisitors"`              // LowCardinality(Nullable(String))
+	EventFrequency                  *string  `ch:"event_frequency"`                      // LowCardinality(Nullable(String))
+	InboundScore                    *uint32  `ch:"inboundScore"`                         // Nullable(UInt32)
+	InternationalScore              *uint32  `ch:"internationalScore"`                   // Nullable(UInt32)
+	RepeatSentimentChangePercentage *float64 `ch:"repeatSentimentChangePercentage"`      // Nullable(Float64)
+	AudienceZone                    *string  `ch:"audienceZone"`                         // LowCardinality(Nullable(String))
+	EventEconomicFoodAndBevarage    *float64 `ch:"event_economic_FoodAndBevarage"`       // Nullable(Float64)
+	EventEconomicTransportation     *float64 `ch:"event_economic_Transportation"`        // Nullable(Float64)
+	EventEconomicAccomodation       *float64 `ch:"event_economic_Accomodation"`          // Nullable(Float64)
+	EventEconomicUtilities          *float64 `ch:"event_economic_Utilities"`             // Nullable(Float64)
+	EventEconomicFlights            *float64 `ch:"event_economic_flights"`               // Nullable(Float64)
+	EventEconomicValue              *float64 `ch:"event_economic_value"`                 // Nullable(Float64)
+	EventEconomicDayWiseImpact      string   `ch:"event_economic_dayWiseEconomicImpact"` // JSON
+	EventEconomicBreakdown          string   `ch:"event_economic_breakdown"`             // JSON
+	EventEconomicImpact             string   `ch:"event_economic_impact"`                // JSON
 	Version                         uint32   `ch:"version"`
 }
 
@@ -5881,6 +6153,12 @@ func main() {
 		log.Println("        Process only speakers data (default: false)")
 		log.Println("  -event-edition")
 		log.Println("        Process only event edition data (default: false)")
+		log.Println("  -eventtype")
+		log.Println("        Process only eventtype data (default: false)")
+		log.Println("  -eventcategory")
+		log.Println("        Process only eventcategory data (default: false)")
+		log.Println("  -eventranking")
+		log.Println("        Process only eventranking data (default: false)")
 
 		log.Println("  -help")
 		log.Println("        Show this help message")
