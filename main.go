@@ -11,10 +11,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"strconv"
 
 	"seeders/shared"
 	"seeders/utils"
@@ -2314,7 +2314,6 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 		return nil
 	}
 
-	// Create a map to store results by event ID
 	results := make(map[int64]map[string]interface{})
 
 	query := map[string]interface{}{
@@ -5464,6 +5463,7 @@ func main() {
 	var eventCategoryEventChOnly bool
 	var eventRankingOnly bool
 	var eventDesignationOnly bool
+	var visitorSpreadOnly bool
 
 	flag.IntVar(&numChunks, "chunks", 5, "Number of chunks to process data in (default: 5)")
 	flag.IntVar(&batchSize, "batch", 5000, "MySQL batch size for fetching data (default: 5000)")
@@ -5479,6 +5479,7 @@ func main() {
 	flag.BoolVar(&eventCategoryEventChOnly, "eventcategory", false, "Process only eventcategory data (default: false)")
 	flag.BoolVar(&eventRankingOnly, "eventranking", false, "Process only event ranking data (default: false)")
 	flag.BoolVar(&eventDesignationOnly, "eventdesignation", false, "Process only event designation data (default: false)")
+	flag.BoolVar(&visitorSpreadOnly, "visitorspread", false, "Process only visitor spread data (default: false)")
 
 	flag.BoolVar(&showHelp, "help", false, "Show help information")
 	flag.Parse()
@@ -5519,6 +5520,8 @@ func main() {
 		log.Println("        Process only eventcategory data (default: false)")
 		log.Println("  -eventranking")
 		log.Println("        Process only eventranking data (default: false)")
+		log.Println("  -visitorspread")
+		log.Println("        Process only visitor spread data (default: false)")
 
 		log.Println("  -help")
 		log.Println("        Show this help message")
@@ -5609,6 +5612,8 @@ func main() {
 		log.Printf("Mode: EVENT RANKING ONLY")
 	} else if eventDesignationOnly {
 		log.Printf("Mode: EVENT DESIGNATION ONLY")
+	} else if visitorSpreadOnly {
+		log.Printf("Mode: VISITOR SPREAD ONLY")
 	}
 
 	if sponsorsOnly {
@@ -5627,6 +5632,8 @@ func main() {
 		log.Printf("Elasticsearch: Skipped (not needed for event ranking)")
 	} else if eventDesignationOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for event designation)")
+	} else if visitorSpreadOnly {
+		log.Printf("Elasticsearch: Required (needed for visitor spread data)")
 	}
 	log.Printf("==============================\n")
 
@@ -5644,6 +5651,10 @@ func main() {
 	}
 
 	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventRankingOnly && !eventDesignationOnly {
+		if err := testElasticsearchConnection(esClient, config.IndexName); err != nil {
+			log.Fatalf("Elasticsearch connection test failed: %v", err)
+		}
+	} else if visitorSpreadOnly {
 		if err := testElasticsearchConnection(esClient, config.IndexName); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -5698,6 +5709,14 @@ func main() {
 		}
 		utils.ProcessEventDesignationOnly(mysqlDB, clickhouseDB, utilsConfig)
 		log.Println("=== Event Designation Processing Finished ===")
+	} else if visitorSpreadOnly {
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		utils.ProcessVisitorSpreadOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 	} else {
 		log.Println("Error: No specific table mode selected!")
 		log.Println("Please specify one of the following modes:")
