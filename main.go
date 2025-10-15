@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,13 +10,11 @@ import (
 	"math"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"strconv"
 
 	"seeders/shared"
 	"seeders/utils"
@@ -31,734 +27,97 @@ import (
 	"github.com/kelseyhightower/envconfig"
 )
 
-// safely converts a value to string for non-nullable fields
-func safeConvertToString(value interface{}) string {
-	if value == nil {
-		return ""
-	}
-	if str, ok := value.(string); ok {
-		return str
-	}
-	if bytes, ok := value.([]uint8); ok {
-		return string(bytes)
-	}
-	if bytes, ok := value.([]byte); ok {
-		return string(bytes)
-	}
-	// Handle numeric types
-	if intVal, ok := value.(int64); ok {
-		return strconv.FormatInt(intVal, 10)
-	}
-	if intVal, ok := value.(int32); ok {
-		return strconv.FormatInt(int64(intVal), 10)
-	}
-	if intVal, ok := value.(int); ok {
-		return strconv.Itoa(intVal)
-	}
-	if uintVal, ok := value.(uint64); ok {
-		return strconv.FormatUint(uintVal, 10)
-	}
-	if uintVal, ok := value.(uint32); ok {
-		return strconv.FormatUint(uint64(uintVal), 10)
-	}
-	if uintVal, ok := value.(uint); ok {
-		return strconv.FormatUint(uint64(uintVal), 10)
-	}
-	return ""
-}
-
-// safeConvertToStatusString converts a value to status string with default 'A' for empty values
-func safeConvertToStatusString(value interface{}) string {
-	status := safeConvertToString(value)
-	if status == "" {
-		return "A" // Default status value as per ClickHouse schema
-	}
-	return status
-}
-
-// safeConvertToNullableUInt8 converts a value to nullable UInt8, handling both numeric and string types
-func safeConvertToNullableUInt8(value interface{}) *uint8 {
-	if value == nil {
-		return nil
-	}
-
-	// Handle direct numeric types first
-	if num, ok := value.(uint8); ok {
-		return &num
-	}
-	if num, ok := value.(uint32); ok {
-		if num <= 255 {
-			result := uint8(num)
-			return &result
-		}
-		return nil
-	}
-	if num, ok := value.(int64); ok {
-		if num >= 0 && num <= 255 {
-			result := uint8(num)
-			return &result
-		}
-		return nil
-	}
-	if num, ok := value.(int); ok {
-		if num >= 0 && num <= 255 {
-			result := uint8(num)
-			return &result
-		}
-		return nil
-	}
-
-	// Handle string conversion
-	str := safeConvertToString(value)
-	if str == "" {
-		return nil
-	}
-	if num, err := strconv.ParseUint(str, 10, 8); err == nil {
-		result := uint8(num)
-		return &result
-	}
-	return nil
-}
-
-// safely converts a value to nullable string for nullable fields
-func safeConvertToNullableString(value interface{}) *string {
-	if value == nil {
-		return nil
-	}
-	if str, ok := value.(string); ok {
-		return &str
-	}
-	if strPtr, ok := value.(*string); ok {
-		return strPtr
-	}
-	if bytes, ok := value.([]uint8); ok {
-		str := string(bytes)
-		return &str
-	}
-	if bytes, ok := value.([]byte); ok {
-		str := string(bytes)
-		return &str
-	}
-	return nil
-}
-
-// generateEventUUID creates a deterministic UUID from event_id and event_created
-func generateEventUUID(eventID uint32, eventCreated interface{}) string {
-	// Convert event_created to string for consistent input
-	var createdStr string
-	if eventCreated != nil {
-		createdStr = safeConvertToString(eventCreated)
-	}
-
-	// Create input string combining event_id and event_created
-	input := fmt.Sprintf("%d_%s", eventID, createdStr)
-
-	// Generate SHA256 hash of the input
-	hash := sha256.Sum256([]byte(input))
-
-	// Convert first 16 bytes to UUID format (version 5 style)
-	uuid := make([]byte, 16)
-	copy(uuid, hash[:16])
-
-	// Set version (4 bits) and variant (2 bits) for UUID v4 compatibility
-	uuid[6] = (uuid[6] & 0x0f) | 0x40 // Version 4
-	uuid[8] = (uuid[8] & 0x3f) | 0x80 // Variant bits
-
-	// Format as UUID string
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		binary.BigEndian.Uint32(uuid[0:4]),
-		binary.BigEndian.Uint16(uuid[4:6]),
-		binary.BigEndian.Uint16(uuid[6:8]),
-		binary.BigEndian.Uint16(uuid[8:10]),
-		binary.BigEndian.Uint64(append([]byte{0, 0}, uuid[10:16]...))&0xffffffffffff)
-}
-
-// converts a nullable string to uppercase
-func toUpperNullableString(s *string) *string {
-	if s == nil {
-		return nil
-	}
-	upper := strings.ToUpper(*s)
-	return &upper
-}
-
-func safeConvertToDateString(value interface{}) string {
-	str := safeConvertToString(value)
-	if str == "" {
-		return "1970-01-01"
-	}
-	return str
-}
-
-func safeConvertToDateTimeString(value interface{}) string {
-	str := safeConvertToString(value)
-	if str == "" {
-		return "1970-01-01 00:00:00"
-	}
-	return str
-}
-
-func safeConvertToUInt32(value interface{}) uint32 {
-	if value == nil {
-		return 0
-	}
-	if num, ok := value.(uint32); ok {
-		return num
-	}
-	if num, ok := value.(int64); ok {
-		return uint32(num)
-	}
-	if num, ok := value.(int); ok {
-		return uint32(num)
-	}
-	if num, ok := value.(uint64); ok {
-		return uint32(num)
-	}
-	return 0
-}
-
-func safeConvertToUInt16(value interface{}) uint16 {
-	if value == nil {
-		return 0
-	}
-	if num, ok := value.(uint16); ok {
-		return num
-	}
-	if num, ok := value.(int64); ok {
-		return uint16(num)
-	}
-	if num, ok := value.(int); ok {
-		return uint16(num)
-	}
-	if num, ok := value.(uint32); ok {
-		return uint16(num)
-	}
-	if num, ok := value.(uint64); ok {
-		return uint16(num)
-	}
-
-	if str, ok := value.(string); ok {
-		if i, err := strconv.ParseUint(str, 10, 16); err == nil {
-			return uint16(i)
-		}
-		return 0
-	}
-	if bytes, ok := value.([]byte); ok {
-		str := string(bytes)
-		if i, err := strconv.ParseUint(str, 10, 16); err == nil {
-			return uint16(i)
-		}
-		return 0
-	}
-	return 0
-}
-
-func safeConvertToInt8(value interface{}) int8 {
-	if value == nil {
-		return 0
-	}
-	if num, ok := value.(int8); ok {
-		return num
-	}
-	if num, ok := value.(int64); ok {
-		return int8(num)
-	}
-	if num, ok := value.(int); ok {
-		return int8(num)
-	}
-	if num, ok := value.(uint32); ok {
-		return int8(num)
-	}
-	if num, ok := value.(uint64); ok {
-		return int8(num)
-	}
-	return 0
-}
-
-func safeConvertToNullableUInt32(value interface{}) *uint32 {
-	if value == nil {
-		return nil
-	}
-	if num, ok := value.(uint32); ok {
-		return &num
-	}
-	if num, ok := value.(int64); ok {
-		u32 := uint32(num)
-		return &u32
-	}
-	if num, ok := value.(int); ok {
-		u32 := uint32(num)
-		return &u32
-	}
-	if num, ok := value.(uint64); ok {
-		u32 := uint32(num)
-		return &u32
-	}
-	return nil
-}
-
-func safeConvertToFloat64(value interface{}) float64 {
-	if value == nil {
-		return 0.0
-	}
-	if num, ok := value.(float64); ok {
-		return num
-	}
-	if num, ok := value.(float32); ok {
-		return float64(num)
-	}
-	if num, ok := value.(int64); ok {
-		return float64(num)
-	}
-	if num, ok := value.(int); ok {
-		return float64(num)
-	}
-	if num, ok := value.(uint32); ok {
-		return float64(num)
-	}
-	if num, ok := value.(uint64); ok {
-		return float64(num)
-	}
-	return 0.0
-}
-
-func safeConvertToNullableFloat64(value interface{}) *float64 {
-	if value == nil {
-		return nil
-	}
-	if ptr, ok := value.(*float64); ok {
-		return ptr
-	}
-	if num, ok := value.(float64); ok {
-		return &num
-	}
-	if num, ok := value.(float32); ok {
-		f64 := float64(num)
-		return &f64
-	}
-	if num, ok := value.(int64); ok {
-		f64 := float64(num)
-		return &f64
-	}
-	if num, ok := value.(int); ok {
-		f64 := float64(num)
-		return &f64
-	}
-	if num, ok := value.(uint32); ok {
-		f64 := float64(num)
-		return &f64
-	}
-	if num, ok := value.(uint64); ok {
-		f64 := float64(num)
-		return &f64
-	}
-	return nil
-}
-
-// converts a float64 value to a decimal string for ClickHouse Decimal(3,2) field
-func safeConvertFloat64ToDecimalString(value interface{}) *string {
-	if value == nil {
-		return nil
-	}
-
-	var floatVal float64
-	switch v := value.(type) {
-	case float64:
-		floatVal = v
-	case float32:
-		floatVal = float64(v)
-	case int64:
-		floatVal = float64(v)
-	case int:
-		floatVal = float64(v)
-	case uint32:
-		floatVal = float64(v)
-	case uint64:
-		floatVal = float64(v)
-	default:
-		return nil
-	}
-
-	// Format to 2 decimal places for Decimal(3,2)
-	result := fmt.Sprintf("%.2f", floatVal)
-	return &result
-}
-
-// converts a value to uint32
-func convertToUInt32(value interface{}) uint32 {
-	if value == nil {
-		return 0
-	}
-
-	switch v := value.(type) {
-	case uint32:
-		return v
-	case uint64:
-		if v > 4294967295 {
-			return 0
-		}
-		return uint32(v)
-	case int64:
-		if v < 0 || v > 4294967295 {
-			return 0
-		}
-		return uint32(v)
-	case int32:
-		if v < 0 {
-			return 0
-		}
-		return uint32(v)
-	case int:
-		if v < 0 || v > 4294967295 {
-			return 0
-		}
-		return uint32(v)
-	case float64:
-		if v < 0 || v > 4294967295 {
-			return 0
-		}
-		return uint32(v)
-	case string:
-		if i, err := strconv.ParseUint(v, 10, 32); err == nil {
-			return uint32(i)
-		}
-		return 0
-	default:
-		return 0
-	}
-}
-
-// converts a value to uint8
-func convertToUInt8(value interface{}) uint8 {
-	if value == nil {
-		return 0
-	}
-
-	switch v := value.(type) {
-	case uint8:
-		return v
-	case uint16:
-		if v > 255 {
-			return 0
-		}
-		return uint8(v)
-	case uint32:
-		if v > 255 {
-			return 0
-		}
-		return uint8(v)
-	case uint64:
-		if v > 255 {
-			return 0
-		}
-		return uint8(v)
-	case int8:
-		if v < 0 {
-			return 0
-		}
-		return uint8(v)
-	case int16:
-		if v < 0 || v > 255 {
-			return 0
-		}
-		return uint8(v)
-	case int32:
-		if v < 0 || v > 255 {
-			return 0
-		}
-		return uint8(v)
-	case int64:
-		if v < 0 || v > 255 {
-			return 0
-		}
-		return uint8(v)
-	case int:
-		if v < 0 || v > 255 {
-			return 0
-		}
-		return uint8(v)
-	case float64:
-		if v < 0 || v > 255 {
-			return 0
-		}
-		return uint8(v)
-	case string:
-		if i, err := strconv.ParseUint(v, 10, 8); err == nil {
-			return uint8(i)
-		}
-		return 0
-	default:
-		return 0
-	}
-}
-
-func extractDomainFromWebsite(website interface{}) string {
-	if website == nil {
-		return ""
-	}
-
-	websiteStrPtr := convertToStringPtr(website)
-	if websiteStrPtr == nil {
-		return ""
-	}
-	websiteStr := *websiteStrPtr
-	if websiteStr == "" {
-		return ""
-	}
-
-	websiteStr = strings.TrimSpace(websiteStr)
-
-	if !strings.Contains(websiteStr, "://") {
-		websiteStr = "https://" + websiteStr
-	}
-	parsedURL, err := url.Parse(websiteStr)
-	if err != nil {
-		return ""
-	}
-	host := parsedURL.Hostname()
-	if host == "" {
-		return ""
-	}
-
-	host = strings.TrimPrefix(strings.ToLower(host), "www.")
-
-	if strings.Contains(host, "@") {
-		parts := strings.Split(host, "@")
-		if len(parts) > 1 {
-			host = parts[len(parts)-1]
-		}
-	}
-
-	domainRegex := regexp.MustCompile(`(?P<domain>[a-z0-9][a-z0-9\-_]*(\.[a-z0-9][a-z0-9\-_]*)*\.[a-z]{2,})$`)
-	matches := domainRegex.FindStringSubmatch(host)
-
-	if len(matches) > 1 {
-		return matches[1]
-	}
-
-	return host
-}
-
-// getCompanyNameOrDefault
-func getCompanyNameOrDefault(companyName interface{}) string {
-	if companyName == nil {
-		return "N/A"
-	}
-
-	if name, ok := companyName.(string); ok {
-		if strings.TrimSpace(name) == "" {
-			return "N/A"
-		}
-		return name
-	}
-
-	if name, ok := companyName.([]byte); ok {
-		nameStr := string(name)
-		if strings.TrimSpace(nameStr) == "" {
-			return "N/A"
-		}
-		return nameStr
-	}
-
-	return "N/A" // default
-}
-
-// converts a value to *uint32 for nullable fields
-func convertToUInt32Ptr(value interface{}) *uint32 {
-	if value == nil {
-		return nil
-	}
-
-	u32 := convertToUInt32(value)
-	return &u32
-}
-
-// converts a value to *string for nullable fields
-func convertToStringPtr(value interface{}) *string {
-	if value == nil {
-		return nil
-	}
-
-	switch v := value.(type) {
-	case []byte:
-		str := string(v)
-		return &str
-	case string:
-		return &v
-	case float64:
-		str := fmt.Sprintf("%.6f", v)
-		return &str
-	case float32:
-		str := fmt.Sprintf("%.6f", v)
-		return &str
-	default:
-		str := fmt.Sprintf("%v", v)
-		return &str
-	}
-}
-
-func convertToString(value interface{}) string {
-	ptr := convertToStringPtr(value)
-	if ptr == nil {
-		return ""
-	}
-	return *ptr
-}
-
-func convertToInt8(value interface{}) int8 {
-	if value == nil {
-		return 0
-	}
-
-	switch v := value.(type) {
-	case int8:
-		return v
-	case int16:
-		if v < -128 || v > 127 {
-			return 0
-		}
-		return int8(v)
-	case int32:
-		if v < -128 || v > 127 {
-			return 0
-		}
-		return int8(v)
-	case int64:
-		if v < -128 || v > 127 {
-			return 0
-		}
-		return int8(v)
-	case int:
-		if v < -128 || v > 127 {
-			return 0
-		}
-		return int8(v)
-	case uint8:
-		if v > 127 {
-			return 0
-		}
-		return int8(v)
-	case uint16:
-		if v > 127 {
-			return 0
-		}
-		return int8(v)
-	case uint32:
-		if v > 127 {
-			return 0
-		}
-		return int8(v)
-	case uint64:
-		if v > 127 {
-			return 0
-		}
-		return int8(v)
-	case float64:
-		if v < -128 || v > 127 {
-			return 0
-		}
-		return int8(v)
-	case string:
-		if i, err := strconv.ParseInt(v, 10, 8); err == nil {
-			return int8(i)
-		}
-		return 0
-	default:
-		return 0
-	}
-}
-
 // converts a map to EventEditionRecord struct
 func convertToEventEditionRecord(record map[string]interface{}) EventEditionRecord {
 	return EventEditionRecord{
-		EventID:            safeConvertToUInt32(record["event_id"]),
-		EventUUID:          safeConvertToString(record["event_uuid"]),
-		EventName:          safeConvertToString(record["event_name"]),
-		EventAbbrName:      safeConvertToNullableString(record["event_abbr_name"]),
-		EventDescription:   safeConvertToNullableString(record["event_description"]),
-		EventPunchline:     safeConvertToNullableString(record["event_punchline"]),
-		StartDate:          safeConvertToDateString(record["start_date"]),
-		EndDate:            safeConvertToDateString(record["end_date"]),
-		EditionID:          safeConvertToUInt32(record["edition_id"]),
-		EditionCountry:     strings.ToUpper(safeConvertToString(record["edition_country"])),
-		EditionCity:        safeConvertToUInt32(record["edition_city"]),
-		EditionCityName:    safeConvertToString(record["edition_city_name"]),
-		EditionCityStateID: safeConvertToNullableUInt32(record["edition_city_state_id"]),
-		EditionCityState:   safeConvertToString(record["edition_city_state"]),
-		EditionCityLat:     safeConvertToFloat64(record["edition_city_lat"]),
-		EditionCityLong:    safeConvertToFloat64(record["edition_city_long"]),
-		CompanyID:          safeConvertToNullableUInt32(record["company_id"]),
-		CompanyName:        safeConvertToNullableString(record["company_name"]),
-		CompanyDomain:      safeConvertToNullableString(record["company_domain"]),
-		CompanyWebsite:     safeConvertToNullableString(record["company_website"]),
-		CompanyCountry:     toUpperNullableString(safeConvertToNullableString(record["company_country"])),
-		CompanyState:       safeConvertToNullableString(record["company_state"]),
-		CompanyCity:        safeConvertToNullableUInt32(record["company_city"]),
+		EventID:            shared.SafeConvertToUInt32(record["event_id"]),
+		EventUUID:          shared.SafeConvertToString(record["event_uuid"]),
+		EventName:          shared.SafeConvertToString(record["event_name"]),
+		EventAbbrName:      shared.SafeConvertToNullableString(record["event_abbr_name"]),
+		EventDescription:   shared.SafeConvertToNullableString(record["event_description"]),
+		EventPunchline:     shared.SafeConvertToNullableString(record["event_punchline"]),
+		StartDate:          shared.SafeConvertToDateString(record["start_date"]),
+		EndDate:            shared.SafeConvertToDateString(record["end_date"]),
+		EditionID:          shared.SafeConvertToUInt32(record["edition_id"]),
+		EditionCountry:     strings.ToUpper(shared.SafeConvertToString(record["edition_country"])),
+		EditionCity:        shared.SafeConvertToUInt32(record["edition_city"]),
+		EditionCityName:    shared.SafeConvertToString(record["edition_city_name"]),
+		EditionCityStateID: shared.SafeConvertToNullableUInt32(record["edition_city_state_id"]),
+		EditionCityState:   shared.SafeConvertToString(record["edition_city_state"]),
+		EditionCityLat:     shared.SafeConvertToFloat64(record["edition_city_lat"]),
+		EditionCityLong:    shared.SafeConvertToFloat64(record["edition_city_long"]),
+		CompanyID:          shared.SafeConvertToNullableUInt32(record["company_id"]),
+		CompanyName:        shared.SafeConvertToNullableString(record["company_name"]),
+		CompanyDomain:      shared.SafeConvertToNullableString(record["company_domain"]),
+		CompanyWebsite:     shared.SafeConvertToNullableString(record["company_website"]),
+		CompanyCountry:     shared.ToUpperNullableString(shared.SafeConvertToNullableString(record["company_country"])),
+		CompanyState:       shared.SafeConvertToNullableString(record["company_state"]),
+		CompanyCity:        shared.SafeConvertToNullableUInt32(record["company_city"]),
 		CompanyCityName: func() *string {
 			if val, ok := record["company_city_name"].(*string); ok {
 				return val
 			}
 			return nil
 		}(),
-		VenueID:      safeConvertToNullableUInt32(record["venue_id"]),
-		VenueName:    safeConvertToNullableString(record["venue_name"]),
-		VenueCountry: toUpperNullableString(safeConvertToNullableString(record["venue_country"])),
-		VenueCity:    safeConvertToNullableUInt32(record["venue_city"]),
+		VenueID:      shared.SafeConvertToNullableUInt32(record["venue_id"]),
+		VenueName:    shared.SafeConvertToNullableString(record["venue_name"]),
+		VenueCountry: shared.ToUpperNullableString(shared.SafeConvertToNullableString(record["venue_country"])),
+		VenueCity:    shared.SafeConvertToNullableUInt32(record["venue_city"]),
 		VenueCityName: func() *string {
 			if val, ok := record["venue_city_name"].(*string); ok {
 				return val
 			}
 			return nil
 		}(),
-		VenueLat:             safeConvertToNullableFloat64(record["venue_lat"]),
-		VenueLong:            safeConvertToNullableFloat64(record["venue_long"]),
-		Published:            safeConvertToInt8(record["published"]),
-		Status:               safeConvertToStatusString(record["status"]),
-		EditionsAudianceType: safeConvertToUInt16(record["editions_audiance_type"]),
-		EditionFunctionality: safeConvertToString(record["edition_functionality"]),
-		EditionWebsite:       safeConvertToNullableString(record["edition_website"]),
-		EditionDomain:        safeConvertToNullableString(record["edition_domain"]),
-		EditionType:          safeConvertEditionType(record["edition_type"]),
-		EventFollowers:       safeConvertToNullableUInt32(record["event_followers"]),
-		EditionFollowers:     safeConvertToNullableUInt32(record["edition_followers"]),
-		EventExhibitor:       safeConvertToNullableUInt32(record["event_exhibitor"]),
-		EditionExhibitor:     safeConvertToNullableUInt32(record["edition_exhibitor"]),
-		ExhibitorsUpperBound: safeConvertToNullableUInt32(record["exhibitors_upper_bound"]),
-		ExhibitorsLowerBound: safeConvertToNullableUInt32(record["exhibitors_lower_bound"]),
-		ExhibitorsMean:       safeConvertToNullableUInt32(record["exhibitors_mean"]),
-		EventSponsor:         safeConvertToNullableUInt32(record["event_sponsor"]),
-		EditionSponsor:       safeConvertToNullableUInt32(record["edition_sponsor"]),
-		EventSpeaker:         safeConvertToNullableUInt32(record["event_speaker"]),
-		EditionSpeaker:       safeConvertToNullableUInt32(record["edition_speaker"]),
-		EventCreated:         safeConvertToDateTimeString(record["event_created"]),
-		EditionCreated:       safeConvertToDateTimeString(record["edition_created"]),
-		EventHybrid:          safeConvertToNullableUInt8(record["event_hybrid"]),
+		VenueLat:             shared.SafeConvertToNullableFloat64(record["venue_lat"]),
+		VenueLong:            shared.SafeConvertToNullableFloat64(record["venue_long"]),
+		Published:            shared.SafeConvertToInt8(record["published"]),
+		Status:               shared.SafeConvertToStatusString(record["status"]),
+		EditionsAudianceType: shared.SafeConvertToUInt16(record["editions_audiance_type"]),
+		EditionFunctionality: shared.SafeConvertToString(record["edition_functionality"]),
+		EditionWebsite:       shared.SafeConvertToNullableString(record["edition_website"]),
+		EditionDomain:        shared.SafeConvertToNullableString(record["edition_domain"]),
+		EditionType:          *shared.SafeConvertToNullableString(record["edition_type"]),
+		EventFollowers:       shared.SafeConvertToNullableUInt32(record["event_followers"]),
+		EditionFollowers:     shared.SafeConvertToNullableUInt32(record["edition_followers"]),
+		EventExhibitor:       shared.SafeConvertToNullableUInt32(record["event_exhibitor"]),
+		EditionExhibitor:     shared.SafeConvertToNullableUInt32(record["edition_exhibitor"]),
+		ExhibitorsUpperBound: shared.SafeConvertToNullableUInt32(record["exhibitors_upper_bound"]),
+		ExhibitorsLowerBound: shared.SafeConvertToNullableUInt32(record["exhibitors_lower_bound"]),
+		ExhibitorsMean:       shared.SafeConvertToNullableUInt32(record["exhibitors_mean"]),
+		EventSponsor:         shared.SafeConvertToNullableUInt32(record["event_sponsor"]),
+		EditionSponsor:       shared.SafeConvertToNullableUInt32(record["edition_sponsor"]),
+		EventSpeaker:         shared.SafeConvertToNullableUInt32(record["event_speaker"]),
+		EditionSpeaker:       shared.SafeConvertToNullableUInt32(record["edition_speaker"]),
+		EventCreated:         shared.SafeConvertToDateTimeString(record["event_created"]),
+		EditionCreated:       shared.SafeConvertToDateTimeString(record["edition_created"]),
+		EventHybrid:          shared.SafeConvertToNullableUInt8(record["event_hybrid"]),
 		IsBranded: func() *uint32 {
 			if val, ok := record["isBranded"].(*uint32); ok {
 				return val
 			}
 			return nil
 		}(),
-		Maturity:                        safeConvertToNullableString(record["maturity"]),
-		EventPricing:                    safeConvertToNullableString(record["event_pricing"]),
-		EventLogo:                       safeConvertToNullableString(record["event_logo"]),
-		EventEstimatedVisitors:          safeConvertToNullableString(record["event_estimatedVisitors"]),
-		EventFrequency:                  safeConvertToNullableString(record["event_frequency"]),
-		InboundScore:                    safeConvertToNullableUInt32(record["inboundScore"]),
-		InternationalScore:              safeConvertToNullableUInt32(record["internationalScore"]),
-		RepeatSentimentChangePercentage: safeConvertToNullableFloat64(record["repeatSentimentChangePercentage"]),
-		AudienceZone:                    safeConvertToNullableString(record["audienceZone"]),
-		EventEconomicFoodAndBevarage:    safeConvertToNullableFloat64(record["event_economic_FoodAndBevarage"]),
-		EventEconomicTransportation:     safeConvertToNullableFloat64(record["event_economic_Transportation"]),
-		EventEconomicAccomodation:       safeConvertToNullableFloat64(record["event_economic_Accomodation"]),
-		EventEconomicUtilities:          safeConvertToNullableFloat64(record["event_economic_Utilities"]),
-		EventEconomicFlights:            safeConvertToNullableFloat64(record["event_economic_flights"]),
-		EventEconomicValue:              safeConvertToNullableFloat64(record["event_economic_value"]),
-		EventEconomicDayWiseImpact:      safeConvertToString(record["event_economic_dayWiseEconomicImpact"]),
-		EventEconomicBreakdown:          safeConvertToString(record["event_economic_breakdown"]),
-		EventEconomicImpact:             safeConvertToString(record["event_economic_impact"]),
-		EventAvgRating:                  safeConvertFloat64ToDecimalString(record["event_avgRating"]),
-		Version:                         safeConvertToUInt32(record["version"]),
+		Maturity:                        shared.SafeConvertToNullableString(record["maturity"]),
+		EventPricing:                    shared.SafeConvertToNullableString(record["event_pricing"]),
+		EventLogo:                       shared.SafeConvertToNullableString(record["event_logo"]),
+		EventEstimatedVisitors:          shared.SafeConvertToNullableString(record["event_estimatedVisitors"]),
+		EventFrequency:                  shared.SafeConvertToNullableString(record["event_frequency"]),
+		InboundScore:                    shared.SafeConvertToNullableUInt32(record["inboundScore"]),
+		InternationalScore:              shared.SafeConvertToNullableUInt32(record["internationalScore"]),
+		RepeatSentimentChangePercentage: shared.SafeConvertToNullableFloat64(record["repeatSentimentChangePercentage"]),
+		AudienceZone:                    shared.SafeConvertToNullableString(record["audienceZone"]),
+		EventEconomicFoodAndBevarage:    shared.SafeConvertToNullableFloat64(record["event_economic_FoodAndBevarage"]),
+		EventEconomicTransportation:     shared.SafeConvertToNullableFloat64(record["event_economic_Transportation"]),
+		EventEconomicAccomodation:       shared.SafeConvertToNullableFloat64(record["event_economic_Accomodation"]),
+		EventEconomicUtilities:          shared.SafeConvertToNullableFloat64(record["event_economic_Utilities"]),
+		EventEconomicFlights:            shared.SafeConvertToNullableFloat64(record["event_economic_flights"]),
+		EventEconomicValue:              shared.SafeConvertToNullableFloat64(record["event_economic_value"]),
+		EventEconomicDayWiseImpact:      shared.SafeConvertToString(record["event_economic_dayWiseEconomicImpact"]),
+		EventEconomicBreakdown:          shared.SafeConvertToString(record["event_economic_breakdown"]),
+		EventEconomicImpact:             shared.SafeConvertToString(record["event_economic_impact"]),
+		EventAvgRating:                  shared.SafeConvertFloat64ToDecimalString(record["event_avgRating"]),
+		Version:                         shared.SafeConvertToUInt32(record["version"]),
 	}
 }
 
@@ -919,12 +278,16 @@ func setupNativeClickHouseConnection(config Config) (driver.Conn, error) {
 		},
 		Protocol: clickhouse.HTTP,
 		Settings: clickhouse.Settings{
-			"max_execution_time": 60,
+			"max_execution_time": 180,
 		},
 		Compression: &clickhouse.Compression{
 			Method: clickhouse.CompressionLZ4,
 		},
-		Debug: false,
+		MaxOpenConns:     50,
+		MaxIdleConns:     25,
+		DialTimeout:      10 * time.Second,
+		ConnOpenStrategy: clickhouse.ConnOpenInOrder,
+		Debug:            false,
 	})
 
 	if err != nil {
@@ -2286,13 +1649,13 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 							// Extract domain from edition website
 							var editionDomain string
 							if editionWebsite != nil {
-								editionDomain = extractDomainFromWebsite(editionWebsite) // If no website, editionDomain remains empty string
+								editionDomain = shared.ExtractDomainFromWebsite(editionWebsite) // If no website, editionDomain remains empty string
 							}
 
 							// Extract domain from company website
 							var companyDomain string
 							if company != nil && company["company_website"] != nil {
-								companyDomain = extractDomainFromWebsite(company["company_website"])
+								companyDomain = shared.ExtractDomainFromWebsite(company["company_website"])
 							}
 
 							// Determine edition type using simplified logic
@@ -2304,8 +1667,8 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 							)
 
 							// Create unique key for deduplication (event_id + edition_id)
-							eventIDStr := safeConvertToString(eventData["id"])
-							editionIDStr := safeConvertToString(edition["edition_id"])
+							eventIDStr := shared.ConvertToString(eventData["id"])
+							editionIDStr := shared.ConvertToString(edition["edition_id"])
 							uniqueKey := eventIDStr + "_" + editionIDStr
 
 							globalMutex.RLock()
@@ -2325,7 +1688,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 
 							record := map[string]interface{}{
 								"event_id":          eventData["id"],
-								"event_uuid":        generateEventUUID(safeConvertToUInt32(eventData["id"]), eventData["created"]),
+								"event_uuid":        shared.GenerateEventUUID(shared.ConvertToUInt32(eventData["id"]), eventData["created"]),
 								"event_name":        eventData["event_name"],
 								"event_abbr_name":   eventData["abbr_name"],
 								"event_description": esInfoMap["event_description"],
@@ -2333,12 +1696,12 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"start_date":        eventData["start_date"],
 								"end_date":          eventData["end_date"],
 								"edition_id":        edition["edition_id"],
-								"edition_country":   strings.ToUpper(safeConvertToString(eventData["country"])),
+								"edition_country":   strings.ToUpper(shared.ConvertToString(eventData["country"])),
 								"edition_city":      edition["edition_city"],
-								"edition_city_name": safeConvertToString(city["name"]),
+								"edition_city_name": shared.ConvertToString(city["name"]),
 								"edition_city_state": func() string {
 									if city != nil && city["state"] != nil {
-										stateStr := safeConvertToString(city["state"])
+										stateStr := shared.ConvertToString(city["state"])
 										if strings.TrimSpace(stateStr) == "" {
 											return "any"
 										}
@@ -2361,10 +1724,10 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"company_name":      company["company_name"],
 								"company_domain":    companyDomain,
 								"company_website":   company["company_website"],
-								"company_country":   strings.ToUpper(safeConvertToString(company["company_country"])),
+								"company_country":   strings.ToUpper(shared.ConvertToString(company["company_country"])),
 								"company_state": func() *string {
 									if companyCity != nil && companyCity["state"] != nil {
-										stateStr := safeConvertToString(companyCity["state"])
+										stateStr := shared.ConvertToString(companyCity["state"])
 										if strings.TrimSpace(stateStr) == "" {
 											return nil
 										}
@@ -2375,18 +1738,18 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"company_city": company["company_city"],
 								"company_city_name": func() *string {
 									if companyCity != nil && companyCity["name"] != nil {
-										nameStr := safeConvertToString(companyCity["name"])
+										nameStr := shared.ConvertToString(companyCity["name"])
 										return &nameStr
 									}
 									return nil
 								}(),
 								"venue_id":      venue["id"],
 								"venue_name":    venue["venue_name"],
-								"venue_country": strings.ToUpper(safeConvertToString(venue["venue_country"])),
+								"venue_country": strings.ToUpper(shared.ConvertToString(venue["venue_country"])),
 								"venue_city":    venue["venue_city"],
 								"venue_city_name": func() *string {
 									if venueCity != nil && venueCity["name"] != nil {
-										nameStr := safeConvertToString(venueCity["name"])
+										nameStr := shared.ConvertToString(venueCity["name"])
 										return &nameStr
 									}
 									return nil
@@ -3023,20 +2386,18 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			continue
 		}
 
-		// Helper function to convert string to uint32 with fallback
 		convertStringToUInt32 := func(key string) interface{} {
 			if val, exists := source[key]; exists && val != nil {
-				strVal := convertToString(val)
+				strVal := shared.ConvertToString(val)
 				if strVal != "" {
 					if num, err := strconv.ParseUint(strVal, 10, 32); err == nil {
 						return uint32(num)
 					}
 				}
 			}
-			return nil // Return nil instead of 0 for failed conversions
+			return nil
 		}
 
-		// Helper function to convert string to uint8 with fallback
 		convertStringToUInt8 := func(key string) interface{} {
 			if val, exists := source[key]; exists && val != nil {
 				// Handle float64 values directly (common from Elasticsearch)
@@ -3054,17 +2415,16 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 					return nil
 				}
 				// Handle string conversion as fallback
-				strVal := convertToString(val)
+				strVal := shared.ConvertToString(val)
 				if strVal != "" {
 					if num, err := strconv.ParseUint(strVal, 10, 8); err == nil {
 						return uint8(num)
 					}
 				}
 			}
-			return nil // Return nil instead of 0 for failed conversions
+			return nil
 		}
 
-		// Convert total_edition properly - it comes as float64 from ES, not string
 		var convertedTotalEdition interface{}
 		if rawTotalEdition := source["total_edition"]; rawTotalEdition != nil {
 			if floatVal, ok := rawTotalEdition.(float64); ok {
@@ -3080,7 +2440,6 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			convertedTotalEdition = nil
 		}
 
-		// Helper function to convert score fields to float64
 		convertToFloat64 := func(key string) interface{} {
 			if val, exists := source[key]; exists && val != nil {
 				if floatVal, ok := val.(float64); ok {
@@ -3092,7 +2451,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 				if int64Val, ok := val.(int64); ok {
 					return float64(int64Val)
 				}
-				strVal := convertToString(val)
+				strVal := shared.ConvertToString(val)
 				if strVal != "" {
 					if num, err := strconv.ParseFloat(strVal, 64); err == nil {
 						return num
@@ -3103,27 +2462,27 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 		}
 
 		results[eventIDInt] = map[string]interface{}{
-			"event_description":               convertToString(source["description"]),
+			"event_description":               shared.ConvertToString(source["description"]),
 			"event_exhibitors":                convertStringToUInt32("exhibitors"),
 			"event_speakers":                  convertStringToUInt32("speakers"),
 			"event_totalSponsor":              convertStringToUInt32("totalSponsor"),
 			"event_following":                 convertStringToUInt32("following"),
-			"event_punchline":                 convertToString(source["punchline"]),
+			"event_punchline":                 shared.ConvertToString(source["punchline"]),
 			"edition_exhibitor":               convertStringToUInt32("exhibitors"),
 			"edition_sponsor":                 convertStringToUInt32("totalSponsor"),
 			"edition_speaker":                 convertStringToUInt32("speakers"),
 			"edition_followers":               convertStringToUInt32("following"),
-			"event_frequency":                 convertToString(source["frequency"]),
+			"event_frequency":                 shared.ConvertToString(source["frequency"]),
 			"event_hybrid":                    convertStringToUInt8("hybrid"),
-			"event_logo":                      convertToString(source["logo"]),
-			"event_pricing":                   convertToString(source["pricing"]),
+			"event_logo":                      shared.ConvertToString(source["logo"]),
+			"event_pricing":                   shared.ConvertToString(source["pricing"]),
 			"total_edition":                   convertedTotalEdition,
 			"avg_rating":                      source["avg_rating"],
-			"eventEstimatedTag":               convertToString(source["eventEstimatedTag"]),
+			"eventEstimatedTag":               shared.ConvertToString(source["eventEstimatedTag"]),
 			"inboundScore":                    convertStringToUInt32("inboundScore"),
 			"internationalScore":              convertStringToUInt32("internationalScore"),
 			"repeatSentimentChangePercentage": convertToFloat64("repeatSentimentChangePercentage"),
-			"audienceZone":                    convertToString(source["audienceZone"]),
+			"audienceZone":                    shared.ConvertToString(source["audienceZone"]),
 		}
 	}
 
@@ -3268,7 +2627,7 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
@@ -3528,10 +2887,10 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config C
 			for _, exhibitor := range batchData {
 				var companyDomain string
 				if website, ok := exhibitor["website"].(string); ok && website != "" {
-					companyDomain = extractDomainFromWebsite(website)
+					companyDomain = shared.ExtractDomainFromWebsite(website)
 				} else if website, ok := exhibitor["website"].([]byte); ok && len(website) > 0 {
 					websiteStr := string(website)
-					companyDomain = extractDomainFromWebsite(websiteStr)
+					companyDomain = shared.ExtractDomainFromWebsite(websiteStr)
 				}
 
 				// Get social media data for this company
@@ -3548,7 +2907,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config C
 				var companyCityName *string
 				if cityID, ok := exhibitor["city"].(int64); ok && cityLookup != nil {
 					if city, exists := cityLookup[cityID]; exists && city["name"] != nil {
-						nameStr := safeConvertToString(city["name"])
+						nameStr := shared.SafeConvertToString(city["name"])
 						companyCityName = &nameStr
 					}
 				}
@@ -3564,7 +2923,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config C
 							}
 						}
 						if city["state"] != nil {
-							stateStr := safeConvertToString(city["state"])
+							stateStr := shared.SafeConvertToString(city["state"])
 							if strings.TrimSpace(stateStr) != "" {
 								companyStateName = &stateStr
 							}
@@ -3573,26 +2932,26 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config C
 				}
 
 				// Convert data to proper types for protocol
-				companyID := convertToUInt32Ptr(exhibitor["company_id"])
-				editionID := convertToUInt32(exhibitor["edition_id"])
-				eventID := convertToUInt32(exhibitor["event_id"])
+				companyID := shared.ConvertToUInt32Ptr(exhibitor["company_id"])
+				editionID := shared.ConvertToUInt32(exhibitor["edition_id"])
+				eventID := shared.ConvertToUInt32(exhibitor["event_id"])
 
 				// Create exhibitor record with proper types
 				exhibitorRecord := ExhibitorRecord{
 					CompanyID:        companyID,
-					CompanyIDName:    getCompanyNameOrDefault(exhibitor["company_name"]),
+					CompanyIDName:    shared.GetCompanyNameOrDefault(exhibitor["company_name"]),
 					EditionID:        editionID,
 					EventID:          eventID,
-					CompanyWebsite:   convertToStringPtr(exhibitor["website"]),
-					CompanyDomain:    convertToStringPtr(companyDomain),
-					CompanyCountry:   toUpperNullableString(convertToStringPtr(exhibitor["country"])),
+					CompanyWebsite:   shared.ConvertToStringPtr(exhibitor["website"]),
+					CompanyDomain:    shared.ConvertToStringPtr(companyDomain),
+					CompanyCountry:   shared.ToUpperNullableString(shared.ConvertToStringPtr(exhibitor["country"])),
 					CompanyState:     companyState,
 					CompanyStateName: companyStateName,
-					CompanyCity:      convertToUInt32Ptr(exhibitor["city"]),
+					CompanyCity:      shared.ConvertToUInt32Ptr(exhibitor["city"]),
 					CompanyCityName:  companyCityName,
-					FacebookID:       convertToStringPtr(facebookID),
-					LinkedinID:       convertToStringPtr(linkedinID),
-					TwitterID:        convertToStringPtr(twitterID),
+					FacebookID:       shared.ConvertToStringPtr(facebookID),
+					LinkedinID:       shared.ConvertToStringPtr(linkedinID),
+					TwitterID:        shared.ConvertToStringPtr(twitterID),
 					Version:          1,
 				}
 
@@ -3948,7 +3307,6 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 		progress := float64(processed) / float64(totalRecords) * 100
 		log.Printf("Sponsors chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
 
-		// Extract company IDs from this batch to fetch social media and website information
 		var sponsorCompanyIDs []int64
 		seenCompanyIDs := make(map[int64]bool)
 		for _, sponsor := range batchData {
@@ -4010,15 +3368,15 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			if companyID, ok := sponsor["company_id"].(int64); ok && companyData != nil {
 				if company, exists := companyData[companyID]; exists {
 					companyWebsite = company["website"]
-					companyCountry = strings.ToUpper(safeConvertToString(company["country"]))
+					companyCountry = strings.ToUpper(shared.SafeConvertToString(company["country"]))
 					companyCity = company["city"]
 
 					// Extract domain from website
 					if website, ok := companyWebsite.(string); ok && website != "" {
-						companyDomain = extractDomainFromWebsite(website)
+						companyDomain = shared.ExtractDomainFromWebsite(website)
 					} else if website, ok := companyWebsite.([]byte); ok && len(website) > 0 {
 						websiteStr := string(website)
-						companyDomain = extractDomainFromWebsite(websiteStr)
+						companyDomain = shared.ExtractDomainFromWebsite(websiteStr)
 					}
 
 					facebookID = company["facebook_id"]
@@ -4032,7 +3390,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			if companyCity != nil {
 				if cityID, ok := companyCity.(int64); ok && cityLookup != nil {
 					if city, exists := cityLookup[cityID]; exists && city["name"] != nil {
-						nameStr := safeConvertToString(city["name"])
+						nameStr := shared.SafeConvertToString(city["name"])
 						companyCityName = &nameStr
 					}
 				}
@@ -4050,7 +3408,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 							}
 						}
 						if city["state"] != nil {
-							stateStr := safeConvertToString(city["state"])
+							stateStr := shared.SafeConvertToString(city["state"])
 							if strings.TrimSpace(stateStr) != "" {
 								companyStateName = &stateStr
 							}
@@ -4060,26 +3418,26 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			}
 
 			// Convert data to proper types
-			companyID := convertToUInt32Ptr(sponsor["company_id"])
-			editionID := convertToUInt32(sponsor["event_edition"])
-			eventID := convertToUInt32(sponsor["event_id"])
+			companyID := shared.ConvertToUInt32Ptr(sponsor["company_id"])
+			editionID := shared.ConvertToUInt32(sponsor["event_edition"])
+			eventID := shared.ConvertToUInt32(sponsor["event_id"])
 
 			// Create sponsor record with proper types
 			sponsorRecord := SponsorRecord{
 				CompanyID:        companyID,
-				CompanyIDName:    getCompanyNameOrDefault(sponsor["name"]),
+				CompanyIDName:    shared.GetCompanyNameOrDefault(sponsor["name"]),
 				EditionID:        editionID,
 				EventID:          eventID,
-				CompanyWebsite:   convertToStringPtr(companyWebsite),
-				CompanyDomain:    convertToStringPtr(companyDomain),
-				CompanyCountry:   toUpperNullableString(convertToStringPtr(companyCountry)),
+				CompanyWebsite:   shared.ConvertToStringPtr(companyWebsite),
+				CompanyDomain:    shared.ConvertToStringPtr(companyDomain),
+				CompanyCountry:   shared.ToUpperNullableString(shared.ConvertToStringPtr(companyCountry)),
 				CompanyState:     companyState,
 				CompanyStateName: companyStateName,
-				CompanyCity:      convertToUInt32Ptr(companyCity),
+				CompanyCity:      shared.ConvertToUInt32Ptr(companyCity),
 				CompanyCityName:  companyCityName,
-				FacebookID:       convertToStringPtr(facebookID),
-				LinkedinID:       convertToStringPtr(linkedinID),
-				TwitterID:        convertToStringPtr(twitterID),
+				FacebookID:       shared.ConvertToStringPtr(facebookID),
+				LinkedinID:       shared.ConvertToStringPtr(linkedinID),
+				TwitterID:        shared.ConvertToStringPtr(twitterID),
 				Version:          1,
 			}
 
@@ -4497,7 +3855,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config Config, startID
 				if user, exists := userData[userID]; exists {
 					userName = user["name"]
 					userCompany = user["user_company"]
-					if userName == nil || convertToString(userName) == "" {
+					if userName == nil || shared.ConvertToString(userName) == "" {
 						userName = "-----DEFAULT USER NAME-----"
 					}
 				} else {
@@ -4512,7 +3870,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config Config, startID
 			var userCityName *string
 			if cityID, ok := visitor["visitor_city"].(int64); ok && cityLookup != nil {
 				if city, exists := cityLookup[cityID]; exists && city["name"] != nil {
-					nameStr := safeConvertToString(city["name"])
+					nameStr := shared.SafeConvertToString(city["name"])
 					userCityName = &nameStr
 				}
 			}
@@ -4528,7 +3886,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config Config, startID
 						}
 					}
 					if city["state"] != nil {
-						stateStr := safeConvertToString(city["state"])
+						stateStr := shared.SafeConvertToString(city["state"])
 						if strings.TrimSpace(stateStr) != "" {
 							userState = &stateStr
 						}
@@ -4536,22 +3894,22 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config Config, startID
 				}
 			}
 
-			userID := convertToUInt32(visitor["user"])
-			eventID := convertToUInt32(visitor["event"])
-			editionID := convertToUInt32(visitor["edition"])
+			userID := shared.ConvertToUInt32(visitor["user"])
+			eventID := shared.ConvertToUInt32(visitor["event"])
+			editionID := shared.ConvertToUInt32(visitor["edition"])
 
-			convertedUserName := convertToString(userName)
+			convertedUserName := shared.ConvertToString(userName)
 
 			visitorRecord := VisitorRecord{
 				UserID:          userID,
 				EventID:         eventID,
 				EditionID:       editionID,
 				UserName:        convertedUserName,
-				UserCompany:     convertToStringPtr(userCompany),
-				UserDesignation: convertToStringPtr(visitor["visitor_designation"]),
-				UserCity:        convertToUInt32Ptr(visitor["visitor_city"]),
+				UserCompany:     shared.ConvertToStringPtr(userCompany),
+				UserDesignation: shared.ConvertToStringPtr(visitor["visitor_designation"]),
+				UserCity:        shared.ConvertToUInt32Ptr(visitor["visitor_city"]),
 				UserCityName:    userCityName,
-				UserCountry:     toUpperNullableString(convertToStringPtr(visitor["visitor_country"])),
+				UserCountry:     shared.ToUpperNullableString(shared.ConvertToStringPtr(visitor["visitor_country"])),
 				UserStateID:     userStateID,
 				UserState:       userState,
 				Version:         1,
@@ -5110,7 +4468,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 					userCompany = user["user_company"] // Use user_company from user table
 					userDesignation = user["designation"]
 					userCity = user["city"]
-					userCountry = strings.ToUpper(safeConvertToString(user["country"]))
+					userCountry = strings.ToUpper(shared.SafeConvertToString(user["country"]))
 				}
 			}
 
@@ -5119,7 +4477,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 			if userCity != nil {
 				if cityID, ok := userCity.(int64); ok && cityLookup != nil {
 					if city, exists := cityLookup[cityID]; exists && city["name"] != nil {
-						nameStr := safeConvertToString(city["name"])
+						nameStr := shared.SafeConvertToString(city["name"])
 						userCityName = &nameStr
 					}
 				}
@@ -5137,7 +4495,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 							}
 						}
 						if city["state"] != nil {
-							stateStr := safeConvertToString(city["state"])
+							stateStr := shared.SafeConvertToString(city["state"])
 							if strings.TrimSpace(stateStr) != "" {
 								userState = &stateStr
 							}
@@ -5146,22 +4504,22 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config Co
 				}
 			}
 
-			userID := convertToUInt32(speaker["user_id"])
-			eventID := convertToUInt32(speaker["event"])
-			editionID := convertToUInt32(speaker["edition"])
+			userID := shared.ConvertToUInt32(speaker["user_id"])
+			eventID := shared.ConvertToUInt32(speaker["event"])
+			editionID := shared.ConvertToUInt32(speaker["edition"])
 
 			speakerRecord := SpeakerRecord{
 				UserID:          userID,
 				EventID:         eventID,
 				EditionID:       editionID,
-				UserName:        convertToString(userName),
-				UserCompany:     convertToStringPtr(userCompany),
-				UserDesignation: convertToStringPtr(userDesignation),
+				UserName:        shared.ConvertToString(userName),
+				UserCompany:     shared.ConvertToStringPtr(userCompany),
+				UserDesignation: shared.ConvertToStringPtr(userDesignation),
 				UserState:       userStateID,
 				UserStateName:   userState,
-				UserCity:        convertToUInt32Ptr(userCity),
+				UserCity:        shared.ConvertToUInt32Ptr(userCity),
 				UserCityName:    userCityName,
-				UserCountry:     toUpperNullableString(convertToStringPtr(userCountry)),
+				UserCountry:     shared.ToUpperNullableString(shared.ConvertToStringPtr(userCountry)),
 				Version:         1,
 			}
 
@@ -5236,12 +4594,12 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 		var eventTypeEventChRecords []EventTypeEventChRecord
 		for _, record := range batchData {
 			eventTypeEventChRecord := EventTypeEventChRecord{
-				EventTypeID:   convertToUInt32(record["eventtype_id"]),
-				EventID:       convertToUInt32(record["event_id"]),
-				Published:     convertToInt8(record["published"]),
-				Name:          convertToString(record["name"]),
-				URL:           convertToString(record["url"]),
-				EventAudience: safeConvertToUInt16(record["event_audience"]),
+				EventTypeID:   shared.ConvertToUInt32(record["eventtype_id"]),
+				EventID:       shared.ConvertToUInt32(record["event_id"]),
+				Published:     shared.ConvertToInt8(record["published"]),
+				Name:          shared.ConvertToString(record["name"]),
+				URL:           shared.ConvertToString(record["url"]),
+				EventAudience: shared.SafeConvertToUInt16(record["event_audience"]),
 				Version:       1,
 			}
 
@@ -5474,13 +4832,13 @@ func processEventCategoryEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Con
 		var eventCategoryEventChRecords []EventCategoryEventChRecord
 		for _, record := range batchData {
 			eventCategoryEventChRecord := EventCategoryEventChRecord{
-				Category:  convertToUInt32(record["category"]),
-				Event:     convertToUInt32(record["event"]),
-				Name:      convertToString(record["name"]),
-				URL:       convertToString(record["url"]),
-				Published: convertToInt8(record["published"]),
-				ShortName: convertToString(record["short_name"]),
-				IsGroup:   convertToUInt8(record["is_group"]),
+				Category:  shared.ConvertToUInt32(record["category"]),
+				Event:     shared.ConvertToUInt32(record["event"]),
+				Name:      shared.ConvertToString(record["name"]),
+				URL:       shared.ConvertToString(record["url"]),
+				Published: shared.ConvertToInt8(record["published"]),
+				ShortName: shared.ConvertToString(record["short_name"]),
+				IsGroup:   shared.ConvertToUInt8(record["is_group"]),
 				Version:   1,
 			}
 
@@ -6105,6 +5463,7 @@ func main() {
 	var eventTypeEventChOnly bool
 	var eventCategoryEventChOnly bool
 	var eventRankingOnly bool
+	var eventDesignationOnly bool
 
 	flag.IntVar(&numChunks, "chunks", 5, "Number of chunks to process data in (default: 5)")
 	flag.IntVar(&batchSize, "batch", 5000, "MySQL batch size for fetching data (default: 5000)")
@@ -6119,6 +5478,7 @@ func main() {
 	flag.BoolVar(&eventTypeEventChOnly, "eventtype", false, "Process only eventtype data (default: false)")
 	flag.BoolVar(&eventCategoryEventChOnly, "eventcategory", false, "Process only eventcategory data (default: false)")
 	flag.BoolVar(&eventRankingOnly, "eventranking", false, "Process only event ranking data (default: false)")
+	flag.BoolVar(&eventDesignationOnly, "eventdesignation", false, "Process only event designation data (default: false)")
 
 	flag.BoolVar(&showHelp, "help", false, "Show help information")
 	flag.Parse()
@@ -6247,6 +5607,8 @@ func main() {
 		log.Printf("Mode: EVENT CATEGORY ONLY")
 	} else if eventRankingOnly {
 		log.Printf("Mode: EVENT RANKING ONLY")
+	} else if eventDesignationOnly {
+		log.Printf("Mode: EVENT DESIGNATION ONLY")
 	}
 
 	if sponsorsOnly {
@@ -6263,6 +5625,8 @@ func main() {
 		log.Printf("Elasticsearch: Skipped (not needed for event Category)")
 	} else if eventRankingOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for event ranking)")
+	} else if eventDesignationOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for event designation)")
 	}
 	log.Printf("==============================\n")
 
@@ -6279,7 +5643,7 @@ func main() {
 		log.Fatalf("ClickHouse connection test failed: %v", err)
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventRankingOnly {
+	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventRankingOnly && !eventDesignationOnly {
 		if err := testElasticsearchConnection(esClient, config.IndexName); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -6298,6 +5662,8 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_category_ch processing)")
 		} else if eventRankingOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_ranking_ch processing)")
+		} else if eventDesignationOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_designation_ch processing)")
 		}
 	}
 
@@ -6323,6 +5689,15 @@ func main() {
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
 		utils.ProcessEventRankingOnly(mysqlDB, clickhouseDB, utilsConfig)
+	} else if eventDesignationOnly {
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		utils.ProcessEventDesignationOnly(mysqlDB, clickhouseDB, utilsConfig)
+		log.Println("=== Event Designation Processing Finished ===")
 	} else {
 		log.Println("Error: No specific table mode selected!")
 		log.Println("Please specify one of the following modes:")
@@ -6334,36 +5709,9 @@ func main() {
 		log.Println("  -eventtype        # Process eventtype data")
 		log.Println("  -eventcategory    # Process eventcategory data")
 		log.Println("  -eventranking     # Process event ranking data")
+		log.Println("  -eventdesignation # Process event designation data")
 		log.Println("")
 		log.Println("Example: go run main.go -event-edition -chunks=10 -workers=20")
 		os.Exit(1)
 	}
-}
-
-// Special function for edition_type that preserves empty strings as "NA"
-func safeConvertEditionType(value interface{}) string {
-	if value == nil {
-		return "NA"
-	}
-	if str, ok := value.(string); ok {
-		if str == "" {
-			return "NA"
-		}
-		return str
-	}
-	if bytes, ok := value.([]uint8); ok {
-		str := string(bytes)
-		if str == "" {
-			return "NA"
-		}
-		return str
-	}
-	if bytes, ok := value.([]byte); ok {
-		str := string(bytes)
-		if str == "" {
-			return "NA"
-		}
-		return str
-	}
-	return "NA"
 }
