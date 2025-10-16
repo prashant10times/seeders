@@ -18,9 +18,10 @@ import (
 )
 
 type VisitorSpreadRecord struct {
-	EventID       uint32 `ch:"event_id"`
-	VisitorSpread string `ch:"visitor_spread"`
-	Version       uint32 `ch:"version"`
+	EventID           uint32        `ch:"event_id"`
+	UserByCntry       []interface{} `ch:"user_by_cntry"`
+	UserByDesignation []interface{} `ch:"user_by_designation"`
+	Version           uint32        `ch:"version"`
 }
 
 func ProcessVisitorSpreadOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
@@ -140,32 +141,42 @@ func convertVisitorSpreadDataToRecords(visitorSpreadData map[int64]map[string]in
 			log.Printf("DEBUG: Event %d visitor spread data: %+v", eventID, data)
 		}
 
-		var jsonStr string
-		if visitorSpreadJSON, exists := data["visitor_spread_json"]; exists {
-			if jsonString, ok := visitorSpreadJSON.(string); ok {
-				jsonStr = jsonString
+		// Extract user_by_cntry array
+		var userByCntry []interface{}
+		if cntryData, exists := data["user_by_cntry"]; exists {
+			if cntryArray, ok := cntryData.([]interface{}); ok {
+				userByCntry = cntryArray
 			} else {
-				log.Printf("Warning: visitor_spread_json is not a string for event %d", eventID)
-				jsonStr = "{}"
+				log.Printf("Warning: user_by_cntry is not an array for event %d: %T", eventID, cntryData)
+				userByCntry = []interface{}{}
 			}
 		} else {
-			jsonData, err := json.Marshal(data)
-			if err != nil {
-				log.Printf("Warning: Failed to marshal visitor spread data for event %d: %v", eventID, err)
-				jsonStr = "{}"
+			userByCntry = []interface{}{}
+		}
+
+		// Extract user_by_designation array
+		var userByDesignation []interface{}
+		if designationData, exists := data["user_by_designation"]; exists {
+			if designationArray, ok := designationData.([]interface{}); ok {
+				userByDesignation = designationArray
 			} else {
-				jsonStr = string(jsonData)
+				log.Printf("Warning: user_by_designation is not an array for event %d: %T", eventID, designationData)
+				userByDesignation = []interface{}{}
 			}
+		} else {
+			userByDesignation = []interface{}{}
 		}
 
 		if eventID <= allEventIDs[0]+2 {
-			log.Printf("DEBUG: Event %d final JSON string: %s", eventID, jsonStr)
+			log.Printf("DEBUG: Event %d arrays - user_by_cntry: %d items, user_by_designation: %d items",
+				eventID, len(userByCntry), len(userByDesignation))
 		}
 
 		record := VisitorSpreadRecord{
-			EventID:       uint32(eventID),
-			VisitorSpread: jsonStr,
-			Version:       1,
+			EventID:           uint32(eventID),
+			UserByCntry:       userByCntry,
+			UserByDesignation: userByDesignation,
+			Version:           1,
 		}
 		records = append(records, record)
 	}
@@ -401,11 +412,13 @@ func fetchVisitorSpreadBatch(esClient *elasticsearch.Client, eventIDs []int64) (
 
 func processVisitorSpreadData(eventID int64, visitorSpread interface{}) map[string]interface{} {
 	processedData := make(map[string]interface{})
+
 	visitorSpreadJSONBytes, err := json.Marshal(visitorSpread)
 	if err != nil {
 		log.Printf("Event %d: Failed to marshal visitor spread data: %v", eventID, err)
 		return map[string]interface{}{
-			"visitor_spread_json": "{}",
+			"user_by_cntry":       []interface{}{},
+			"user_by_designation": []interface{}{},
 		}
 	}
 
@@ -416,47 +429,45 @@ func processVisitorSpreadData(eventID int64, visitorSpread interface{}) map[stri
 	if err := json.Unmarshal([]byte(visitorSpreadJSON), &visitorSpreadMap); err != nil {
 		log.Printf("Event %d: Failed to unmarshal visitor spread JSON: %v", eventID, err)
 		return map[string]interface{}{
-			"visitor_spread_json": "{}",
+			"user_by_cntry":       []interface{}{},
+			"user_by_designation": []interface{}{},
 		}
 	}
 
+	// Process user_by_cntry data as array
 	if userByCntry, exists := visitorSpreadMap["user_by_cntry"]; exists && userByCntry != nil {
 		log.Printf("DEBUG: Event %d user_by_cntry: %+v", eventID, userByCntry)
 
-		if userByCntryJSON, err := json.Marshal(userByCntry); err == nil {
-			processedData["user_by_cntry"] = string(userByCntryJSON)
+		// Convert to array of interfaces
+		if userByCntryArray, ok := userByCntry.([]interface{}); ok {
+			processedData["user_by_cntry"] = userByCntryArray
 		} else {
-			log.Printf("Event %d: Failed to marshal user_by_cntry: %v", eventID, err)
-			processedData["user_by_cntry"] = "[]"
+			log.Printf("Event %d: user_by_cntry is not an array: %T", eventID, userByCntry)
+			processedData["user_by_cntry"] = []interface{}{}
 		}
 	} else {
-		processedData["user_by_cntry"] = "[]"
+		processedData["user_by_cntry"] = []interface{}{}
 	}
 
+	// Process user_by_designation data as array
 	if userByDesignation, exists := visitorSpreadMap["user_by_designation"]; exists && userByDesignation != nil {
 		log.Printf("DEBUG: Event %d user_by_designation: %+v", eventID, userByDesignation)
 
-		if userByDesignationJSON, err := json.Marshal(userByDesignation); err == nil {
-			processedData["user_by_designation"] = string(userByDesignationJSON)
+		// Convert to array of interfaces
+		if userByDesignationArray, ok := userByDesignation.([]interface{}); ok {
+			processedData["user_by_designation"] = userByDesignationArray
 		} else {
-			log.Printf("Event %d: Failed to marshal user_by_designation: %v", eventID, err)
-			processedData["user_by_designation"] = "[]"
+			log.Printf("Event %d: user_by_designation is not an array: %T", eventID, userByDesignation)
+			processedData["user_by_designation"] = []interface{}{}
 		}
 	} else {
-		processedData["user_by_designation"] = "[]"
+		processedData["user_by_designation"] = []interface{}{}
 	}
 
-	if finalJSON, err := json.Marshal(processedData); err == nil {
-		log.Printf("DEBUG: Event %d final processed JSON: %s", eventID, string(finalJSON))
-		return map[string]interface{}{
-			"visitor_spread_json": string(finalJSON),
-		}
-	} else {
-		log.Printf("Event %d: Failed to marshal final visitor spread data: %v", eventID, err)
-		return map[string]interface{}{
-			"visitor_spread_json": "{}",
-		}
-	}
+	log.Printf("DEBUG: Event %d processed data: user_by_cntry=%d items, user_by_designation=%d items",
+		eventID, len(processedData["user_by_cntry"].([]interface{})), len(processedData["user_by_designation"].([]interface{})))
+
+	return processedData
 }
 
 func insertVisitorSpreadDataIntoClickHouse(clickhouseConn driver.Conn, records []VisitorSpreadRecord, numWorkers int) error {
@@ -510,7 +521,7 @@ func insertVisitorSpreadDataSingleWorker(clickhouseConn driver.Conn, records []V
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_visitorSpread_ch (
-			event_id, visitor_spread, version
+			event_id, user_by_cntry, user_by_designation, version
 		)
 	`)
 	if err != nil {
@@ -521,7 +532,8 @@ func insertVisitorSpreadDataSingleWorker(clickhouseConn driver.Conn, records []V
 	for _, record := range records {
 		err := batch.Append(
 			record.EventID,
-			record.VisitorSpread,
+			record.UserByCntry,
+			record.UserByDesignation,
 			record.Version,
 		)
 		if err != nil {
