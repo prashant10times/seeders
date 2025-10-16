@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -236,6 +237,49 @@ func GenerateCategoryUUID(categoryID uint32, categoryName interface{}, categoryC
 	}
 
 	input := fmt.Sprintf("%d_%s_%s", categoryID, nameStr, createdStr)
+	hash := sha256.Sum256([]byte(input))
+	uuid := make([]byte, 16)
+	copy(uuid, hash[:16])
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		binary.BigEndian.Uint32(uuid[0:4]),
+		binary.BigEndian.Uint16(uuid[4:6]),
+		binary.BigEndian.Uint16(uuid[6:8]),
+		binary.BigEndian.Uint16(uuid[8:10]),
+		binary.BigEndian.Uint64(append([]byte{0, 0}, uuid[10:16]...))&0xffffffffffff)
+}
+
+func GenerateCompanyUUID(companyName interface{}, created interface{}) string {
+	var nameStr string
+	if companyName != nil {
+		nameStr = SafeConvertToString(companyName)
+	}
+	var createdStr string
+	if created != nil {
+		createdStr = SafeConvertToString(created)
+	}
+
+	input := fmt.Sprintf("%s_%s", nameStr, createdStr)
+	hash := sha256.Sum256([]byte(input))
+	uuid := make([]byte, 16)
+	copy(uuid, hash[:16])
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		binary.BigEndian.Uint32(uuid[0:4]),
+		binary.BigEndian.Uint16(uuid[4:6]),
+		binary.BigEndian.Uint16(uuid[6:8]),
+		binary.BigEndian.Uint16(uuid[8:10]),
+		binary.BigEndian.Uint64(append([]byte{0, 0}, uuid[10:16]...))&0xffffffffffff)
+}
+
+func GenerateEventTypeUUID(eventTypeID uint32, eventID uint32, name string, created interface{}) string {
+	nameStr := SafeConvertToString(name)
+	createdStr := SafeConvertToString(created)
+	input := fmt.Sprintf("%d_%d_%s_%s", eventTypeID, eventID, nameStr, createdStr)
 	hash := sha256.Sum256([]byte(input))
 	uuid := make([]byte, 16)
 	copy(uuid, hash[:16])
@@ -735,4 +779,181 @@ func ConvertToInt8(value interface{}) int8 {
 	default:
 		return 0
 	}
+}
+
+func FetchCityDataParallel(db *sql.DB, cityIDs []int64, numWorkers int) []map[string]interface{} {
+	if len(cityIDs) == 0 {
+		return nil
+	}
+
+	batchSize := 1000
+
+	expectedBatches := (len(cityIDs) + batchSize - 1) / batchSize
+	results := make(chan []map[string]interface{}, expectedBatches)
+	semaphore := make(chan struct{}, numWorkers)
+
+	var allCityData []map[string]interface{}
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < len(cityIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(cityIDs) {
+			end = len(cityIDs)
+		}
+
+		batch := cityIDs[i:end]
+
+		semaphore <- struct{}{}
+		wg.Add(1)
+
+		go func(cityIDBatch []int64, batchNum int) {
+			defer func() {
+				<-semaphore
+				wg.Done()
+			}()
+			cityData := fetchCityDataForBatch(db, cityIDBatch)
+			results <- cityData
+		}(batch, i/batchSize)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	completedBatches := 0
+
+collectLoop:
+	for completedBatches < expectedBatches {
+		select {
+		case cityData := <-results:
+			allCityData = append(allCityData, cityData...)
+			completedBatches++
+		case <-done:
+
+			break collectLoop
+		case <-time.After(120 * time.Second):
+			log.Printf("Warning: Timeout waiting for city data. Completed %d/%d batches",
+				completedBatches, expectedBatches)
+			break collectLoop
+		}
+	}
+
+	// Find missing city IDs
+	retrievedCityIDs := make(map[int64]bool)
+	for _, city := range allCityData {
+		if cityID, ok := city["id"].(int64); ok {
+			retrievedCityIDs[cityID] = true
+		}
+	}
+
+	var missingCityIDs []int64
+	for _, requestedID := range cityIDs {
+		if !retrievedCityIDs[requestedID] {
+			missingCityIDs = append(missingCityIDs, requestedID)
+		}
+	}
+
+	if len(missingCityIDs) > 0 {
+		log.Printf("Missing city IDs (%d): %v", len(missingCityIDs), missingCityIDs)
+	}
+
+	return allCityData
+}
+
+func fetchCityDataForBatch(db *sql.DB, cityIDs []int64) []map[string]interface{} {
+	if len(cityIDs) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(cityIDs))
+	args := make([]interface{}, len(cityIDs))
+	for i, id := range cityIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
+		SELECT 
+			id, name, state, state_id, geo_lat as event_city_lat, geo_long as event_city_long
+		FROM city 
+		WHERE id IN (%s)`, strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("Error fetching city data: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			continue
+		}
+
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			val := values[i]
+			if val == nil {
+				row[col] = nil
+			} else {
+				// Handle latitude and longitude as numeric values for ClickHouse Float64 compatibility
+				if col == "event_city_lat" || col == "event_city_long" {
+					if bytes, ok := val.([]byte); ok {
+						// Convert byte array to float64
+						if len(bytes) > 0 {
+							str := string(bytes)
+							if str != "" {
+								// Parse string to float64
+								if f, err := strconv.ParseFloat(str, 64); err == nil {
+									row[col] = f
+								} else {
+									log.Printf("Warning: Could not parse %s value '%s' to float64: %v", col, str, err)
+									row[col] = nil
+								}
+							} else {
+								row[col] = nil
+							}
+						} else {
+							row[col] = nil
+						}
+					} else if str, ok := val.(string); ok {
+						// Handle string values by parsing to float64
+						if str != "" {
+							if f, err := strconv.ParseFloat(str, 64); err == nil {
+								row[col] = f
+							} else {
+								log.Printf("Warning: Could not parse %s string '%s' to float64: %v", col, str, err)
+								row[col] = nil
+							}
+						} else {
+							row[col] = nil
+						}
+					} else {
+						// Keep numeric values as-is
+						row[col] = val
+					}
+				} else {
+					row[col] = val
+				}
+			}
+		}
+		results = append(results, row)
+	}
+
+	return results
 }
