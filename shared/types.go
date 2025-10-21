@@ -30,12 +30,20 @@ type Config struct {
 	ElasticsearchPort  string `envconfig:"ELASTICSEARCH_PORT" required:"true"`
 	ElasticsearchIndex string `envconfig:"ELASTICSEARCH_INDEX" required:"true"`
 
-	MySQLDSN          string
-	ClickhouseDSN     string
-	BatchSize         int
-	NumChunks         int
-	NumWorkers        int
-	ClickHouseWorkers int
+	MySQLDSN               string
+	ClickhouseDSN          string
+	BatchSize              int
+	NumChunks              int
+	NumWorkers             int
+	ClickHouseWorkers      int
+	ElasticHost            string
+	IndexName              string
+	MySQLMaxOpenConns      int
+	MySQLMaxIdleConns      int
+	ClickHouseMaxOpenConns int
+	ClickHouseMaxIdleConns int
+	RetryDelay             time.Duration
+	QueryTimeout           time.Duration
 }
 
 // RetryWithBackoff retries an operation with exponential backoff
