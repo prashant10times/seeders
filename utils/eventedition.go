@@ -2090,6 +2090,30 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 		return nil
 	}
 
+	const maxBatchSize = 5000
+	if len(records) > maxBatchSize {
+		for i := 0; i < len(records); i += maxBatchSize {
+			end := i + maxBatchSize
+			if end > len(records) {
+				end = len(records)
+			}
+			chunk := records[i:end]
+			log.Printf("Inserting chunk %d-%d (%d records)", i+1, end, len(chunk))
+			if err := insertEventEditionDataChunk(clickhouseConn, chunk); err != nil {
+				return fmt.Errorf("failed to insert chunk %d-%d: %v", i+1, end, err)
+			}
+		}
+		return nil
+	}
+
+	return insertEventEditionDataChunk(clickhouseConn, records)
+}
+
+func insertEventEditionDataChunk(clickhouseConn driver.Conn, records []map[string]interface{}) error {
+	if len(records) == 0 {
+		return nil
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
