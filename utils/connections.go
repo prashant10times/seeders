@@ -156,7 +156,7 @@ func SetupNativeClickHouseConnection(config shared.Config) (driver.Conn, error) 
 		},
 		Protocol: clickhouse.HTTP,
 		Settings: clickhouse.Settings{
-			"max_execution_time": 180,
+			"max_execution_time": 300,
 		},
 		Compression: &clickhouse.Compression{
 			Method: clickhouse.CompressionLZ4,

@@ -2114,7 +2114,7 @@ func insertEventEditionDataChunk(clickhouseConn driver.Conn, records []map[strin
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
