@@ -163,7 +163,7 @@ func SetupNativeClickHouseConnection(config shared.Config) (driver.Conn, error) 
 		},
 		MaxOpenConns:     50,
 		MaxIdleConns:     25,
-		DialTimeout:      10 * time.Second,
+		DialTimeout:      100 * time.Second,
 		ConnOpenStrategy: clickhouse.ConnOpenInOrder,
 		Debug:            false,
 	})
