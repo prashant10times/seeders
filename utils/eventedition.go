@@ -854,43 +854,16 @@ func fetchEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]string {
 	return result
 }
 
-func processEconomicImpactDataParallel(estimateDataMap map[int64]string, numWorkers int) map[int64]map[string]interface{} {
+func processEconomicImpactDataParallel(estimateDataMap map[int64]string) map[int64]map[string]interface{} {
 	if len(estimateDataMap) == 0 {
 		return nil
 	}
 
-	type eventData struct {
-		eventID        int64
-		economicImpact string
-	}
-
-	var events []eventData
-	for eventID, economicImpact := range estimateDataMap {
-		events = append(events, eventData{eventID, economicImpact})
-	}
-
-	jobs := make(chan eventData, len(events))
-	results := make(chan map[int64]map[string]interface{}, len(events))
-
-	for w := 0; w < numWorkers; w++ {
-		go func() {
-			for event := range jobs {
-				result := processSingleEconomicImpact(event.eventID, event.economicImpact)
-				results <- result
-			}
-		}()
-	}
-
-	for _, event := range events {
-		jobs <- event
-	}
-	close(jobs)
-
 	finalResult := make(map[int64]map[string]interface{})
-	for i := 0; i < len(events); i++ {
-		result := <-results
-		for eventID, data := range result {
-			finalResult[eventID] = data
+	for eventID, economicImpact := range estimateDataMap {
+		result := processSingleEconomicImpact(eventID, economicImpact)
+		for id, data := range result {
+			finalResult[id] = data
 		}
 	}
 
@@ -1374,7 +1347,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 
 				processedEconomicData := make(map[int64]map[string]interface{})
 				if len(estimateDataMap) > 0 {
-					processedEconomicData = processEconomicImpactDataParallel(estimateDataMap, config.NumWorkers)
+					processedEconomicData = processEconomicImpactDataParallel(estimateDataMap)
 				}
 
 				for eventID, editions := range eventEditions {
