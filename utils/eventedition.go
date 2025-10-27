@@ -253,21 +253,15 @@ func extractVenueIDs(editionData []map[string]interface{}) []int64 {
 	return venueIDs
 }
 
-func fetchVenueDataParallel(db *sql.DB, venueIDs []int64, numWorkers int) []map[string]interface{} {
+func fetchVenueDataParallel(db *sql.DB, venueIDs []int64) []map[string]interface{} {
 	if len(venueIDs) == 0 {
 		return nil
 	}
 
 	batchSize := 1000
-
-	expectedBatches := (len(venueIDs) + batchSize - 1) / batchSize
-	results := make(chan []map[string]interface{}, expectedBatches)
-	semaphore := make(chan struct{}, numWorkers)
-
 	var allVenueData []map[string]interface{}
 
-	var wg sync.WaitGroup
-
+	// Process batches sequentially (no nested workers)
 	for i := 0; i < len(venueIDs); i += batchSize {
 		end := i + batchSize
 		if end > len(venueIDs) {
@@ -275,42 +269,8 @@ func fetchVenueDataParallel(db *sql.DB, venueIDs []int64, numWorkers int) []map[
 		}
 
 		batch := venueIDs[i:end]
-
-		semaphore <- struct{}{}
-		wg.Add(1)
-
-		go func(venueIDBatch []int64, batchNum int) {
-			defer func() {
-				<-semaphore
-				wg.Done()
-			}()
-			venueData := fetchVenueDataForBatch(db, venueIDBatch)
-			results <- venueData
-		}(batch, i/batchSize)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	completedBatches := 0
-
-collectLoop:
-	for completedBatches < expectedBatches {
-		select {
-		case venueData := <-results:
-			allVenueData = append(allVenueData, venueData...)
-			completedBatches++
-		case <-done:
-
-			break collectLoop
-		case <-time.After(120 * time.Second):
-			log.Printf("Warning: Timeout waiting for venue data. Completed %d/%d batches",
-				completedBatches, expectedBatches)
-			break collectLoop
-		}
+		venueData := fetchVenueDataForBatch(db, batch)
+		allVenueData = append(allVenueData, venueData...)
 	}
 
 	retrievedVenueIDs := make(map[int64]bool)
@@ -456,21 +416,15 @@ func extractCompanyIDs(editionData []map[string]interface{}) []int64 {
 	return companyIDs
 }
 
-func fetchCompanyDataParallel(db *sql.DB, companyIDs []int64, numWorkers int) []map[string]interface{} {
+func fetchCompanyDataParallel(db *sql.DB, companyIDs []int64) []map[string]interface{} {
 	if len(companyIDs) == 0 {
 		return nil
 	}
 
 	batchSize := 1000
-
-	expectedBatches := (len(companyIDs) + batchSize - 1) / batchSize
-	results := make(chan []map[string]interface{}, expectedBatches)
-	semaphore := make(chan struct{}, numWorkers)
-
 	var allCompanyData []map[string]interface{}
 
-	var wg sync.WaitGroup
-
+	// Process batches sequentially (no nested workers)
 	for i := 0; i < len(companyIDs); i += batchSize {
 		end := i + batchSize
 		if end > len(companyIDs) {
@@ -478,42 +432,8 @@ func fetchCompanyDataParallel(db *sql.DB, companyIDs []int64, numWorkers int) []
 		}
 
 		batch := companyIDs[i:end]
-
-		semaphore <- struct{}{}
-		wg.Add(1)
-
-		go func(companyIDBatch []int64, batchNum int) {
-			defer func() {
-				<-semaphore
-				wg.Done()
-			}()
-			companyData := fetchCompanyDataForBatch(db, companyIDBatch)
-			results <- companyData
-		}(batch, i/batchSize)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	completedBatches := 0
-
-collectLoop:
-	for completedBatches < expectedBatches {
-		select {
-		case companyData := <-results:
-			allCompanyData = append(allCompanyData, companyData...)
-			completedBatches++
-		case <-done:
-
-			break collectLoop
-		case <-time.After(120 * time.Second):
-			log.Printf("Warning: Timeout waiting for company data. Completed %d/%d batches",
-				completedBatches, expectedBatches)
-			break collectLoop
-		}
+		companyData := fetchCompanyDataForBatch(db, batch)
+		allCompanyData = append(allCompanyData, companyData...)
 	}
 
 	retrievedCompanyIDs := make(map[int64]bool)
@@ -595,21 +515,15 @@ func extractEventIDs(batchData []map[string]interface{}) []int64 {
 	return eventIDs
 }
 
-func fetchEditionDataParallel(db *sql.DB, eventIDs []int64, numWorkers int) []map[string]interface{} {
+func fetchEditionDataParallel(db *sql.DB, eventIDs []int64) []map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
 	}
 
 	batchSize := 1000
-
-	expectedBatches := (len(eventIDs) + batchSize - 1) / batchSize
-	results := make(chan []map[string]interface{}, expectedBatches)
-	semaphore := make(chan struct{}, numWorkers)
-
 	var allEditionData []map[string]interface{}
 
-	var wg sync.WaitGroup
-
+	// Process batches sequentially (no nested workers)
 	for i := 0; i < len(eventIDs); i += batchSize {
 		end := i + batchSize
 		if end > len(eventIDs) {
@@ -617,41 +531,8 @@ func fetchEditionDataParallel(db *sql.DB, eventIDs []int64, numWorkers int) []ma
 		}
 
 		batch := eventIDs[i:end]
-
-		semaphore <- struct{}{}
-		wg.Add(1)
-
-		go func(eventIDBatch []int64, batchNum int) {
-			defer func() {
-				<-semaphore
-				wg.Done()
-			}()
-			editionData := fetchEditionDataForBatch(db, eventIDBatch)
-			results <- editionData
-		}(batch, i/batchSize)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	completedBatches := 0
-
-	for completedBatches < expectedBatches {
-		select {
-		case editionData := <-results:
-			allEditionData = append(allEditionData, editionData...)
-			completedBatches++
-		case <-done:
-
-			return allEditionData
-		case <-time.After(120 * time.Second):
-			log.Printf("Warning: Timeout waiting for edition data. Completed %d/%d batches",
-				completedBatches, expectedBatches)
-			return allEditionData
-		}
+		editionData := fetchEditionDataForBatch(db, batch)
+		allEditionData = append(allEditionData, editionData...)
 	}
 
 	return allEditionData
@@ -1168,7 +1049,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 
 			// Fetch edition data in parallel
 			startTime := time.Now()
-			editionData := fetchEditionDataParallel(mysqlDB, eventIDs, config.NumWorkers)
+			editionData := fetchEditionDataParallel(mysqlDB, eventIDs)
 			editionTime := time.Since(startTime)
 			log.Printf("Event edition chunk %d: Retrieved edition data for %d events in %v", chunkNum, len(editionData), editionTime)
 
@@ -1178,7 +1059,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				if len(companyIDs) > 0 {
 					log.Printf("Event edition chunk %d: Fetching company data for %d companies", chunkNum, len(companyIDs))
 					startTime = time.Now()
-					companyData = fetchCompanyDataParallel(mysqlDB, companyIDs, config.NumWorkers)
+					companyData = fetchCompanyDataParallel(mysqlDB, companyIDs)
 					companyTime := time.Since(startTime)
 					log.Printf("Event edition chunk %d: Retrieved company data for %d companies in %v", chunkNum, len(companyData), companyTime)
 				}
@@ -1191,7 +1072,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 				if len(venueIDs) > 0 {
 					log.Printf("Event edition chunk %d: Fetching venue data for %d venues", chunkNum, len(venueIDs))
 					startTime = time.Now()
-					venueData = fetchVenueDataParallel(mysqlDB, venueIDs, config.NumWorkers)
+					venueData = fetchVenueDataParallel(mysqlDB, venueIDs)
 					venueTime := time.Since(startTime)
 					log.Printf("Event edition chunk %d: Retrieved venue data for %d venues in %v", chunkNum, len(venueData), venueTime)
 				}

@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -795,15 +794,9 @@ func FetchCityDataParallel(db *sql.DB, cityIDs []int64, numWorkers int) []map[st
 	}
 
 	batchSize := 1000
-
-	expectedBatches := (len(cityIDs) + batchSize - 1) / batchSize
-	results := make(chan []map[string]interface{}, expectedBatches)
-	semaphore := make(chan struct{}, numWorkers)
-
 	var allCityData []map[string]interface{}
 
-	var wg sync.WaitGroup
-
+	// Process batches sequentially (no nested workers)
 	for i := 0; i < len(cityIDs); i += batchSize {
 		end := i + batchSize
 		if end > len(cityIDs) {
@@ -811,42 +804,8 @@ func FetchCityDataParallel(db *sql.DB, cityIDs []int64, numWorkers int) []map[st
 		}
 
 		batch := cityIDs[i:end]
-
-		semaphore <- struct{}{}
-		wg.Add(1)
-
-		go func(cityIDBatch []int64, batchNum int) {
-			defer func() {
-				<-semaphore
-				wg.Done()
-			}()
-			cityData := fetchCityDataForBatch(db, cityIDBatch)
-			results <- cityData
-		}(batch, i/batchSize)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	completedBatches := 0
-
-collectLoop:
-	for completedBatches < expectedBatches {
-		select {
-		case cityData := <-results:
-			allCityData = append(allCityData, cityData...)
-			completedBatches++
-		case <-done:
-
-			break collectLoop
-		case <-time.After(120 * time.Second):
-			log.Printf("Warning: Timeout waiting for city data. Completed %d/%d batches",
-				completedBatches, expectedBatches)
-			break collectLoop
-		}
+		cityData := fetchCityDataForBatch(db, batch)
+		allCityData = append(allCityData, cityData...)
 	}
 
 	// Find missing city IDs
