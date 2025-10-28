@@ -116,10 +116,9 @@ func ConvertToEventRankingChRecords(mysqlData []map[string]interface{}, db *sql.
 		// Country - following the same pattern as other tables
 		countryStr := strings.ToUpper(shared.SafeConvertToString(row["country"]))
 		if len(countryStr) > 2 {
-			countryStr = countryStr[:2] // Truncate to 2 characters for FixedString(2)
+			countryStr = countryStr[:2]
 		}
 		record.Country = countryStr
-		log.Printf("DEBUG: Country value: '%s' (length: %d)", countryStr, len(countryStr))
 
 		if category, ok := row["category"]; ok && category != nil {
 			if categoryVal, ok := category.(int64); ok {
@@ -361,15 +360,17 @@ func ProcessEventRankingChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, confi
 }
 
 func BuildEventRankingMigrationData(mysqlDB *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
+	month := time.Now().Month()
+	year := time.Now().Year()
 	query := `
 		SELECT id, event_id, country, category, event_rank, created
 		FROM event_ranking
-		WHERE id >= ? AND id <= ?
+		WHERE id >= ? AND id <= ? AND YEAR(created) = ? AND MONTH(created) = ?
 		ORDER BY id
 		LIMIT ?
 	`
 
-	rows, err := mysqlDB.Query(query, startID, endID, batchSize)
+	rows, err := mysqlDB.Query(query, startID, endID, year, month, batchSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query event_ranking: %v", err)
 	}
