@@ -77,7 +77,7 @@ func ProcessVisitorSpreadOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 		semaphore <- struct{}{}
 		go func(chunkNum int, eventIDChunk []int64) {
 			defer func() { <-semaphore }()
-			processVisitorSpreadChunk(clickhouseConn, esClient, config, eventIDChunk, chunkNum, results, &totalRecordsProcessed, &totalRecordsInserted, &globalCountMutex)
+			processVisitorSpreadChunk(clickhouseConn, esClient, eventIDChunk, chunkNum, results, &totalRecordsProcessed, &totalRecordsInserted, &globalCountMutex)
 		}(i+1, chunkEventIDs)
 	}
 
@@ -137,10 +137,6 @@ func convertVisitorSpreadDataToRecords(visitorSpreadData map[int64]map[string]in
 			}
 		}
 
-		if eventID <= allEventIDs[0]+2 {
-			log.Printf("DEBUG: Event %d visitor spread data: %+v", eventID, data)
-		}
-
 		// Extract user_by_cntry array
 		var userByCntry []interface{}
 		if cntryData, exists := data["user_by_cntry"]; exists {
@@ -167,11 +163,6 @@ func convertVisitorSpreadDataToRecords(visitorSpreadData map[int64]map[string]in
 			userByDesignation = []interface{}{}
 		}
 
-		if eventID <= allEventIDs[0]+2 {
-			log.Printf("DEBUG: Event %d arrays - user_by_cntry: %d items, user_by_designation: %d items",
-				eventID, len(userByCntry), len(userByDesignation))
-		}
-
 		record := VisitorSpreadRecord{
 			EventID:           uint32(eventID),
 			UserByCntry:       userByCntry,
@@ -191,7 +182,7 @@ func convertVisitorSpreadDataToRecords(visitorSpreadData map[int64]map[string]in
 	return records
 }
 
-func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config, eventIDs []int64, chunkNum int, results chan<- string, totalRecordsProcessed *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
+func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsearch.Client, eventIDs []int64, chunkNum int, results chan<- string, totalRecordsProcessed *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
 	log.Printf("Processing visitor spread chunk %d: %d event IDs", chunkNum, len(eventIDs))
 
 	visitorSpreadData, err := fetchVisitorSpreadDataFromElasticsearch(esClient, eventIDs)
@@ -210,11 +201,19 @@ func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsear
 		return
 	}
 
-	log.Printf("Visitor spread chunk %d: Inserting %d records into ClickHouse with %d workers", chunkNum, len(records), config.ClickHouseWorkers)
-	err = insertVisitorSpreadDataIntoClickHouse(clickhouseConn, records, config.ClickHouseWorkers)
-	if err != nil {
-		log.Printf("ERROR: Visitor spread chunk %d: Failed to insert data into ClickHouse: %v", chunkNum, err)
-		results <- fmt.Sprintf("Visitor spread chunk %d: Failed to insert data into ClickHouse: %v", chunkNum, err)
+	log.Printf("Visitor spread chunk %d: Inserting %d records into ClickHouse", chunkNum, len(records))
+
+	insertErr := shared.RetryWithBackoff(
+		func() error {
+			return insertVisitorSpreadDataSingleWorker(clickhouseConn, records)
+		},
+		3,
+		fmt.Sprintf("ClickHouse insertion for visitor spread chunk %d", chunkNum),
+	)
+
+	if insertErr != nil {
+		log.Printf("ERROR: Visitor spread chunk %d: Failed to insert data into ClickHouse after retries: %v", chunkNum, insertErr)
+		results <- fmt.Sprintf("Visitor spread chunk %d: Failed to insert data into ClickHouse: %v", chunkNum, insertErr)
 		return
 	}
 
@@ -329,8 +328,6 @@ func fetchVisitorSpreadBatch(esClient *elasticsearch.Client, eventIDs []int64) (
 		return nil, fmt.Errorf("failed to marshal Elasticsearch query: %v", err)
 	}
 
-	log.Printf("DEBUG: Elasticsearch visitor spread query: %s", string(queryJSON))
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -359,17 +356,6 @@ func fetchVisitorSpreadBatch(esClient *elasticsearch.Client, eventIDs []int64) (
 	hits := result["hits"].(map[string]interface{})
 	hitsArray := hits["hits"].([]interface{})
 
-	var totalHitsValue interface{}
-	if totalHits, ok := hits["total"].(map[string]interface{}); ok {
-		totalHitsValue = totalHits["value"]
-	} else if totalHits, ok := hits["total"].(float64); ok {
-		totalHitsValue = totalHits
-	} else {
-		totalHitsValue = "unknown"
-	}
-
-	log.Printf("DEBUG: Elasticsearch visitor spread response - Total hits: %v, Returned hits: %d", totalHitsValue, len(hitsArray))
-
 	results := make(map[int64]map[string]interface{})
 	processedCount := 0
 	skippedCount := 0
@@ -393,19 +379,13 @@ func fetchVisitorSpreadBatch(esClient *elasticsearch.Client, eventIDs []int64) (
 		visitorSpreadData := make(map[string]interface{})
 
 		if visitorSpread, exists := source["visitor_spread"]; exists && visitorSpread != nil {
-			log.Printf("DEBUG: Event %d raw visitor_spread: %+v", eventIDInt, visitorSpread)
-
 			processedVisitorData := processVisitorSpreadData(eventIDInt, visitorSpread)
 			visitorSpreadData = processedVisitorData
-		} else {
-			log.Printf("DEBUG: Event %d has no visitor_spread data", eventIDInt)
 		}
 
 		results[eventIDInt] = visitorSpreadData
 		processedCount++
 	}
-
-	log.Printf("DEBUG: Processed %d events", processedCount)
 
 	return results, nil
 }
@@ -423,7 +403,6 @@ func processVisitorSpreadData(eventID int64, visitorSpread interface{}) map[stri
 	}
 
 	visitorSpreadJSON := string(visitorSpreadJSONBytes)
-	log.Printf("DEBUG: Event %d raw visitor spread JSON: %s", eventID, visitorSpreadJSON)
 
 	var visitorSpreadMap map[string]interface{}
 	if err := json.Unmarshal([]byte(visitorSpreadJSON), &visitorSpreadMap); err != nil {
@@ -436,8 +415,6 @@ func processVisitorSpreadData(eventID int64, visitorSpread interface{}) map[stri
 
 	// Process user_by_cntry data as array
 	if userByCntry, exists := visitorSpreadMap["user_by_cntry"]; exists && userByCntry != nil {
-		log.Printf("DEBUG: Event %d user_by_cntry: %+v", eventID, userByCntry)
-
 		// Convert to array of interfaces
 		if userByCntryArray, ok := userByCntry.([]interface{}); ok {
 			processedData["user_by_cntry"] = userByCntryArray
@@ -451,7 +428,6 @@ func processVisitorSpreadData(eventID int64, visitorSpread interface{}) map[stri
 
 	// Process user_by_designation data as array
 	if userByDesignation, exists := visitorSpreadMap["user_by_designation"]; exists && userByDesignation != nil {
-		log.Printf("DEBUG: Event %d user_by_designation: %+v", eventID, userByDesignation)
 
 		// Convert to array of interfaces
 		if userByDesignationArray, ok := userByDesignation.([]interface{}); ok {
@@ -464,52 +440,49 @@ func processVisitorSpreadData(eventID int64, visitorSpread interface{}) map[stri
 		processedData["user_by_designation"] = []interface{}{}
 	}
 
-	log.Printf("DEBUG: Event %d processed data: user_by_cntry=%d items, user_by_designation=%d items",
-		eventID, len(processedData["user_by_cntry"].([]interface{})), len(processedData["user_by_designation"].([]interface{})))
-
 	return processedData
 }
 
-func insertVisitorSpreadDataIntoClickHouse(clickhouseConn driver.Conn, records []VisitorSpreadRecord, numWorkers int) error {
-	if len(records) == 0 {
-		return nil
-	}
+// func insertVisitorSpreadDataIntoClickHouse(clickhouseConn driver.Conn, records []VisitorSpreadRecord, numWorkers int) error {
+// 	if len(records) == 0 {
+// 		return nil
+// 	}
 
-	if numWorkers <= 1 {
-		return insertVisitorSpreadDataSingleWorker(clickhouseConn, records)
-	}
+// 	if numWorkers <= 1 {
+// 		return insertVisitorSpreadDataSingleWorker(clickhouseConn, records)
+// 	}
 
-	batchSize := (len(records) + numWorkers - 1) / numWorkers
-	results := make(chan error, numWorkers)
-	semaphore := make(chan struct{}, numWorkers)
+// 	batchSize := (len(records) + numWorkers - 1) / numWorkers
+// 	results := make(chan error, numWorkers)
+// 	semaphore := make(chan struct{}, numWorkers)
 
-	for i := 0; i < numWorkers; i++ {
-		start := i * batchSize
-		end := start + batchSize
-		if end > len(records) {
-			end = len(records)
-		}
-		if start >= len(records) {
-			break
-		}
+// 	for i := 0; i < numWorkers; i++ {
+// 		start := i * batchSize
+// 		end := start + batchSize
+// 		if end > len(records) {
+// 			end = len(records)
+// 		}
+// 		if start >= len(records) {
+// 			break
+// 		}
 
-		semaphore <- struct{}{}
-		go func(start, end int) {
-			defer func() { <-semaphore }()
-			batch := records[start:end]
-			err := insertVisitorSpreadDataSingleWorker(clickhouseConn, batch)
-			results <- err
-		}(start, end)
-	}
+// 		semaphore <- struct{}{}
+// 		go func(start, end int) {
+// 			defer func() { <-semaphore }()
+// 			batch := records[start:end]
+// 			err := insertVisitorSpreadDataSingleWorker(clickhouseConn, batch)
+// 			results <- err
+// 		}(start, end)
+// 	}
 
-	for i := 0; i < numWorkers && i*batchSize < len(records); i++ {
-		if err := <-results; err != nil {
-			return err
-		}
-	}
+// 	for i := 0; i < numWorkers && i*batchSize < len(records); i++ {
+// 		if err := <-results; err != nil {
+// 			return err
+// 		}
+// 	}
 
-	return nil
-}
+// 	return nil
+// }
 
 func insertVisitorSpreadDataSingleWorker(clickhouseConn driver.Conn, records []VisitorSpreadRecord) error {
 	if len(records) == 0 {
