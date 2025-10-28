@@ -156,14 +156,14 @@ func SetupNativeClickHouseConnection(config shared.Config) (driver.Conn, error) 
 		},
 		Protocol: clickhouse.HTTP,
 		Settings: clickhouse.Settings{
-			"max_execution_time": 300,
+			"max_execution_time": 900, // 15 minutes
 		},
 		Compression: &clickhouse.Compression{
 			Method: clickhouse.CompressionLZ4,
 		},
 		MaxOpenConns:     50,
 		MaxIdleConns:     25,
-		DialTimeout:      100 * time.Second,
+		DialTimeout:      900 * time.Second, // 15 minutes
 		ConnOpenStrategy: clickhouse.ConnOpenInOrder,
 		Debug:            false,
 	})

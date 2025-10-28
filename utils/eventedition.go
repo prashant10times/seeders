@@ -1607,7 +1607,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 
 					insertErr := shared.RetryWithBackoff(
 						func() error {
-							return insertEventEditionDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers)
+							return insertEventEditionDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers, config)
 						},
 						3,
 						fmt.Sprintf("ClickHouse insertion for chunk %d", chunkNum),
@@ -2044,13 +2044,13 @@ collectLoop:
 }
 
 // inserts event edition data into event_edition_ch
-func insertEventEditionDataIntoClickHouse(clickhouseConn driver.Conn, records []map[string]interface{}, numWorkers int) error {
+func insertEventEditionDataIntoClickHouse(clickhouseConn driver.Conn, records []map[string]interface{}, numWorkers int, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
 	}
 
 	if numWorkers <= 1 {
-		return insertEventEditionDataSingleWorker(clickhouseConn, records)
+		return insertEventEditionDataSingleWorker(clickhouseConn, records, config)
 	}
 
 	batchSize := (len(records) + numWorkers - 1) / numWorkers
@@ -2071,7 +2071,7 @@ func insertEventEditionDataIntoClickHouse(clickhouseConn driver.Conn, records []
 		go func(start, end int) {
 			defer func() { <-semaphore }()
 			batch := records[start:end]
-			err := insertEventEditionDataSingleWorker(clickhouseConn, batch)
+			err := insertEventEditionDataSingleWorker(clickhouseConn, batch, config)
 			results <- err
 		}(start, end)
 	}
@@ -2085,7 +2085,7 @@ func insertEventEditionDataIntoClickHouse(clickhouseConn driver.Conn, records []
 	return nil
 }
 
-func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []map[string]interface{}) error {
+func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -2099,25 +2099,25 @@ func insertEventEditionDataSingleWorker(clickhouseConn driver.Conn, records []ma
 			}
 			chunk := records[i:end]
 			log.Printf("Inserting chunk %d-%d (%d records)", i+1, end, len(chunk))
-			if err := insertEventEditionDataChunk(clickhouseConn, chunk); err != nil {
+			if err := insertEventEditionDataChunk(clickhouseConn, chunk, config); err != nil {
 				return fmt.Errorf("failed to insert chunk %d-%d: %v", i+1, end, err)
 			}
 		}
 		return nil
 	}
 
-	return insertEventEditionDataChunk(clickhouseConn, records)
+	return insertEventEditionDataChunk(clickhouseConn, records, config)
 }
 
-func insertEventEditionDataChunk(clickhouseConn driver.Conn, records []map[string]interface{}) error {
+func insertEventEditionDataChunk(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second) // 15 minutes
 	defer cancel()
 
-	batch, err := clickhouseConn.PrepareBatch(ctx, `
+	insertSQL := `
 		INSERT INTO event_edition_ch (
 			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating,
 			start_date, end_date,
@@ -2133,10 +2133,34 @@ func insertEventEditionDataChunk(clickhouseConn driver.Conn, records []map[strin
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
 			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, version
 		)
-	`)
+	`
+
+	batch, err := clickhouseConn.PrepareBatch(ctx, insertSQL)
+
+	maxRetries := 3
+	for retryCount := 0; err != nil && retryCount < maxRetries; retryCount++ {
+		log.Printf("WARNING: ClickHouse connection error (attempt %d/%d), rebuilding connection: %v", retryCount+1, maxRetries, err)
+		newConn, connErr := SetupNativeClickHouseConnection(config)
+		if connErr != nil {
+			log.Printf("ERROR: Failed to rebuild ClickHouse connection (attempt %d/%d): %v", retryCount+1, maxRetries, connErr)
+			if retryCount < maxRetries-1 {
+				continue
+			}
+			return fmt.Errorf("failed to prepare batch and rebuild connection after %d attempts: %v, %v", maxRetries, err, connErr)
+		}
+
+		clickhouseConn = newConn
+		batch, err = clickhouseConn.PrepareBatch(ctx, insertSQL)
+		if err != nil {
+			log.Printf("ERROR: Failed to prepare batch after rebuilding connection (attempt %d/%d): %v", retryCount+1, maxRetries, err)
+			continue
+		}
+		log.Printf("Successfully rebuilt ClickHouse connection and prepared batch after %d attempt(s)", retryCount+1)
+		break
+	}
+
 	if err != nil {
-		log.Printf("ERROR: Failed to prepare ClickHouse batch for event_edition_ch: %v", err)
-		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
+		return fmt.Errorf("failed to prepare ClickHouse batch after %d retries: %v", maxRetries, err)
 	}
 
 	for _, record := range records {
