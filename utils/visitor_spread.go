@@ -195,13 +195,16 @@ func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsear
 	log.Printf("Visitor spread chunk %d: Retrieved visitor spread data for %d events", chunkNum, len(visitorSpreadData))
 
 	records := convertVisitorSpreadDataToRecords(visitorSpreadData, eventIDs)
-	if len(records) == 0 {
+	recordCount := len(records)
+	visitorSpreadData = nil
+
+	if recordCount == 0 {
 		log.Printf("Visitor spread chunk %d: No records to insert", chunkNum)
 		results <- fmt.Sprintf("Visitor spread chunk %d: No records to insert", chunkNum)
 		return
 	}
 
-	log.Printf("Visitor spread chunk %d: Inserting %d records into ClickHouse", chunkNum, len(records))
+	log.Printf("Visitor spread chunk %d: Inserting %d records into ClickHouse", chunkNum, recordCount)
 
 	insertErr := shared.RetryWithBackoff(
 		func() error {
@@ -214,18 +217,20 @@ func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsear
 	if insertErr != nil {
 		log.Printf("ERROR: Visitor spread chunk %d: Failed to insert data into ClickHouse after retries: %v", chunkNum, insertErr)
 		results <- fmt.Sprintf("Visitor spread chunk %d: Failed to insert data into ClickHouse: %v", chunkNum, insertErr)
+		records = nil
 		return
 	}
 
-	insertedCount := len(records)
+	records = nil
+	insertedCount := recordCount
 
 	globalCountMutex.Lock()
-	*totalRecordsProcessed += int64(len(visitorSpreadData))
+	*totalRecordsProcessed += int64(recordCount)
 	*totalRecordsInserted += int64(insertedCount)
 	globalCountMutex.Unlock()
 
-	log.Printf("Visitor spread chunk %d: Successfully processed %d records, inserted %d records", chunkNum, len(visitorSpreadData), insertedCount)
-	results <- fmt.Sprintf("Visitor spread chunk %d: Successfully processed %d records, inserted %d records", chunkNum, len(visitorSpreadData), insertedCount)
+	log.Printf("Visitor spread chunk %d: Successfully processed %d records, inserted %d records", chunkNum, recordCount, insertedCount)
+	results <- fmt.Sprintf("Visitor spread chunk %d: Successfully processed %d records, inserted %d records", chunkNum, recordCount, insertedCount)
 }
 
 func fetchVisitorSpreadDataFromElasticsearch(esClient *elasticsearch.Client, eventIDs []int64) (map[int64]map[string]interface{}, error) {
@@ -234,11 +239,11 @@ func fetchVisitorSpreadDataFromElasticsearch(esClient *elasticsearch.Client, eve
 	}
 
 	results := make(map[int64]map[string]interface{})
-	batchSize := 200
+	batchSize := 50
 
 	expectedBatches := (len(eventIDs) + batchSize - 1) / batchSize
 	resultsChan := make(chan map[int64]map[string]interface{}, expectedBatches)
-	semaphore := make(chan struct{}, 5)
+	semaphore := make(chan struct{}, 2)
 
 	var wg sync.WaitGroup
 
@@ -259,7 +264,7 @@ func fetchVisitorSpreadDataFromElasticsearch(esClient *elasticsearch.Client, eve
 			}()
 
 			if batchNum > 1 {
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(200 * time.Millisecond)
 			}
 
 			var batchResults map[int64]map[string]interface{}
@@ -296,6 +301,7 @@ func fetchVisitorSpreadDataFromElasticsearch(esClient *elasticsearch.Client, eve
 		for eventID, data := range batchResults {
 			results[eventID] = data
 		}
+		batchResults = nil
 	}
 
 	log.Printf("OK: Retrieved visitor spread data for %d events in %d batches", len(results), expectedBatches)
@@ -328,7 +334,7 @@ func fetchVisitorSpreadBatch(esClient *elasticsearch.Client, eventIDs []int64) (
 		return nil, fmt.Errorf("failed to marshal Elasticsearch query: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second)
 	defer cancel()
 
 	searchRes, err := esClient.Search(
@@ -489,7 +495,7 @@ func insertVisitorSpreadDataSingleWorker(clickhouseConn driver.Conn, records []V
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second)
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
