@@ -77,7 +77,7 @@ func ProcessVisitorSpreadOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 		semaphore <- struct{}{}
 		go func(chunkNum int, eventIDChunk []int64) {
 			defer func() { <-semaphore }()
-			processVisitorSpreadChunk(clickhouseConn, esClient, eventIDChunk, chunkNum, results, &totalRecordsProcessed, &totalRecordsInserted, &globalCountMutex)
+			processVisitorSpreadChunk(clickhouseConn, esClient, eventIDChunk, chunkNum, config, results, &totalRecordsProcessed, &totalRecordsInserted, &globalCountMutex)
 		}(i+1, chunkEventIDs)
 	}
 
@@ -182,7 +182,7 @@ func convertVisitorSpreadDataToRecords(visitorSpreadData map[int64]map[string]in
 	return records
 }
 
-func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsearch.Client, eventIDs []int64, chunkNum int, results chan<- string, totalRecordsProcessed *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
+func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsearch.Client, eventIDs []int64, chunkNum int, config shared.Config, results chan<- string, totalRecordsProcessed *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
 	log.Printf("Processing visitor spread chunk %d: %d event IDs", chunkNum, len(eventIDs))
 
 	visitorSpreadData, err := fetchVisitorSpreadDataFromElasticsearch(esClient, eventIDs)
@@ -208,7 +208,11 @@ func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsear
 
 	insertErr := shared.RetryWithBackoff(
 		func() error {
-			return insertVisitorSpreadDataSingleWorker(clickhouseConn, records)
+			chInsertWorkers := 3
+			if config.ClickHouseWorkers > 0 {
+				chInsertWorkers = config.ClickHouseWorkers
+			}
+			return insertVisitorSpreadDataIntoClickHouse(clickhouseConn, records, chInsertWorkers)
 		},
 		3,
 		fmt.Sprintf("ClickHouse insertion for visitor spread chunk %d", chunkNum),
@@ -239,11 +243,12 @@ func fetchVisitorSpreadDataFromElasticsearch(esClient *elasticsearch.Client, eve
 	}
 
 	results := make(map[int64]map[string]interface{})
-	batchSize := 50
+	batchSize := 200
 
 	expectedBatches := (len(eventIDs) + batchSize - 1) / batchSize
 	resultsChan := make(chan map[int64]map[string]interface{}, expectedBatches)
-	semaphore := make(chan struct{}, 2)
+	elasticsearchParallelBatches := 5
+	semaphore := make(chan struct{}, elasticsearchParallelBatches)
 
 	var wg sync.WaitGroup
 
@@ -449,46 +454,46 @@ func processVisitorSpreadData(eventID int64, visitorSpread interface{}) map[stri
 	return processedData
 }
 
-// func insertVisitorSpreadDataIntoClickHouse(clickhouseConn driver.Conn, records []VisitorSpreadRecord, numWorkers int) error {
-// 	if len(records) == 0 {
-// 		return nil
-// 	}
+func insertVisitorSpreadDataIntoClickHouse(clickhouseConn driver.Conn, records []VisitorSpreadRecord, numWorkers int) error {
+	if len(records) == 0 {
+		return nil
+	}
 
-// 	if numWorkers <= 1 {
-// 		return insertVisitorSpreadDataSingleWorker(clickhouseConn, records)
-// 	}
+	if numWorkers <= 1 {
+		return insertVisitorSpreadDataSingleWorker(clickhouseConn, records)
+	}
 
-// 	batchSize := (len(records) + numWorkers - 1) / numWorkers
-// 	results := make(chan error, numWorkers)
-// 	semaphore := make(chan struct{}, numWorkers)
+	batchSize := (len(records) + numWorkers - 1) / numWorkers
+	results := make(chan error, numWorkers)
+	semaphore := make(chan struct{}, numWorkers)
 
-// 	for i := 0; i < numWorkers; i++ {
-// 		start := i * batchSize
-// 		end := start + batchSize
-// 		if end > len(records) {
-// 			end = len(records)
-// 		}
-// 		if start >= len(records) {
-// 			break
-// 		}
+	for i := 0; i < numWorkers; i++ {
+		start := i * batchSize
+		end := start + batchSize
+		if end > len(records) {
+			end = len(records)
+		}
+		if start >= len(records) {
+			break
+		}
 
-// 		semaphore <- struct{}{}
-// 		go func(start, end int) {
-// 			defer func() { <-semaphore }()
-// 			batch := records[start:end]
-// 			err := insertVisitorSpreadDataSingleWorker(clickhouseConn, batch)
-// 			results <- err
-// 		}(start, end)
-// 	}
+		semaphore <- struct{}{}
+		go func(start, end int) {
+			defer func() { <-semaphore }()
+			batch := records[start:end]
+			err := insertVisitorSpreadDataSingleWorker(clickhouseConn, batch)
+			results <- err
+		}(start, end)
+	}
 
-// 	for i := 0; i < numWorkers && i*batchSize < len(records); i++ {
-// 		if err := <-results; err != nil {
-// 			return err
-// 		}
-// 	}
+	for i := 0; i < numWorkers && i*batchSize < len(records); i++ {
+		if err := <-results; err != nil {
+			return err
+		}
+	}
 
-// 	return nil
-// }
+	return nil
+}
 
 func insertVisitorSpreadDataSingleWorker(clickhouseConn driver.Conn, records []VisitorSpreadRecord) error {
 	if len(records) == 0 {
