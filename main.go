@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"seeders/microservice"
 	"seeders/shared"
 	"seeders/utils"
 
@@ -1088,6 +1089,12 @@ func main() {
 	var eventEditionOnly bool
 	var eventTypeEventChOnly bool
 	var eventCategoryEventChOnly bool
+	var locationCountriesOnly bool
+	var locationStatesOnly bool
+	var locationCitiesOnly bool
+	var locationVenuesOnly bool
+	var locationSubVenuesOnly bool
+	var locationAll bool
 	var eventRankingOnly bool
 	var eventDesignationOnly bool
 	var visitorSpreadOnly bool
@@ -1105,6 +1112,12 @@ func main() {
 	flag.BoolVar(&eventEditionOnly, "event-edition", false, "Process only event edition data (default: false)")
 	flag.BoolVar(&eventTypeEventChOnly, "eventtype", false, "Process only eventtype data (default: false)")
 	flag.BoolVar(&eventCategoryEventChOnly, "eventcategory", false, "Process only eventcategory data (default: false)")
+	flag.BoolVar(&locationCountriesOnly, "location-countries", false, "Process only location countries into location_ch (default: false)")
+	flag.BoolVar(&locationStatesOnly, "location-states", false, "Process only location states into location_ch (default: false)")
+	flag.BoolVar(&locationCitiesOnly, "location-cities", false, "Process only location cities into location_ch (default: false)")
+	flag.BoolVar(&locationVenuesOnly, "location-venues", false, "Process only location venues into location_ch (default: false)")
+	flag.BoolVar(&locationSubVenuesOnly, "location-sub-venues", false, "Process only location sub-venues into location_ch (default: false)")
+	flag.BoolVar(&locationAll, "location", false, "Process all location types (countries, states, cities, venues, sub-venues) into location_ch (default: false)")
 	flag.BoolVar(&eventRankingOnly, "eventranking", false, "Process only event ranking data (default: false)")
 	flag.BoolVar(&eventDesignationOnly, "eventdesignation", false, "Process only event designation data (default: false)")
 	flag.BoolVar(&visitorSpreadOnly, "visitorspread", false, "Process only visitor spread data (default: false)")
@@ -1248,6 +1261,18 @@ func main() {
 		log.Printf("Mode: VISITOR SPREAD ONLY")
 	} else if allEventOnly {
 		log.Printf("Mode: ALL EVENT ONLY")
+	} else if locationAll {
+		log.Printf("Mode: LOCATION ALL (countries, states, cities, venues, sub-venues)")
+	} else if locationCountriesOnly {
+		log.Printf("Mode: LOCATION COUNTRIES ONLY")
+	} else if locationStatesOnly {
+		log.Printf("Mode: LOCATION STATES ONLY")
+	} else if locationCitiesOnly {
+		log.Printf("Mode: LOCATION CITIES ONLY")
+	} else if locationVenuesOnly {
+		log.Printf("Mode: LOCATION VENUES ONLY")
+	} else if locationSubVenuesOnly {
+		log.Printf("Mode: LOCATION SUB-VENUES ONLY")
 	}
 
 	if sponsorsOnly {
@@ -1286,7 +1311,7 @@ func main() {
 		log.Fatalf("ClickHouse connection test failed: %v", err)
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventRankingOnly && !eventDesignationOnly {
+	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -1311,6 +1336,8 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_ranking_ch processing)")
 		} else if eventDesignationOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_designation_ch processing)")
+		} else if locationAll || locationCountriesOnly || locationStatesOnly || locationCitiesOnly || locationVenuesOnly || locationSubVenuesOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for location_ch processing)")
 		}
 	}
 
@@ -1387,13 +1414,108 @@ func main() {
 		utils.ProcessVisitorSpreadOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 	} else if allEventOnly {
 		utilsConfig := shared.Config{
+			BatchSize:          config.BatchSize,
+			NumChunks:          config.NumChunks,
+			NumWorkers:         config.NumWorkers,
+			ClickHouseWorkers:  config.ClickHouseWorkers,
+			ElasticsearchIndex: config.ElasticsearchIndex,
+		}
+		utils.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
+	} else if locationCountriesOnly {
+		locConfig := shared.Config{
 			BatchSize:         config.BatchSize,
 			NumChunks:         config.NumChunks,
 			NumWorkers:        config.NumWorkers,
 			ClickHouseWorkers: config.ClickHouseWorkers,
-			ElasticsearchIndex: config.ElasticsearchIndex,
 		}
-		utils.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
+		microservice.ProcessLocationCountriesCh(mysqlDB, clickhouseDB, locConfig)
+	} else if locationStatesOnly {
+		locConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		microservice.ProcessLocationStatesCh(mysqlDB, clickhouseDB, locConfig)
+	} else if locationCitiesOnly {
+		locConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		microservice.ProcessLocationCitiesCh(mysqlDB, clickhouseDB, locConfig)
+	} else if locationVenuesOnly {
+		locConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		microservice.ProcessLocationVenuesCh(mysqlDB, clickhouseDB, locConfig)
+	} else if locationSubVenuesOnly {
+		locConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		microservice.ProcessLocationSubVenuesCh(mysqlDB, clickhouseDB, locConfig)
+	} else if locationAll {
+		// Process all location types in sequence
+		locConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+
+		log.Println("=== Processing all location types in sequence ===")
+		log.Println("")
+
+		// 1. Countries (needed for states)
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Println("STEP 1/5: PROCESSING COUNTRIES")
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		microservice.ProcessLocationCountriesCh(mysqlDB, clickhouseDB, locConfig)
+		log.Println("✓ STEP 1/5 (COUNTRIES) COMPLETED SUCCESSFULLY")
+		log.Println("")
+
+		// 2. States (needed for cities)
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Println("STEP 2/5: PROCESSING STATES")
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		microservice.ProcessLocationStatesCh(mysqlDB, clickhouseDB, locConfig)
+		log.Println("✓ STEP 2/5 (STATES) COMPLETED SUCCESSFULLY")
+		log.Println("")
+
+		// 3. Cities (needed for venues)
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Println("STEP 3/5: PROCESSING CITIES")
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		microservice.ProcessLocationCitiesCh(mysqlDB, clickhouseDB, locConfig)
+		log.Println("✓ STEP 3/5 (CITIES) COMPLETED SUCCESSFULLY")
+		log.Println("")
+
+		// 4. Venues (needed for sub-venues)
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Println("STEP 4/5: PROCESSING VENUES")
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		microservice.ProcessLocationVenuesCh(mysqlDB, clickhouseDB, locConfig)
+		log.Println("✓ STEP 4/5 (VENUES) COMPLETED SUCCESSFULLY")
+		log.Println("")
+
+		// 5. Sub-venues
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Println("STEP 5/5: PROCESSING SUB-VENUES")
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		microservice.ProcessLocationSubVenuesCh(mysqlDB, clickhouseDB, locConfig)
+		log.Println("✓ STEP 5/5 (SUB-VENUES) COMPLETED SUCCESSFULLY")
+		log.Println("")
+
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Println("=== ALL LOCATION TYPES PROCESSING COMPLETED SUCCESSFULLY! ===")
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	} else {
 		log.Println("Error: No specific table mode selected!")
 		log.Println("Please specify one of the following modes:")
@@ -1407,9 +1529,16 @@ func main() {
 		log.Println("  -eventranking     # Process event ranking data")
 		log.Println("  -eventdesignation # Process event designation data")
 		log.Println("  -visitorspread    # Process visitor spread data")
-		log.Println("  -allevent        # Process all event data")
+		log.Println("  -allevent         # Process all event data")
+		log.Println("  -location         # Process all location types (countries, states, cities, venues, sub-venues)")
+		log.Println("  -location-countries   # Process only location countries")
+		log.Println("  -location-states      # Process only location states")
+		log.Println("  -location-cities      # Process only location cities")
+		log.Println("  -location-venues      # Process only location venues")
+		log.Println("  -location-sub-venues  # Process only location sub-venues")
 		log.Println("")
 		log.Println("Example: go run main.go -event-edition -chunks=10 -workers=20")
+		log.Println("Example: go run main.go -location -batch=1000 -clickhouse-workers=5")
 		os.Exit(1)
 	}
 }

@@ -258,6 +258,21 @@ func GenerateCategoryUUID(categoryID uint32, categoryName interface{}, categoryC
 		binary.BigEndian.Uint64(append([]byte{0, 0}, uuid[10:16]...))&0xffffffffffff)
 }
 
+func GenerateUUIDFromString(input string) string {
+	hash := sha256.Sum256([]byte(input))
+	uuid := make([]byte, 16)
+	copy(uuid, hash[:16])
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		binary.BigEndian.Uint32(uuid[0:4]),
+		binary.BigEndian.Uint16(uuid[4:6]),
+		binary.BigEndian.Uint16(uuid[6:8]),
+		binary.BigEndian.Uint16(uuid[8:10]),
+		binary.BigEndian.Uint64(append([]byte{0, 0}, uuid[10:16]...))&0xffffffffffff)
+}
+
 func GenerateCompanyUUID(companyName interface{}, created interface{}) string {
 	var nameStr string
 	if companyName != nil {
