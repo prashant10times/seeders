@@ -76,6 +76,7 @@ import (
 
 type LocationChRecord struct {
 	IDUUID        string    `ch:"id_uuid"`
+	ID            uint32    `ch:"id"`
 	ID10x         string    `ch:"id_10x"`
 	LocationType  string    `ch:"location_type"`
 	Name          *string   `ch:"name"`
@@ -108,8 +109,7 @@ type LocationChRecord struct {
 	Version       uint32    `ch:"version"`
 }
 
-// ProcessLocationCountriesCh ports the country logic from Python to ClickHouse
-func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
+func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID uint32) uint32 {
 	log.Println("=== Starting location_ch (countries) Processing ===")
 
 	offset := 0
@@ -117,6 +117,8 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 	if batchSize <= 0 {
 		batchSize = 1000
 	}
+
+	currentID := startID
 
 	for {
 		batchData, err := fetchCountryBatch(mysqlDB, offset, batchSize)
@@ -132,36 +134,30 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 		now := time.Now()
 
 		for _, row := range batchData {
-			iso := shared.SafeConvertToString(row["id"]) // MySQL country.id is ISO
+			iso := shared.SafeConvertToString(row["id"])
 			created := shared.SafeConvertToString(row["created"])
 
 			if iso == "" || created == "" {
 				continue
 			}
 
-			// Normalize the raw ISO (matching Python: utils.convert_to_utf8)
 			normalizedISO := normalizeNFC(strings.TrimSpace(iso))
 			isoUpper := strings.ToUpper(normalizedISO)
 
-			// Generate UUID from normalized raw ISO (UPPERCASE) and created (matching Python: "{id_10x.upper()}-{created}")
-			// Python uses the raw normalized ISO, NOT the prefixed version
 			idInputString := fmt.Sprintf("%s-%s", isoUpper, created)
 			idUUID := shared.GenerateUUIDFromString(idInputString)
 
-			// Build id_10x with prefix for insert: 'country-{ISO}'
 			id10x := fmt.Sprintf("country-%s", isoUpper)
 
-			name := shared.SafeConvertToNullableString(row["name"])   // normalized/escaped not strictly required for CH
-			alias := shared.SafeConvertToNullableString(row["alias"]) // shortname in MySQL
+			name := shared.SafeConvertToNullableString(row["name"])
+			alias := shared.SafeConvertToNullableString(row["alias"])
 			phonecode := shared.SafeConvertToNullableString(row["phonecode"])
 			currency := shared.SafeConvertToNullableString(row["currency"])
 			continent := shared.SafeConvertToNullableString(row["continent"])
 			published := shared.SafeConvertToInt8(row["published"])
 
-			// regions: keep behavior close to Python (stores array with raw regions value)
 			var regions []string
 			if r := shared.SafeConvertToString(row["regions"]); r != "" {
-				// heuristic: if comma-separated, split; else single element
 				if strings.Contains(r, ",") {
 					parts := strings.Split(r, ",")
 					for i := range parts {
@@ -173,11 +169,9 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 				}
 			}
 
-			// latitude/longitude enrichment skipped (no country.json here)
 			var latPtr *float64
 			var lonPtr *float64
 
-			// iso column stores 2-letter code
 			isoPtr := (*string)(nil)
 			if isoUpper != "" {
 				isoPtr = &isoUpper
@@ -185,6 +179,7 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 
 			rec := LocationChRecord{
 				IDUUID:        idUUID,
+				ID:            currentID,
 				ID10x:         id10x,
 				LocationType:  "COUNTRY",
 				Name:          name,
@@ -201,6 +196,7 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 				Version:       1,
 			}
 
+			currentID++
 			records = append(records, rec)
 		}
 
@@ -218,14 +214,15 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 	}
 
 	log.Println("Location countries processing completed!")
+	return currentID
 }
 
 func fetchCountryBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
         SELECT 
-            c.id,                    -- ISO code
-            c.name,                  -- name
-            c.shortname as alias,    -- alias
+            c.id,
+            c.name,
+            c.shortname as alias,
             c.phonecode,
             c.currency,
             c.continent,
@@ -328,7 +325,7 @@ func insertLocationCountriesChSingleWorker(clickhouseConn driver.Conn, records [
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
         INSERT INTO location_ch (
-            id_uuid, id_10x, location_type, name, alias, phonecode, currency, continent,
+            id_uuid, id, id_10x, location_type, name, alias, phonecode, currency, continent,
             regions, latitude, longitude, published, iso, last_updated_at, version
         )
     `)
@@ -339,6 +336,7 @@ func insertLocationCountriesChSingleWorker(clickhouseConn driver.Conn, records [
 	for _, r := range records {
 		if err := batch.Append(
 			r.IDUUID,
+			r.ID,
 			r.ID10x,
 			r.LocationType,
 			r.Name,
@@ -426,8 +424,7 @@ func buildCountryLookup(mysqlDB *sql.DB) (map[string]string, map[string]string, 
 	return isoToUUID, isoToName, nil
 }
 
-// ProcessLocationStatesCh ports the state logic from Python to ClickHouse
-func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
+func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID uint32) uint32 {
 	log.Println("=== Starting location_ch (states) Processing ===")
 
 	countryUUIDLookup, countryNameLookup, err := buildCountryLookup(mysqlDB)
@@ -442,6 +439,7 @@ func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 	}
 
 	seenStates := make(map[string]bool)
+	currentID := startID
 
 	for {
 		batchData, err := fetchStateBatch(mysqlDB, offset, batchSize)
@@ -457,7 +455,7 @@ func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 		now := time.Now()
 
 		for _, row := range batchData {
-			stateName := shared.SafeConvertToString(row["id_10x"]) // MySQL area_values.name
+			stateName := shared.SafeConvertToString(row["id_10x"])
 			countryISO := shared.SafeConvertToString(row["countryId"])
 
 			if stateName == "" || countryISO == "" {
@@ -505,6 +503,7 @@ func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 
 			rec := LocationChRecord{
 				IDUUID:        idUUID,
+				ID:            currentID,
 				ID10x:         id10x,
 				LocationType:  "STATE",
 				Name:          name,
@@ -520,6 +519,7 @@ func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				Version:       1,
 			}
 
+			currentID++
 			records = append(records, rec)
 		}
 
@@ -548,6 +548,7 @@ func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 	}
 
 	log.Println("Location states processing completed!")
+	return currentID
 }
 
 func fetchStateBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, error) {
@@ -658,7 +659,7 @@ func insertLocationStatesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
         INSERT INTO location_ch (
-            id_uuid, id_10x, location_type, name, alias, geometry,
+            id_uuid, id, id_10x, location_type, name, alias, geometry,
             latitude, longitude, published, iso, country_uuid, country_name,
             last_updated_at, version
         )
@@ -670,6 +671,7 @@ func insertLocationStatesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 	for _, r := range records {
 		if err := batch.Append(
 			r.IDUUID,
+			r.ID,
 			r.ID10x,
 			r.LocationType,
 			r.Name,
@@ -694,7 +696,6 @@ func insertLocationStatesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 	return nil
 }
 
-// Build state lookup map: stateName+countryISO -> UUID
 func buildStateLookup(mysqlDB *sql.DB) (map[string]string, error) {
 	stateToUUID := make(map[string]string)
 
@@ -728,11 +729,8 @@ func buildStateLookup(mysqlDB *sql.DB) (map[string]string, error) {
 	return stateToUUID, nil
 }
 
-// ProcessLocationCitiesCh ports the city logic from Python to ClickHouse
-func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
+func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID uint32) uint32 {
 	log.Println("=== Starting location_ch (cities) Processing ===")
-
-	// Build lookups
 	countryUUIDLookup, countryNameLookup, err := buildCountryLookup(mysqlDB)
 	if err != nil {
 		log.Fatalf("Failed to build country lookup: %v", err)
@@ -748,6 +746,8 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 	if batchSize <= 0 {
 		batchSize = 1000
 	}
+
+	currentID := startID
 
 	for {
 		batchData, err := fetchCityBatch(mysqlDB, offset, batchSize)
@@ -770,15 +770,11 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				continue
 			}
 
-			// Normalize the raw ID (matching Python: utils.convert_to_utf8)
 			normalizedID := normalizeNFC(cityID)
 
-			// Generate UUID from normalized raw ID and created date (matching Python: "{id_10x}-{created}")
-			// Python uses the raw normalized ID, NOT the prefixed version
 			idInputString := fmt.Sprintf("%s-%s", normalizedID, created)
 			idUUID := shared.GenerateUUIDFromString(idInputString)
 
-			// Build id_10x with prefix for insert: 'city-{id}'
 			id10x := fmt.Sprintf("city-%s", normalizedID)
 
 			name := shared.SafeConvertToNullableString(row["name"])
@@ -791,7 +787,6 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 			timezone := shared.SafeConvertToNullableString(row["timezone"])
 			published := shared.SafeConvertToInt8(row["published"])
 
-			// Generate state UUID if state_name and country are available
 			var stateUUID *string
 			if stateName != nil && *stateName != "" && countrySourceID != "" {
 				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
@@ -802,7 +797,6 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				}
 			}
 
-			// Get country UUID from lookup (matching country table UUID generation)
 			var countryUUID *string
 			if countrySourceID != "" {
 				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
@@ -811,7 +805,6 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				}
 			}
 
-			// Get country name
 			var countryName *string
 			if countrySourceID != "" {
 				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
@@ -822,7 +815,6 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				}
 			}
 
-			// ISO code with NAN check
 			var isoPtr *string
 			if countrySourceID != "" {
 				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
@@ -833,6 +825,7 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 
 			rec := LocationChRecord{
 				IDUUID:        idUUID,
+				ID:            currentID,
 				ID10x:         id10x,
 				LocationType:  "CITY",
 				Name:          name,
@@ -851,6 +844,7 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				Version:       1,
 			}
 
+			currentID++
 			records = append(records, rec)
 		}
 
@@ -861,7 +855,6 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 			log.Printf("Inserted %d city records into location_ch (offset=%d)", len(records), offset)
 		}
 
-		// Update offset for next iteration
 		if len(batchData) > 0 {
 			if lastID, ok := batchData[len(batchData)-1]["id_10x"].(int64); ok {
 				offset = int(lastID)
@@ -886,6 +879,7 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 	}
 
 	log.Println("Location cities processing completed!")
+	return currentID
 }
 
 func fetchCityBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, error) {
@@ -1006,7 +1000,7 @@ func insertLocationCitiesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
         INSERT INTO location_ch (
-            id_uuid, id_10x, location_type, name, alias, latitude, longitude,
+            id_uuid, id, id_10x, location_type, name, alias, latitude, longitude,
             utc_offset, timezone, published, iso, state_uuid, state_name,
             country_uuid, country_name, last_updated_at, version
         )
@@ -1018,6 +1012,7 @@ func insertLocationCitiesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 	for _, r := range records {
 		if err := batch.Append(
 			r.IDUUID,
+			r.ID,
 			r.ID10x,
 			r.LocationType,
 			r.Name,
@@ -1045,7 +1040,6 @@ func insertLocationCitiesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 	return nil
 }
 
-// Build city lookup map: cityID -> UUID
 func buildCityLookup(mysqlDB *sql.DB) (map[string]string, error) {
 	cityToUUID := make(map[string]string)
 
@@ -1062,9 +1056,7 @@ func buildCityLookup(mysqlDB *sql.DB) (map[string]string, error) {
 		if err := rows.Scan(&cityID, &created); err != nil {
 			continue
 		}
-		// Normalize the raw ID (matching Python: utils.convert_to_utf8)
 		normalizedID := normalizeNFC(cityID)
-		// Generate UUID from normalized raw ID and created (matching Python: "{id_10x}-{created}")
 		idInputString := fmt.Sprintf("%s-%s", normalizedID, created)
 		uuid := shared.GenerateUUIDFromString(idInputString)
 		cityToUUID[cityID] = uuid
@@ -1073,7 +1065,6 @@ func buildCityLookup(mysqlDB *sql.DB) (map[string]string, error) {
 	return cityToUUID, nil
 }
 
-// Build venue lookup map: venueID -> UUID
 func buildVenueLookup(mysqlDB *sql.DB) (map[string]string, error) {
 	venueToUUID := make(map[string]string)
 
@@ -1090,9 +1081,7 @@ func buildVenueLookup(mysqlDB *sql.DB) (map[string]string, error) {
 		if err := rows.Scan(&venueID, &created); err != nil {
 			continue
 		}
-		// Normalize the raw ID (matching Python: utils.convert_to_utf8)
 		normalizedID := normalizeNFC(venueID)
-		// Generate UUID from normalized raw ID and created (matching Python: "{id_10x}-{created}")
 		idInputString := fmt.Sprintf("%s-%s", normalizedID, created)
 		uuid := shared.GenerateUUIDFromString(idInputString)
 		venueToUUID[venueID] = uuid
@@ -1101,11 +1090,8 @@ func buildVenueLookup(mysqlDB *sql.DB) (map[string]string, error) {
 	return venueToUUID, nil
 }
 
-// ProcessLocationVenuesCh ports the venue logic from Python to ClickHouse
-func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
+func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID uint32) uint32 {
 	log.Println("=== Starting location_ch (venues) Processing ===")
-
-	// Build lookups
 	countryUUIDLookup, countryNameLookup, err := buildCountryLookup(mysqlDB)
 	if err != nil {
 		log.Fatalf("Failed to build country lookup: %v", err)
@@ -1126,6 +1112,8 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 	if batchSize <= 0 {
 		batchSize = 1000
 	}
+
+	currentID := startID
 
 	for {
 		batchData, err := fetchVenueBatch(mysqlDB, offset, batchSize)
@@ -1148,15 +1136,11 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				continue
 			}
 
-			// Normalize the raw ID (matching Python: utils.convert_to_utf8)
 			normalizedID := normalizeNFC(venueID)
 
-			// Generate UUID from normalized raw ID and created date (matching Python: "{id_10x}-{created}")
-			// Python uses the raw normalized ID, NOT the prefixed version
 			idInputString := fmt.Sprintf("%s-%s", normalizedID, created)
 			idUUID := shared.GenerateUUIDFromString(idInputString)
 
-			// Build id_10x with prefix for insert: 'venue-{id}'
 			id10x := fmt.Sprintf("venue-%s", normalizedID)
 
 			name := shared.SafeConvertToNullableString(row["name"])
@@ -1173,13 +1157,11 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 			cityLong := shared.SafeConvertToNullableFloat64(row["cityLong"])
 			published := shared.SafeConvertToInt8(row["published"])
 
-			// Clean address (replace newlines with spaces like Python)
 			if address != nil && *address != "" {
 				cleanAddr := strings.ReplaceAll(*address, "\n", " ")
 				address = &cleanAddr
 			}
 
-			// Get city UUID from lookup
 			var cityUUID *string
 			if cityIDStr != "" {
 				if uuid, ok := cityUUIDLookup[cityIDStr]; ok {
@@ -1187,7 +1169,6 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				}
 			}
 
-			// Generate state UUID if state_name and country are available
 			var stateUUID *string
 			if stateName != nil && *stateName != "" && countrySourceID != "" {
 				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
@@ -1198,7 +1179,6 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				}
 			}
 
-			// Get country UUID and name
 			var countryUUID *string
 			var countryName *string
 			if countrySourceID != "" {
@@ -1213,7 +1193,6 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				}
 			}
 
-			// ISO code with NAN check
 			var isoPtr *string
 			if countrySourceID != "" {
 				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
@@ -1224,6 +1203,7 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 
 			rec := LocationChRecord{
 				IDUUID:        idUUID,
+				ID:            currentID,
 				ID10x:         id10x,
 				LocationType:  "VENUE",
 				Name:          name,
@@ -1246,6 +1226,7 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				Version:       1,
 			}
 
+			currentID++
 			records = append(records, rec)
 		}
 
@@ -1256,7 +1237,6 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 			log.Printf("Inserted %d venue records into location_ch (offset=%d)", len(records), offset)
 		}
 
-		// Update offset for next iteration
 		if len(batchData) > 0 {
 			if lastID, ok := batchData[len(batchData)-1]["id_10x"].(int64); ok {
 				offset = int(lastID)
@@ -1281,6 +1261,7 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 	}
 
 	log.Println("Location venues processing completed!")
+	return currentID
 }
 
 func fetchVenueBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, error) {
@@ -1400,7 +1381,7 @@ func insertLocationVenuesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
         INSERT INTO location_ch (
-            id_uuid, id_10x, location_type, name, address, latitude, longitude,
+            id_uuid, id, id_10x, location_type, name, address, latitude, longitude,
             website, postalcode, published, iso, state_uuid, state_name,
             country_uuid, country_name, city_uuid, city_name, city_latitude,
             city_longitude, last_updated_at, version
@@ -1413,6 +1394,7 @@ func insertLocationVenuesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 	for _, r := range records {
 		if err := batch.Append(
 			r.IDUUID,
+			r.ID,
 			r.ID10x,
 			r.LocationType,
 			r.Name,
@@ -1444,11 +1426,9 @@ func insertLocationVenuesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 	return nil
 }
 
-// ProcessLocationSubVenuesCh ports the sub-venue logic from Python to ClickHouse
-func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
+func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID uint32) uint32 {
 	log.Println("=== Starting location_ch (sub-venues) Processing ===")
 
-	// Build venue lookup
 	venueUUIDLookup, err := buildVenueLookup(mysqlDB)
 	if err != nil {
 		log.Fatalf("Failed to build venue lookup: %v", err)
@@ -1459,6 +1439,8 @@ func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 	if batchSize <= 0 {
 		batchSize = 1000
 	}
+
+	currentID := startID
 
 	for {
 		batchData, err := fetchSubVenueBatch(mysqlDB, offset, batchSize)
@@ -1481,15 +1463,11 @@ func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 				continue
 			}
 
-			// Normalize the raw ID (matching Python: utils.convert_to_utf8)
 			normalizedID := normalizeNFC(subVenueID)
 
-			// Generate UUID from normalized raw ID and created date (matching Python: "{id_10x}-{created}")
-			// Python uses the raw normalized ID, NOT the prefixed version
 			idInputString := fmt.Sprintf("%s-%s", normalizedID, created)
 			idUUID := shared.GenerateUUIDFromString(idInputString)
 
-			// Build id_10x with prefix for insert: 'sub_venue-{id}'
 			id10x := fmt.Sprintf("sub_venue-%s", normalizedID)
 
 			name := shared.SafeConvertToNullableString(row["name"])
@@ -1497,8 +1475,6 @@ func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 			published := shared.SafeConvertToInt8(row["published"])
 			venueIDStr := shared.SafeConvertToString(row["venueId"])
 
-			// Clean name (remove backslashes and quotes like Python)
-			// Python: name = utils.convert_to_utf8(data.get('name',None),f'sub_venue-{id_10x}-name').replace("\\","").replace("'","''")
 			if name != nil {
 				cleanedName := normalizeNFC(*name)
 				cleanedName = strings.ReplaceAll(cleanedName, "\\", "")
@@ -1506,7 +1482,6 @@ func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 				name = &cleanedName
 			}
 
-			// Lookup venue UUID
 			var venueUUID *string
 			if venueIDStr != "" {
 				if uuid, found := venueUUIDLookup[venueIDStr]; found {
@@ -1516,6 +1491,7 @@ func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 
 			record := LocationChRecord{
 				IDUUID:        idUUID,
+				ID:            currentID,
 				ID10x:         id10x,
 				LocationType:  "SUB_VENUE",
 				Name:          name,
@@ -1526,6 +1502,7 @@ func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 				Version:       1,
 			}
 
+			currentID++
 			records = append(records, record)
 		}
 
@@ -1536,7 +1513,6 @@ func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 			log.Printf("Inserted %d sub-venue records into location_ch (offset=%d)", len(records), offset)
 		}
 
-		// Update offset for next iteration
 		if len(batchData) > 0 {
 			if lastID, ok := batchData[len(batchData)-1]["id_10x"].(int64); ok {
 				offset = int(lastID)
@@ -1561,6 +1537,7 @@ func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 	}
 
 	log.Println("Location sub-venues processing completed!")
+	return currentID
 }
 
 func fetchSubVenueBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, error) {
@@ -1627,7 +1604,6 @@ func insertLocationSubVenuesCh(clickhouseConn driver.Conn, records []LocationChR
 	errChan := make(chan error, numWorkers)
 	var wg sync.WaitGroup
 
-	// Split records into batches for workers
 	batchSize := len(records) / numWorkers
 	if batchSize == 0 {
 		batchSize = 1
@@ -1646,7 +1622,6 @@ func insertLocationSubVenuesCh(clickhouseConn driver.Conn, records []LocationChR
 		}()
 	}
 
-	// Send work items
 	go func() {
 		defer close(workChan)
 		for i := 0; i < len(records); i += batchSize {
@@ -1661,13 +1636,11 @@ func insertLocationSubVenuesCh(clickhouseConn driver.Conn, records []LocationChR
 		}
 	}()
 
-	// Wait for completion
 	go func() {
 		wg.Wait()
 		close(errChan)
 	}()
 
-	// Collect errors
 	var errors []error
 	for err := range errChan {
 		errors = append(errors, err)
@@ -1688,7 +1661,7 @@ func insertLocationSubVenuesChSingleWorker(clickhouseConn driver.Conn, records [
 	ctx := context.Background()
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO location_ch (
-			id_uuid, id_10x, location_type, name, area, published,
+			id_uuid, id, id_10x, location_type, name, area, published,
 			venue_uuid, last_updated_at, version
 		) VALUES`)
 	if err != nil {
@@ -1698,6 +1671,7 @@ func insertLocationSubVenuesChSingleWorker(clickhouseConn driver.Conn, records [
 	for _, r := range records {
 		if err := batch.Append(
 			r.IDUUID,
+			r.ID,
 			r.ID10x,
 			r.LocationType,
 			r.Name,

@@ -1428,7 +1428,7 @@ func main() {
 			NumWorkers:        config.NumWorkers,
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
-		microservice.ProcessLocationCountriesCh(mysqlDB, clickhouseDB, locConfig)
+		microservice.ProcessLocationCountriesCh(mysqlDB, clickhouseDB, locConfig, 1)
 	} else if locationStatesOnly {
 		locConfig := shared.Config{
 			BatchSize:         config.BatchSize,
@@ -1436,7 +1436,7 @@ func main() {
 			NumWorkers:        config.NumWorkers,
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
-		microservice.ProcessLocationStatesCh(mysqlDB, clickhouseDB, locConfig)
+		microservice.ProcessLocationStatesCh(mysqlDB, clickhouseDB, locConfig, 1)
 	} else if locationCitiesOnly {
 		locConfig := shared.Config{
 			BatchSize:         config.BatchSize,
@@ -1444,7 +1444,7 @@ func main() {
 			NumWorkers:        config.NumWorkers,
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
-		microservice.ProcessLocationCitiesCh(mysqlDB, clickhouseDB, locConfig)
+		microservice.ProcessLocationCitiesCh(mysqlDB, clickhouseDB, locConfig, 1)
 	} else if locationVenuesOnly {
 		locConfig := shared.Config{
 			BatchSize:         config.BatchSize,
@@ -1452,7 +1452,7 @@ func main() {
 			NumWorkers:        config.NumWorkers,
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
-		microservice.ProcessLocationVenuesCh(mysqlDB, clickhouseDB, locConfig)
+		microservice.ProcessLocationVenuesCh(mysqlDB, clickhouseDB, locConfig, 1)
 	} else if locationSubVenuesOnly {
 		locConfig := shared.Config{
 			BatchSize:         config.BatchSize,
@@ -1460,7 +1460,7 @@ func main() {
 			NumWorkers:        config.NumWorkers,
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
-		microservice.ProcessLocationSubVenuesCh(mysqlDB, clickhouseDB, locConfig)
+		microservice.ProcessLocationSubVenuesCh(mysqlDB, clickhouseDB, locConfig, 1)
 	} else if locationAll {
 		// Process all location types in sequence
 		locConfig := shared.Config{
@@ -1477,7 +1477,7 @@ func main() {
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		log.Println("STEP 1/5: PROCESSING COUNTRIES")
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-		microservice.ProcessLocationCountriesCh(mysqlDB, clickhouseDB, locConfig)
+		nextID := microservice.ProcessLocationCountriesCh(mysqlDB, clickhouseDB, locConfig, 1)
 		log.Println("✓ STEP 1/5 (COUNTRIES) COMPLETED SUCCESSFULLY")
 		log.Println("")
 
@@ -1485,7 +1485,7 @@ func main() {
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		log.Println("STEP 2/5: PROCESSING STATES")
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-		microservice.ProcessLocationStatesCh(mysqlDB, clickhouseDB, locConfig)
+		nextID = microservice.ProcessLocationStatesCh(mysqlDB, clickhouseDB, locConfig, nextID)
 		log.Println("✓ STEP 2/5 (STATES) COMPLETED SUCCESSFULLY")
 		log.Println("")
 
@@ -1493,7 +1493,7 @@ func main() {
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		log.Println("STEP 3/5: PROCESSING CITIES")
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-		microservice.ProcessLocationCitiesCh(mysqlDB, clickhouseDB, locConfig)
+		nextID = microservice.ProcessLocationCitiesCh(mysqlDB, clickhouseDB, locConfig, nextID)
 		log.Println("✓ STEP 3/5 (CITIES) COMPLETED SUCCESSFULLY")
 		log.Println("")
 
@@ -1501,7 +1501,7 @@ func main() {
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		log.Println("STEP 4/5: PROCESSING VENUES")
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-		microservice.ProcessLocationVenuesCh(mysqlDB, clickhouseDB, locConfig)
+		nextID = microservice.ProcessLocationVenuesCh(mysqlDB, clickhouseDB, locConfig, nextID)
 		log.Println("✓ STEP 4/5 (VENUES) COMPLETED SUCCESSFULLY")
 		log.Println("")
 
@@ -1509,7 +1509,7 @@ func main() {
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		log.Println("STEP 5/5: PROCESSING SUB-VENUES")
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-		microservice.ProcessLocationSubVenuesCh(mysqlDB, clickhouseDB, locConfig)
+		microservice.ProcessLocationSubVenuesCh(mysqlDB, clickhouseDB, locConfig, nextID)
 		log.Println("✓ STEP 5/5 (SUB-VENUES) COMPLETED SUCCESSFULLY")
 		log.Println("")
 
