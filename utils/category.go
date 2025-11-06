@@ -17,7 +17,7 @@ type EventCategoryEventChRecord struct {
 	CategoryUUID string `ch:"category_uuid"` // UUID generated
 	Event        uint32 `ch:"event"`         // UInt32
 	Name         string `ch:"name"`          // LowCardinality(String)
-	URL          string `ch:"url"`           // String
+	Slug         string `ch:"slug"`          // String
 	Published    int8   `ch:"published"`     // Int8
 	ShortName    string `ch:"short_name"`    // String
 	IsGroup      uint8  `ch:"is_group"`      // UInt8
@@ -108,7 +108,7 @@ func processEventCategoryEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Con
 				CategoryUUID: shared.GenerateCategoryUUID(shared.ConvertToUInt32(record["category"]), record["name"], record["created"]),
 				Event:        shared.ConvertToUInt32(record["event"]),
 				Name:         shared.ConvertToString(record["name"]),
-				URL:          shared.ConvertToString(record["url"]),
+				Slug:         shared.ConvertToString(record["slug"]),
 				Published:    shared.ConvertToInt8(record["published"]),
 				ShortName:    shared.ConvertToString(record["short_name"]),
 				IsGroup:      shared.ConvertToUInt8(record["is_group"]),
@@ -170,7 +170,7 @@ func buildEventCategoryEventChMigrationData(db *sql.DB, startID, endID int, batc
 			ec.event,
 			c.published,
 			c.name,
-			c.url,
+			c.url as slug,
 			c.short_name,
 			c.is_group,
 			c.created
@@ -276,7 +276,7 @@ func insertEventCategoryEventChDataSingleWorker(clickhouseConn driver.Conn, even
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_category_ch (
-			category, category_uuid, event, name, url, published, short_name, is_group, created, version
+			category, category_uuid, event, name, slug, published, short_name, is_group, created, version
 		)
 	`)
 	if err != nil {
@@ -290,7 +290,7 @@ func insertEventCategoryEventChDataSingleWorker(clickhouseConn driver.Conn, even
 			record.CategoryUUID, // category_uuid: UUID
 			record.Event,        // event: UInt32
 			record.Name,         // name: LowCardinality(String)
-			record.URL,          // url: String
+			record.Slug,          // slug: String
 			record.Published,    // published: Int8
 			record.ShortName,    // short_name: String
 			record.IsGroup,      // is_group: UInt8
@@ -299,8 +299,8 @@ func insertEventCategoryEventChDataSingleWorker(clickhouseConn driver.Conn, even
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append record to batch: %v", err)
-			log.Printf("Record data: Category=%d, CategoryUUID=%s, Event=%d, Name=%s, URL=%s, Published=%d, ShortName=%s, IsGroup=%d, Created=%s, Version=%d",
-				record.Category, record.CategoryUUID, record.Event, record.Name, record.URL, record.Published, record.ShortName, record.IsGroup, record.Created, record.Version)
+			log.Printf("Record data: Category=%d, CategoryUUID=%s, Event=%d, Name=%s, slug=%s, Published=%d, ShortName=%s, IsGroup=%d, Created=%s, Version=%d",
+				record.Category, record.CategoryUUID, record.Event, record.Name, record.Slug, record.Published, record.ShortName, record.IsGroup, record.Created, record.Version)
 			return fmt.Errorf("failed to append record to batch: %v", err)
 		}
 	}

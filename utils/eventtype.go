@@ -18,7 +18,7 @@ type EventTypeEventChRecord struct {
 	EventID       uint32 `ch:"event_id"`
 	Published     int8   `ch:"published"`
 	Name          string `ch:"name"`
-	URL           string `ch:"url"`
+	Slug          string `ch:"slug"`
 	EventAudience uint16 `ch:"event_audience"`
 	Created       string `ch:"created"`
 	Version       uint32 `ch:"version"`
@@ -109,7 +109,7 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 				EventID:       shared.ConvertToUInt32(record["event_id"]),
 				Published:     shared.ConvertToInt8(record["published"]),
 				Name:          shared.ConvertToString(record["name"]),
-				URL:           shared.ConvertToString(record["url"]),
+				Slug:          shared.ConvertToString(record["slug"]),
 				EventAudience: shared.SafeConvertToUInt16(record["event_audience"]),
 				Created:       shared.SafeConvertToDateTimeString(record["created"]),
 				Version:       1,
@@ -212,7 +212,7 @@ func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTyp
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_type_ch (
-			eventtype_id, eventtype_uuid, event_id, published, name, url, event_audience, created, version
+			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, created, version
 		)
 	`)
 	if err != nil {
@@ -226,7 +226,7 @@ func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTyp
 			record.EventID,       // event_id: UInt32
 			record.Published,     // published: Int8
 			record.Name,          // name: LowCardinality(String)
-			record.URL,           // url: String
+			record.Slug,          // slug: String
 			record.EventAudience, // event_audience: UInt16
 			record.Created,       // created: DateTime
 			record.Version,       // version: UInt32 DEFAULT 1
@@ -252,7 +252,7 @@ func buildEventTypeEventChMigrationData(db *sql.DB, startID, endID int, batchSiz
 			ee.event_id,
 			ee.published,
 			et.name,
-			et.url,
+			et.url as slug,
 			et.event_audience,
 			ee.created
 		FROM event_type_event ee
