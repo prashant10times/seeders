@@ -108,6 +108,7 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		EventEconomicImpact:             shared.SafeConvertToString(record["event_economic_impact"]),
 		EventAvgRating:                  shared.SafeConvertFloat64ToDecimalString(record["event_avgRating"]),
 		Keywords:                        shared.ConvertToStringArray(record["keywords"]),
+		Tickets:                         shared.ConvertToStringArray(record["tickets"]),
 		Version:                         shared.SafeConvertToUInt32(record["version"]),
 	}
 }
@@ -169,6 +170,7 @@ type EventEditionRecord struct {
 	IsBranded                       *uint32  `ch:"isBranded"`                            // Nullable(UInt32)
 	Maturity                        *string  `ch:"maturity"`                             // LowCardinality(Nullable(String))
 	EventPricing                    *string  `ch:"event_pricing"`                        // LowCardinality(Nullable(String))
+	Tickets                         []string `ch:"tickets"`                              // Array(String)
 	EventLogo                       *string  `ch:"event_logo"`                           // Nullable(String)
 	EventEstimatedVisitors          *string  `ch:"event_estimatedVisitors"`              // LowCardinality(Nullable(String))
 	EventFrequency                  *string  `ch:"event_frequency"`                      // LowCardinality(Nullable(String))
@@ -1243,6 +1245,32 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 					log.Printf("Event edition chunk %d: Retrieved category names for %d events in %v", chunkNum, len(categoryNamesMap), categoryTime)
 				}
 
+				// Fetch ticket data for events
+				ticketDataMap := make(map[int64][]string)
+				ticketTypeMap := make(map[int64]string)
+				if len(eventIDsForEditions) > 0 {
+					log.Printf("Event edition chunk %d: Fetching ticket data for %d events", chunkNum, len(eventIDsForEditions))
+					startTime = time.Now()
+					rawTicketData := fetchTicketDataForBatch(mysqlDB, eventIDsForEditions)
+					if len(rawTicketData) > 0 {
+						ticketDataMap = processTicketData(rawTicketData)
+						for _, ticket := range rawTicketData {
+							eventID, ok := ticket["event"].(int64)
+							if !ok {
+								continue
+							}
+							if _, exists := ticketTypeMap[eventID]; !exists {
+								ticketType := shared.SafeConvertToString(ticket["type"])
+								if ticketType != "" {
+									ticketTypeMap[eventID] = ticketType
+								}
+							}
+						}
+					}
+					ticketTime := time.Since(startTime)
+					log.Printf("Event edition chunk %d: Retrieved ticket data for %d events in %v", chunkNum, len(ticketDataMap), ticketTime)
+				}
+
 				for eventID, editions := range eventEditions {
 					eventData := eventDataLookup[eventID]
 
@@ -1439,8 +1467,19 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 									val := uint32(0)
 									return &val
 								}(),
-								"maturity":                        determineMaturity(esInfoMap["total_edition"]),
-								"event_pricing":                   esInfoMap["event_pricing"],
+								"maturity": determineMaturity(esInfoMap["total_edition"]),
+								"event_pricing": func() *string {
+									if ticketType, exists := ticketTypeMap[eventID]; exists && ticketType != "" {
+										return &ticketType
+									}
+									return nil
+								}(),
+								"tickets": func() []string {
+									if tickets, exists := ticketDataMap[eventID]; exists {
+										return tickets
+									}
+									return []string{}
+								}(),
 								"event_logo":                      esInfoMap["event_logo"],
 								"event_estimatedVisitors":         esInfoMap["eventEstimatedTag"],
 								"event_frequency":                 esInfoMap["event_frequency"],
@@ -1810,6 +1849,104 @@ func fetchCategoryNamesForEvents(db *sql.DB, eventIDs []int64) map[int64][]strin
 	}
 
 	return categoryMap
+}
+
+func fetchTicketDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface{} {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
+		SELECT 
+			event, name, type, currency, price, ticket_url, created
+		FROM event_ticket 
+		WHERE event IN (%s)
+		ORDER BY event, created
+	`, strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("Error fetching ticket data: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			continue
+		}
+
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			val := values[i]
+			if val == nil {
+				row[col] = nil
+			} else {
+				row[col] = val
+			}
+		}
+		results = append(results, row)
+	}
+
+	return results
+}
+
+func processTicketData(ticketData []map[string]interface{}) map[int64][]string {
+	result := make(map[int64][]string)
+
+	for _, ticket := range ticketData {
+		eventID, ok := ticket["event"].(int64)
+		if !ok {
+			continue
+		}
+
+		name := shared.SafeConvertToString(ticket["name"])
+		ticketType := shared.SafeConvertToString(ticket["type"])
+		currency := shared.SafeConvertToNullableString(ticket["currency"])
+		price := shared.SafeConvertToFloat64(ticket["price"])
+		ticketURL := shared.SafeConvertToNullableString(ticket["ticket_url"])
+
+		eventIDUint32 := shared.ConvertToUInt32(eventID)
+		ticketUUID := shared.GenerateEventUUID(eventIDUint32, ticket["created"])
+
+		ticketJSON := map[string]interface{}{
+			"id":        ticketUUID,
+			"name":      name,
+			"type":      ticketType,
+			"currency":  currency,
+			"price":     price,
+			"ticketUrl": ticketURL,
+		}
+
+		jsonBytes, err := json.Marshal(ticketJSON)
+		if err != nil {
+			log.Printf("Error marshaling ticket JSON for event %d: %v", eventID, err)
+			continue
+		}
+
+		result[eventID] = append(result[eventID], string(jsonBytes))
+	}
+
+	return result
 }
 
 // extractKeywords extracts keywords from text fields by removing stop words and filtering
@@ -2258,7 +2395,7 @@ func insertEventEditionDataChunk(clickhouseConn driver.Conn, records []map[strin
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
 			event_created, edition_created, event_hybrid, isBranded, maturity,
-			event_pricing, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
+			event_pricing, tickets, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
 			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, version
 		)
@@ -2352,6 +2489,7 @@ func insertEventEditionDataChunk(clickhouseConn driver.Conn, records []map[strin
 			eventEditionRecord.IsBranded,                       // isBranded: Nullable(UInt32)
 			eventEditionRecord.Maturity,                        // maturity: LowCardinality(Nullable(String))
 			eventEditionRecord.EventPricing,                    // event_pricing: LowCardinality(Nullable(String))
+			eventEditionRecord.Tickets,                         // tickets: Array(String)
 			eventEditionRecord.EventLogo,                       // event_logo: Nullable(String)
 			eventEditionRecord.EventEstimatedVisitors,          // event_estimatedVisitors: LowCardinality(Nullable(String))
 			eventEditionRecord.EventFrequency,                  // event_frequency: LowCardinality(Nullable(String))
@@ -2368,7 +2506,7 @@ func insertEventEditionDataChunk(clickhouseConn driver.Conn, records []map[strin
 			eventEditionRecord.EventEconomicDayWiseImpact,      // event_economic_dayWiseEconomicImpact: JSON
 			eventEditionRecord.EventEconomicBreakdown,          // event_economic_breakdown: JSON
 			eventEditionRecord.EventEconomicImpact,             // event_economic_impact: JSON
-			eventEditionRecord.Keywords,                        // keywords: Nullable(String)
+			eventEditionRecord.Keywords,                        // keywords: Array(String)
 			eventEditionRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
