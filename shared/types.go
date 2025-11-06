@@ -939,3 +939,23 @@ func fetchCityDataForBatch(db *sql.DB, cityIDs []int64) []map[string]interface{}
 
 	return results
 }
+
+// convertToStringArray converts interface{} to []string for keywords array
+func ConvertToStringArray(value interface{}) []string {
+	if value == nil {
+		return []string{}
+	}
+	if strArray, ok := value.([]string); ok {
+		return strArray
+	}
+	if interfaceArray, ok := value.([]interface{}); ok {
+		result := make([]string, 0, len(interfaceArray))
+		for _, v := range interfaceArray {
+			if str, ok := v.(string); ok {
+				result = append(result, str)
+			}
+		}
+		return result
+	}
+	return []string{}
+}

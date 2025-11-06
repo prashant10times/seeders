@@ -109,6 +109,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EventEconomicBreakdown:          shared.SafeConvertToString(record["event_economic_breakdown"]),
 		EventEconomicImpact:             shared.SafeConvertToString(record["event_economic_impact"]),
 		EventAvgRating:                  shared.SafeConvertFloat64ToDecimalString(record["event_avgRating"]),
+		Keywords:                        shared.ConvertToStringArray(record["keywords"]),
 		Version:                         shared.SafeConvertToUInt32(record["version"]),
 	}
 }
@@ -186,6 +187,7 @@ type alleventRecord struct {
 	EventEconomicDayWiseImpact      string   `ch:"event_economic_dayWiseEconomicImpact"` // JSON
 	EventEconomicBreakdown          string   `ch:"event_economic_breakdown"`             // JSON
 	EventEconomicImpact             string   `ch:"event_economic_impact"`                // JSON
+	Keywords                        []string `ch:"keywords"`                             // Array(String)
 	Version                         uint32   `ch:"version"`
 }
 
@@ -1237,6 +1239,16 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					processedEconomicData = processalleventEconomicImpactDataParallel(estimateDataMap)
 				}
 
+				// Fetch category names for events
+				categoryNamesMap := make(map[int64][]string)
+				if len(eventIDsForEditions) > 0 {
+					log.Printf("allevent chunk %d: Fetching category names for %d events", chunkNum, len(eventIDsForEditions))
+					startTime = time.Now()
+					categoryNamesMap = fetchalleventCategoryNamesForEvents(mysqlDB, eventIDsForEditions)
+					categoryTime := time.Since(startTime)
+					log.Printf("allevent chunk %d: Retrieved category names for %d events in %v", chunkNum, len(categoryNamesMap), categoryTime)
+				}
+
 				for eventID, editions := range allevents {
 					eventData := eventDataLookup[eventID]
 
@@ -1550,12 +1562,22 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								"repeatSentimentChangePercentage": esInfoMap["repeatSentimentChangePercentage"],
 								"audienceZone":                    esInfoMap["audienceZone"],
 								"event_avgRating":                 esInfoMap["avg_rating"],
+								"keywords":                        []string{},
 								"version":                         1,
 							}
 
 							var currentEditionEventType interface{}
+
 							if currentEditionIDs[eventID] == edition["edition_id"].(int64) {
 								currentEditionEventType = eventData["event_type"]
+								eventName := shared.ConvertToString(eventData["event_name"])
+								eventAbbrName := shared.SafeConvertToNullableString(eventData["abbr_name"])
+								eventDescription := shared.SafeConvertToNullableString(esInfoMap["event_description"])
+								eventPunchline := shared.SafeConvertToNullableString(esInfoMap["event_punchline"])
+								categoryNames := categoryNamesMap[eventID]
+
+								keywords := extractalleventKeywords(eventName, eventAbbrName, eventDescription, eventPunchline, categoryNames)
+								record["keywords"] = keywords
 
 								exhibitorsCountByOrganizer := edition["current_edition_exhibitors_total"]
 								visitorLeads := esInfoMap["event_following"]
@@ -1964,6 +1986,112 @@ func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[s
 	return lookup, nil
 }
 
+// fetchalleventCategoryNamesForEvents fetches category names for given event IDs
+func fetchalleventCategoryNamesForEvents(db *sql.DB, eventIDs []int64) map[int64][]string {
+	if len(eventIDs) == 0 {
+		return make(map[int64][]string)
+	}
+
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
+		SELECT ec.event, c.name
+		FROM event_category ec
+		INNER JOIN category c ON ec.category = c.id
+		WHERE ec.event IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("Error fetching category names: %v", err)
+		return make(map[int64][]string)
+	}
+	defer rows.Close()
+
+	categoryMap := make(map[int64][]string)
+	for rows.Next() {
+		var eventID int64
+		var categoryName sql.NullString
+		if err := rows.Scan(&eventID, &categoryName); err != nil {
+			continue
+		}
+		if categoryName.Valid && categoryName.String != "" {
+			categoryMap[eventID] = append(categoryMap[eventID], categoryName.String)
+		}
+	}
+
+	return categoryMap
+}
+
+// extractalleventKeywords extracts keywords from text fields by removing stop words and filtering
+// Returns []string array of distinct keywords
+func extractalleventKeywords(eventName string, eventAbbrName *string, eventDescription *string, eventPunchline *string, categoryNames []string) []string {
+	stopWords := map[string]bool{
+		"and": true, "or": true, "but": true, "for": true, "nor": true, "so": true, "yet": true,
+		"at": true, "by": true, "in": true, "of": true, "on": true, "is": true, "are": true,
+		"am": true, "was": true, "were": true, "be": true, "being": true, "been": true,
+		"have": true, "had": true, "has": true, "do": true, "does": true, "did": true,
+		"can": true, "could": true, "may": true, "might": true, "must": true, "shall": true,
+		"should": true, "to": true, "with": true, "a": true, "the": true,
+	}
+
+	var allText []string
+
+	if eventName != "" {
+		allText = append(allText, strings.ToLower(eventName))
+	}
+
+	if eventAbbrName != nil && *eventAbbrName != "" {
+		allText = append(allText, strings.ToLower(*eventAbbrName))
+	}
+
+	if eventDescription != nil && *eventDescription != "" {
+		allText = append(allText, strings.ToLower(*eventDescription))
+	}
+
+	if eventPunchline != nil && *eventPunchline != "" {
+		allText = append(allText, strings.ToLower(*eventPunchline))
+	}
+
+	for _, catName := range categoryNames {
+		if catName != "" {
+			allText = append(allText, strings.ToLower(catName))
+		}
+	}
+
+	if len(allText) == 0 {
+		return []string{}
+	}
+
+	combinedText := strings.Join(allText, " ")
+
+	words := strings.Fields(combinedText)
+
+	wordMap := make(map[string]bool)
+	for _, word := range words {
+		word = strings.Trim(word, ".,!?;:()[]{}\"'")
+		word = strings.ToLower(word)
+
+		if len(word) <= 1 || stopWords[word] {
+			continue
+		}
+
+		wordMap[word] = true
+	}
+
+	distinctWords := make([]string, 0, len(wordMap))
+	for word := range wordMap {
+		distinctWords = append(distinctWords, word)
+	}
+
+	return distinctWords
+}
+
 func extractalleventCityIDs(editionData []map[string]interface{}) []int64 {
 	var cityIDs []int64
 	seen := make(map[int64]bool)
@@ -2335,7 +2463,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			event_created, edition_created, event_hybrid, isBranded, maturity,
 			event_pricing, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
-			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, version
+			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, version
 		)
 	`
 
@@ -2443,6 +2571,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.EventEconomicDayWiseImpact,      // event_economic_dayWiseEconomicImpact: JSON
 			alleventRecord.EventEconomicBreakdown,          // event_economic_breakdown: JSON
 			alleventRecord.EventEconomicImpact,             // event_economic_impact: JSON
+			alleventRecord.Keywords,                        // keywords: Nullable(String)
 			alleventRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
