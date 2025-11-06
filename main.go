@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"seeders/microservice"
 	"seeders/shared"
 	"seeders/utils"
+	"seeders/microservice"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	_ "github.com/go-sql-driver/mysql"
@@ -1420,7 +1420,7 @@ func main() {
 			ClickHouseWorkers:  config.ClickHouseWorkers,
 			ElasticsearchIndex: config.ElasticsearchIndex,
 		}
-		utils.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
+		microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 	} else if locationCountriesOnly {
 		locConfig := shared.Config{
 			BatchSize:         config.BatchSize,

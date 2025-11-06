@@ -19,9 +19,9 @@ import (
 	"github.com/elastic/go-elasticsearch/v6"
 )
 
-// converts a map to allEventRecord struct
-func convertToallEventRecord(record map[string]interface{}) allEventRecord {
-	return allEventRecord{
+// converts a map to alleventRecord struct
+func convertToalleventRecord(record map[string]interface{}) alleventRecord {
+	return alleventRecord{
 		EventID:            shared.SafeConvertToUInt32(record["event_id"]),
 		EventUUID:          shared.SafeConvertToString(record["event_uuid"]),
 		EventName:          shared.SafeConvertToString(record["event_name"]),
@@ -113,7 +113,7 @@ func convertToallEventRecord(record map[string]interface{}) allEventRecord {
 	}
 }
 
-type allEventRecord struct {
+type alleventRecord struct {
 	EventID                         uint32   `ch:"event_id"`
 	EventUUID                       string   `ch:"event_uuid"` // UUID generated from event_id + event_created
 	EventName                       string   `ch:"event_name"`
@@ -189,7 +189,7 @@ type allEventRecord struct {
 	Version                         uint32   `ch:"version"`
 }
 
-func buildAllEventMigrationData(db *sql.DB, table string, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
+func buildalleventMigrationData(db *sql.DB, table string, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf("SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, country, published, status, event_audience, functionality, brand_id, created FROM %s WHERE id >= %d AND id <= %d ORDER BY id LIMIT %d", table, startID, endID, batchSize)
 	rows, err := db.Query(query)
 	if err != nil {
@@ -229,7 +229,7 @@ func buildAllEventMigrationData(db *sql.DB, table string, startID, endID int, ba
 	return results, nil
 }
 
-func extractAllEventVenueIDs(editionData []map[string]interface{}) []int64 {
+func extractalleventVenueIDs(editionData []map[string]interface{}) []int64 {
 	var venueIDs []int64
 	seen := make(map[int64]bool)
 	nullCount := 0
@@ -255,7 +255,7 @@ func extractAllEventVenueIDs(editionData []map[string]interface{}) []int64 {
 	return venueIDs
 }
 
-func fetchAllEventVenueDataParallel(db *sql.DB, venueIDs []int64) []map[string]interface{} {
+func fetchalleventVenueDataParallel(db *sql.DB, venueIDs []int64) []map[string]interface{} {
 	if len(venueIDs) == 0 {
 		return nil
 	}
@@ -263,7 +263,6 @@ func fetchAllEventVenueDataParallel(db *sql.DB, venueIDs []int64) []map[string]i
 	batchSize := 1000
 	var allVenueData []map[string]interface{}
 
-	// Process batches sequentially (no nested workers)
 	for i := 0; i < len(venueIDs); i += batchSize {
 		end := i + batchSize
 		if end > len(venueIDs) {
@@ -271,7 +270,7 @@ func fetchAllEventVenueDataParallel(db *sql.DB, venueIDs []int64) []map[string]i
 		}
 
 		batch := venueIDs[i:end]
-		venueData := fetchAllEventVenueDataForBatch(db, batch)
+		venueData := fetchalleventVenueDataForBatch(db, batch)
 		allVenueData = append(allVenueData, venueData...)
 	}
 
@@ -296,7 +295,7 @@ func fetchAllEventVenueDataParallel(db *sql.DB, venueIDs []int64) []map[string]i
 	return allVenueData
 }
 
-func fetchAllEventVenueDataForBatch(db *sql.DB, venueIDs []int64) []map[string]interface{} {
+func fetchalleventVenueDataForBatch(db *sql.DB, venueIDs []int64) []map[string]interface{} {
 	if len(venueIDs) == 0 {
 		return nil
 	}
@@ -345,14 +344,11 @@ func fetchAllEventVenueDataForBatch(db *sql.DB, venueIDs []int64) []map[string]i
 			if val == nil {
 				row[col] = nil
 			} else {
-				// Handle latitude and longitude as numeric values for ClickHouse Float64 compatibility
 				if col == "venue_lat" || col == "venue_long" {
 					if bytes, ok := val.([]byte); ok {
-						// Convert byte array to float64
 						if len(bytes) > 0 {
 							str := string(bytes)
 							if str != "" {
-								// Parse string to float64
 								if f, err := strconv.ParseFloat(str, 64); err == nil {
 									row[col] = f
 								} else {
@@ -366,7 +362,6 @@ func fetchAllEventVenueDataForBatch(db *sql.DB, venueIDs []int64) []map[string]i
 							row[col] = nil
 						}
 					} else if str, ok := val.(string); ok {
-						// Handle string values by parsing to float64
 						if str != "" {
 							if f, err := strconv.ParseFloat(str, 64); err == nil {
 								row[col] = f
@@ -378,7 +373,6 @@ func fetchAllEventVenueDataForBatch(db *sql.DB, venueIDs []int64) []map[string]i
 							row[col] = nil
 						}
 					} else {
-						// Keep numeric values as-is
 						row[col] = val
 					}
 				} else {
@@ -392,7 +386,7 @@ func fetchAllEventVenueDataForBatch(db *sql.DB, venueIDs []int64) []map[string]i
 	return results
 }
 
-func extractAllEventCompanyIDs(editionData []map[string]interface{}) []int64 {
+func extractalleventCompanyIDs(editionData []map[string]interface{}) []int64 {
 	var companyIDs []int64
 	seen := make(map[int64]bool)
 	nullCount := 0
@@ -418,7 +412,7 @@ func extractAllEventCompanyIDs(editionData []map[string]interface{}) []int64 {
 	return companyIDs
 }
 
-func fetchAllEventCompanyDataParallel(db *sql.DB, companyIDs []int64) []map[string]interface{} {
+func fetchalleventCompanyDataParallel(db *sql.DB, companyIDs []int64) []map[string]interface{} {
 	if len(companyIDs) == 0 {
 		return nil
 	}
@@ -426,7 +420,6 @@ func fetchAllEventCompanyDataParallel(db *sql.DB, companyIDs []int64) []map[stri
 	batchSize := 1000
 	var allCompanyData []map[string]interface{}
 
-	// Process batches sequentially (no nested workers)
 	for i := 0; i < len(companyIDs); i += batchSize {
 		end := i + batchSize
 		if end > len(companyIDs) {
@@ -434,7 +427,7 @@ func fetchAllEventCompanyDataParallel(db *sql.DB, companyIDs []int64) []map[stri
 		}
 
 		batch := companyIDs[i:end]
-		companyData := fetchAllEventCompanyDataForBatch(db, batch)
+		companyData := fetchalleventCompanyDataForBatch(db, batch)
 		allCompanyData = append(allCompanyData, companyData...)
 	}
 
@@ -448,7 +441,7 @@ func fetchAllEventCompanyDataParallel(db *sql.DB, companyIDs []int64) []map[stri
 	return allCompanyData
 }
 
-func fetchAllEventCompanyDataForBatch(db *sql.DB, companyIDs []int64) []map[string]interface{} {
+func fetchalleventCompanyDataForBatch(db *sql.DB, companyIDs []int64) []map[string]interface{} {
 	if len(companyIDs) == 0 {
 		return nil
 	}
@@ -507,7 +500,7 @@ func fetchAllEventCompanyDataForBatch(db *sql.DB, companyIDs []int64) []map[stri
 	return results
 }
 
-func extractAllEventIDs(batchData []map[string]interface{}) []int64 {
+func extractalleventIDs(batchData []map[string]interface{}) []int64 {
 	var eventIDs []int64
 	for _, row := range batchData {
 		if id, ok := row["id"].(int64); ok {
@@ -517,7 +510,7 @@ func extractAllEventIDs(batchData []map[string]interface{}) []int64 {
 	return eventIDs
 }
 
-func fetchAllEventEditionDataParallel(db *sql.DB, eventIDs []int64) []map[string]interface{} {
+func fetchallalleventDataParallel(db *sql.DB, eventIDs []int64) []map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
 	}
@@ -525,7 +518,6 @@ func fetchAllEventEditionDataParallel(db *sql.DB, eventIDs []int64) []map[string
 	batchSize := 1000
 	var allEditionData []map[string]interface{}
 
-	// Process batches sequentially (no nested workers)
 	for i := 0; i < len(eventIDs); i += batchSize {
 		end := i + batchSize
 		if end > len(eventIDs) {
@@ -533,14 +525,14 @@ func fetchAllEventEditionDataParallel(db *sql.DB, eventIDs []int64) []map[string
 		}
 
 		batch := eventIDs[i:end]
-		editionData := fetchAllEventEditionDataForBatch(db, batch)
+		editionData := fetchallalleventDataForBatch(db, batch)
 		allEditionData = append(allEditionData, editionData...)
 	}
 
 	return allEditionData
 }
 
-func fetchAllEventEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface{} {
+func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
 	}
@@ -552,7 +544,6 @@ func fetchAllEventEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string
 		args[i] = id
 	}
 
-	// First, fetch the current edition ID for each event from the event table
 	currentEditionQuery := fmt.Sprintf(`
 		SELECT 
 			id as event_id, 
@@ -567,7 +558,6 @@ func fetchAllEventEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string
 	}
 	defer currentEditionRows.Close()
 
-	// Create a map of event_id to current_edition_id
 	currentEditionMap := make(map[int64]int64)
 	for currentEditionRows.Next() {
 		var eventID int64
@@ -644,7 +634,7 @@ func fetchAllEventEditionDataForBatch(db *sql.DB, eventIDs []int64) []map[string
 	return results
 }
 
-func fetchAllEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface{} {
+func fetchalleventEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
 	}
@@ -701,7 +691,7 @@ func fetchAllEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interf
 	return results
 }
 
-func fetchAllEventEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]string {
+func fetchalleventEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]string {
 	if len(eventIDs) == 0 {
 		return nil
 	}
@@ -737,14 +727,14 @@ func fetchAllEventEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]s
 	return result
 }
 
-func processAllEventEconomicImpactDataParallel(estimateDataMap map[int64]string) map[int64]map[string]interface{} {
+func processalleventEconomicImpactDataParallel(estimateDataMap map[int64]string) map[int64]map[string]interface{} {
 	if len(estimateDataMap) == 0 {
 		return nil
 	}
 
 	finalResult := make(map[int64]map[string]interface{})
 	for eventID, economicImpact := range estimateDataMap {
-		result := processAllEventSingleEconomicImpact(eventID, economicImpact)
+		result := processalleventSingleEconomicImpact(eventID, economicImpact)
 		for id, data := range result {
 			finalResult[id] = data
 		}
@@ -753,7 +743,7 @@ func processAllEventEconomicImpactDataParallel(estimateDataMap map[int64]string)
 	return finalResult
 }
 
-func processAllEventSingleEconomicImpact(eventID int64, economicImpact string) map[int64]map[string]interface{} {
+func processalleventSingleEconomicImpact(eventID int64, economicImpact string) map[int64]map[string]interface{} {
 	result := make(map[int64]map[string]interface{})
 
 	processedData := make(map[string]interface{})
@@ -776,7 +766,7 @@ func processAllEventSingleEconomicImpact(eventID int64, economicImpact string) m
 	}
 
 	// Try to extract data, but continue even if extraction fails
-	total, totalBreakdown, dayWiseFormatted := formatAllEventEconomicImpact(eventID, economicImpact)
+	total, totalBreakdown, dayWiseFormatted := formatalleventEconomicImpact(eventID, economicImpact)
 
 	if totalVal, ok := total.(float64); ok {
 		processedData["total"] = totalVal
@@ -816,7 +806,7 @@ func processAllEventSingleEconomicImpact(eventID int64, economicImpact string) m
 	return result
 }
 
-func formatAllEventEconomicImpact(_ int64, economicImpact string) (interface{}, interface{}, interface{}) {
+func formatalleventEconomicImpact(_ int64, economicImpact string) (interface{}, interface{}, interface{}) {
 	var economicImpactJSON map[string]interface{}
 	if err := json.Unmarshal([]byte(economicImpact), &economicImpactJSON); err != nil {
 		return 0.0, make(map[string]float64), make(map[string]map[string]interface{})
@@ -895,7 +885,7 @@ func formatAllEventEconomicImpact(_ int64, economicImpact string) (interface{}, 
 }
 
 func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
-	log.Println("=== Starting all event ONLY Processing ===")
+	log.Println("=== Starting allevent ONLY Processing ===")
 
 	// Get total records and min/max ID's count from event table
 	totalRecords, minID, maxID, err := shared.GetTotalRecordsAndIDRange(mysqlDB, "event")
@@ -915,11 +905,13 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 		chunkSize = 1
 	}
 
-	log.Printf("Processing all event data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
+	log.Printf("Processing allevent data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
 
+	// Global deduplication map - shared across all chunks
 	globalUniqueRecords := make(map[string]bool)
 	var globalMutex sync.RWMutex
 
+	// Global counters for tracking total records processed
 	var totalRecordsProcessed int64
 	var totalRecordsSkipped int64
 	var totalRecordsInserted int64
@@ -932,26 +924,28 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 		startID := minID + (i * chunkSize)
 		endID := startID + chunkSize - 1
 
+		// last chunk to include remaining records
 		if i == config.NumChunks-1 {
 			endID = maxID
 		}
 
+		// delay between chunk launches
 		if i > 0 {
 			delay := 3 * time.Second
-			log.Printf("Waiting %v before launching all event chunk %d...", delay, i+1)
+			log.Printf("Waiting %v before launching allevent chunk %d...", delay, i+1)
 			time.Sleep(delay)
 		}
 
 		semaphore <- struct{}{}
 		go func(chunkNum, start, end int) {
 			defer func() { <-semaphore }()
-			processallEventChunk(mysqlDB, clickhouseConn, esClient, config, start, end, chunkNum, results, globalUniqueRecords, &globalMutex, &totalRecordsProcessed, &totalRecordsSkipped, &totalRecordsInserted, &globalCountMutex)
+			processalleventChunk(mysqlDB, clickhouseConn, esClient, config, start, end, chunkNum, results, globalUniqueRecords, &globalMutex, &totalRecordsProcessed, &totalRecordsSkipped, &totalRecordsInserted, &globalCountMutex)
 		}(i+1, startID, endID)
 	}
 
 	for i := 0; i < config.NumChunks; i++ {
 		result := <-results
-		log.Printf("all event Result: %s", result)
+		log.Printf("allevent Result: %s", result)
 	}
 
 	// Print final summary
@@ -1013,22 +1007,22 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 		nullEventCount, invalidEventCount, validEventCount, totalEditionsInSource)
 	globalCountMutex.Unlock()
 
-	log.Println("all event processing completed!")
+	log.Println("allevent processing completed!")
 }
 
-// processes a single chunk of all event data
-func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config, startID, endID int, chunkNum int, results chan<- string, globalUniqueRecords map[string]bool, globalMutex *sync.RWMutex, totalRecordsProcessed *int64, totalRecordsSkipped *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
-	log.Printf("Processing all event chunk %d: ID range %d-%d", chunkNum, startID, endID)
+// processes a single chunk of allevent data
+func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config, startID, endID int, chunkNum int, results chan<- string, globalUniqueRecords map[string]bool, globalMutex *sync.RWMutex, totalRecordsProcessed *int64, totalRecordsSkipped *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
+	log.Printf("Processing allevent chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
 	totalRecords := endID - startID + 1
 	processed := 0
 
 	offset := 0
 	for {
-		batchData, err := buildAllEventMigrationData(mysqlDB, "event", startID, endID, config.BatchSize)
+		batchData, err := buildalleventMigrationData(mysqlDB, "event", startID, endID, config.BatchSize)
 		if err != nil {
-			log.Printf("all event chunk %d batch error: %v", chunkNum, err)
-			results <- fmt.Sprintf("all event chunk %d batch error: %v", chunkNum, err)
+			log.Printf("allevent chunk %d batch error: %v", chunkNum, err)
+			results <- fmt.Sprintf("allevent chunk %d batch error: %v", chunkNum, err)
 			return
 		}
 
@@ -1038,47 +1032,46 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 
 		processed += len(batchData)
 		progress := float64(processed) / float64(totalRecords) * 100
-		log.Printf("all event chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
+		log.Printf("allevent chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
 
-		// Get event IDs from this batch
-		eventIDs := extractAllEventIDs(batchData)
+		eventIDs := extractalleventIDs(batchData)
 		if len(eventIDs) > 0 {
-			log.Printf("all event chunk %d: Fetching edition data for %d events", chunkNum, len(eventIDs))
+			log.Printf("allevent chunk %d: Fetching edition data for %d events", chunkNum, len(eventIDs))
 
 			// Fetch edition data in parallel
 			startTime := time.Now()
-			editionData := fetchAllEventEditionDataParallel(mysqlDB, eventIDs)
+			editionData := fetchallalleventDataParallel(mysqlDB, eventIDs)
 			editionTime := time.Since(startTime)
-			log.Printf("all event chunk %d: Retrieved edition data for %d events in %v", chunkNum, len(editionData), editionTime)
+			log.Printf("allevent chunk %d: Retrieved edition data for %d events in %v", chunkNum, len(editionData), editionTime)
 
 			var companyData []map[string]interface{}
 			if len(editionData) > 0 {
-				companyIDs := extractAllEventCompanyIDs(editionData)
+				companyIDs := extractalleventCompanyIDs(editionData)
 				if len(companyIDs) > 0 {
-					log.Printf("all event chunk %d: Fetching company data for %d companies", chunkNum, len(companyIDs))
+					log.Printf("allevent chunk %d: Fetching company data for %d companies", chunkNum, len(companyIDs))
 					startTime = time.Now()
-					companyData = fetchAllEventCompanyDataParallel(mysqlDB, companyIDs)
+					companyData = fetchalleventCompanyDataParallel(mysqlDB, companyIDs)
 					companyTime := time.Since(startTime)
-					log.Printf("all event chunk %d: Retrieved company data for %d companies in %v", chunkNum, len(companyData), companyTime)
+					log.Printf("allevent chunk %d: Retrieved company data for %d companies in %v", chunkNum, len(companyData), companyTime)
 				}
 			}
 
 			// Fetch venue data for all editions
 			var venueData []map[string]interface{}
 			if len(editionData) > 0 {
-				venueIDs := extractAllEventVenueIDs(editionData)
+				venueIDs := extractalleventVenueIDs(editionData)
 				if len(venueIDs) > 0 {
-					log.Printf("all event chunk %d: Fetching venue data for %d venues", chunkNum, len(venueIDs))
+					log.Printf("allevent chunk %d: Fetching venue data for %d venues", chunkNum, len(venueIDs))
 					startTime = time.Now()
-					venueData = fetchAllEventVenueDataParallel(mysqlDB, venueIDs)
+					venueData = fetchalleventVenueDataParallel(mysqlDB, venueIDs)
 					venueTime := time.Since(startTime)
-					log.Printf("all event chunk %d: Retrieved venue data for %d venues in %v", chunkNum, len(venueData), venueTime)
+					log.Printf("allevent chunk %d: Retrieved venue data for %d venues in %v", chunkNum, len(venueData), venueTime)
 				}
 			}
 
 			var cityData []map[string]interface{}
 			if len(editionData) > 0 {
-				editionCityIDs := extractAllEventCityIDs(editionData)
+				editionCityIDs := extractalleventCityIDs(editionData)
 
 				var companyCityIDs []int64
 				seenCompanyCityIDs := make(map[int64]bool)
@@ -1127,25 +1120,40 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 				}
 
 				if len(allCityIDs) > 0 {
-					log.Printf("all event chunk %d: Fetching city data for %d cities (edition: %d, company: %d, venue: %d)",
+					log.Printf("allevent chunk %d: Fetching city data for %d cities (edition: %d, company: %d, venue: %d)",
 						chunkNum, len(allCityIDs), len(editionCityIDs), len(companyCityIDs), len(venueCityIDs))
 					startTime = time.Now()
 					cityData = shared.FetchCityDataParallel(mysqlDB, allCityIDs, config.NumWorkers)
 					cityTime := time.Since(startTime)
-					log.Printf("all event chunk %d: Retrieved city data for %d cities in %v", chunkNum, len(cityData), cityTime)
+					log.Printf("allevent chunk %d: Retrieved city data for %d cities in %v", chunkNum, len(cityData), cityTime)
 				}
 			}
 
 			var esData map[int64]map[string]interface{}
 			if len(editionData) > 0 {
-				log.Printf("all event chunk %d: Fetching Elasticsearch data for %d events in batches of 200", chunkNum, len(eventIDs))
+				log.Printf("allevent chunk %d: Fetching Elasticsearch data for %d events in batches of 200", chunkNum, len(eventIDs))
 				startTime = time.Now()
-				esData = fetchAllEventElasticsearchDataForEvents(esClient, config.ElasticsearchIndex, eventIDs)
+				esData = fetchalleventElasticsearchDataForEvents(esClient, config.ElasticsearchIndex, eventIDs)
 				esTime := time.Since(startTime)
-				log.Printf("all event chunk %d: Retrieved Elasticsearch data for %d events in %v", chunkNum, len(esData), esTime)
+				log.Printf("allevent chunk %d: Retrieved Elasticsearch data for %d events in %v", chunkNum, len(esData), esTime)
 			}
 
 			if len(editionData) > 0 {
+				log.Printf("allevent chunk %d: Building location_ch lookups for cities and states", chunkNum)
+				startTime := time.Now()
+				cityIDLookup, err := buildalleventCityIDLookupFromLocationCh(clickhouseConn)
+				if err != nil {
+					log.Printf("allevent chunk %d: WARNING - Failed to build city ID lookup: %v", chunkNum, err)
+					cityIDLookup = make(map[string]uint32) // Empty lookup on error
+				}
+				stateIDLookup, err := buildalleventStateIDLookupFromLocationCh(clickhouseConn)
+				if err != nil {
+					log.Printf("allevent chunk %d: WARNING - Failed to build state ID lookup: %v", chunkNum, err)
+					stateIDLookup = make(map[string]uint32) // Empty lookup on error
+				}
+				lookupTime := time.Since(startTime)
+				log.Printf("allevent chunk %d: Built location_ch lookups in %v (cities: %d, states: %d)", chunkNum, lookupTime, len(cityIDLookup), len(stateIDLookup))
+
 				companyLookup := make(map[int64]map[string]interface{})
 				if len(companyData) > 0 {
 					for _, company := range companyData {
@@ -1173,7 +1181,7 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					}
 				}
 
-				allEvents := make(map[int64][]map[string]interface{})
+				allevents := make(map[int64][]map[string]interface{})
 				currentEditionStartDates := make(map[int64]interface{})
 				currentEditionIDs := make(map[int64]int64)
 
@@ -1181,7 +1189,7 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 				editionsSkipped := 0
 				for _, edition := range editionData {
 					if eventID, ok := edition["event"].(int64); ok {
-						allEvents[eventID] = append(allEvents[eventID], edition)
+						allevents[eventID] = append(allevents[eventID], edition)
 						editionsProcessed++
 						if currentEditionID, exists := edition["current_edition_id"]; exists {
 							if editionID, ok := edition["edition_id"].(int64); ok {
@@ -1193,25 +1201,25 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 						}
 					} else {
 						editionsSkipped++
-						log.Printf("all event chunk %d: Skipping edition - invalid event ID: %v", chunkNum, edition["event"])
+						log.Printf("allevent chunk %d: Skipping edition - invalid event ID: %v", chunkNum, edition["event"])
 					}
 				}
-				log.Printf("all event chunk %d: Editions processed: %d, skipped: %d", chunkNum, editionsProcessed, editionsSkipped)
+				log.Printf("allevent chunk %d: Editions processed: %d, skipped: %d", chunkNum, editionsProcessed, editionsSkipped)
 
 				var clickHouseRecords []map[string]interface{}
 				completeCount := 0
 				partialCount := 0
 				skippedCount := 0
 
-				eventIDsForEditions := make([]int64, 0, len(allEvents))
-				for eventID := range allEvents {
+				eventIDsForEditions := make([]int64, 0, len(allevents))
+				for eventID := range allevents {
 					eventIDsForEditions = append(eventIDsForEditions, eventID)
 				}
 
 				eventDataLookup := make(map[int64]map[string]interface{})
 				if len(eventIDsForEditions) > 0 {
-					log.Printf("all event chunk %d: Fetching event data for %d events with editions", chunkNum, len(eventIDsForEditions))
-					eventDataForEditions := fetchAllEventDataForBatch(mysqlDB, eventIDsForEditions)
+					log.Printf("allevent chunk %d: Fetching event data for %d events with editions", chunkNum, len(eventIDsForEditions))
+					eventDataForEditions := fetchalleventEventDataForBatch(mysqlDB, eventIDsForEditions)
 					for _, eventData := range eventDataForEditions {
 						if eventID, ok := eventData["id"].(int64); ok {
 							eventDataLookup[eventID] = eventData
@@ -1221,15 +1229,15 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 
 				estimateDataMap := make(map[int64]string)
 				if len(eventIDsForEditions) > 0 {
-					estimateDataMap = fetchAllEventEstimateDataForBatch(mysqlDB, eventIDsForEditions)
+					estimateDataMap = fetchalleventEstimateDataForBatch(mysqlDB, eventIDsForEditions)
 				}
 
 				processedEconomicData := make(map[int64]map[string]interface{})
 				if len(estimateDataMap) > 0 {
-					processedEconomicData = processAllEventEconomicImpactDataParallel(estimateDataMap)
+					processedEconomicData = processalleventEconomicImpactDataParallel(estimateDataMap)
 				}
 
-				for eventID, editions := range allEvents {
+				for eventID, editions := range allevents {
 					eventData := eventDataLookup[eventID]
 
 					economicData := processedEconomicData[eventID]
@@ -1288,7 +1296,7 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							// Extract domain from edition website
 							var editionDomain string
 							if editionWebsite != nil {
-								editionDomain = shared.ExtractDomainFromWebsite(editionWebsite) // If no website, editionDomain remains empty string
+								editionDomain = shared.ExtractDomainFromWebsite(editionWebsite)
 							}
 
 							// Extract domain from company website
@@ -1298,7 +1306,7 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							}
 
 							// Determine edition type using simplified logic
-							editionType := determineAllEventEditionType(
+							editionType := determinealleventType(
 								edition["edition_start_date"],
 								currentEditionStartDates[eventID],
 								edition["edition_id"].(int64),
@@ -1325,6 +1333,101 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							globalUniqueRecords[uniqueKey] = true
 							globalMutex.Unlock()
 
+							// Get location_ch.id for edition city (query by name + country ISO)
+							var editionCityLocationChID *uint32
+							editionCountryISO := strings.ToUpper(shared.ConvertToString(eventData["country"]))
+							if city != nil && city["name"] != nil {
+								cityName := shared.ConvertToString(city["name"])
+								if cityName != "" {
+									cityNameStr := strings.TrimSpace(cityName)
+									// First try with country ISO
+									if editionCountryISO != "" && editionCountryISO != "NAN" {
+										cityKeyWithISO := fmt.Sprintf("%s|%s", cityNameStr, editionCountryISO)
+										if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
+											editionCityLocationChID = &locationChID
+										}
+									}
+									// If not found with ISO, try without ISO as fallback
+									if editionCityLocationChID == nil {
+										cityKeyWithoutISO := cityNameStr
+										if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
+											editionCityLocationChID = &locationChID
+										}
+									}
+								}
+							}
+
+							// Get location_ch.id for company city (query by name + country ISO)
+							var companyCityLocationChID *uint32
+							if companyCity != nil && companyCity["name"] != nil {
+								companyCityName := shared.ConvertToString(companyCity["name"])
+								companyCountryISO := strings.ToUpper(shared.ConvertToString(company["company_country"]))
+								if companyCityName != "" {
+									companyCityNameStr := strings.TrimSpace(companyCityName)
+									// First try with country ISO
+									if companyCountryISO != "" && companyCountryISO != "NAN" {
+										cityKeyWithISO := fmt.Sprintf("%s|%s", companyCityNameStr, companyCountryISO)
+										if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
+											companyCityLocationChID = &locationChID
+										}
+									}
+									// If not found with ISO, try without ISO as fallback
+									if companyCityLocationChID == nil {
+										cityKeyWithoutISO := companyCityNameStr
+										if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
+											companyCityLocationChID = &locationChID
+										}
+									}
+								}
+							}
+
+							// Get location_ch.id for venue city (query by name + country ISO)
+							var venueCityLocationChID *uint32
+							if venueCity != nil && venueCity["name"] != nil {
+								venueCityName := shared.ConvertToString(venueCity["name"])
+								venueCountryISO := strings.ToUpper(shared.ConvertToString(venue["venue_country"]))
+								if venueCityName != "" {
+									venueCityNameStr := strings.TrimSpace(venueCityName)
+									// First try with country ISO
+									if venueCountryISO != "" && venueCountryISO != "NAN" {
+										cityKeyWithISO := fmt.Sprintf("%s|%s", venueCityNameStr, venueCountryISO)
+										if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
+											venueCityLocationChID = &locationChID
+										}
+									}
+									// If not found with ISO, try without ISO as fallback
+									if venueCityLocationChID == nil {
+										cityKeyWithoutISO := venueCityNameStr
+										if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
+											venueCityLocationChID = &locationChID
+										}
+									}
+								}
+							}
+
+							// Get location_ch.id for edition city state (query by name + country ISO)
+							var editionCityStateLocationChID *uint32
+							if city != nil && city["state"] != nil {
+								stateName := shared.ConvertToString(city["state"])
+								if stateName != "" {
+									stateNameStr := strings.TrimSpace(stateName)
+									// First try with country ISO
+									if editionCountryISO != "" && editionCountryISO != "NAN" {
+										stateKeyWithISO := fmt.Sprintf("%s|%s", stateNameStr, editionCountryISO)
+										if locationChID, exists := stateIDLookup[stateKeyWithISO]; exists {
+											editionCityStateLocationChID = &locationChID
+										}
+									}
+									// If not found with ISO, try without ISO as fallback
+									if editionCityStateLocationChID == nil {
+										stateKeyWithoutISO := stateNameStr
+										if locationChID, exists := stateIDLookup[stateKeyWithoutISO]; exists {
+											editionCityStateLocationChID = &locationChID
+										}
+									}
+								}
+							}
+
 							record := map[string]interface{}{
 								"event_id":          eventData["id"],
 								"event_uuid":        shared.GenerateEventUUID(shared.ConvertToUInt32(eventData["id"]), eventData["created"]),
@@ -1335,8 +1438,13 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								"start_date":        eventData["start_date"],
 								"end_date":          eventData["end_date"],
 								"edition_id":        edition["edition_id"],
-								"edition_country":   strings.ToUpper(shared.ConvertToString(eventData["country"])),
-								"edition_city":      edition["edition_city"],
+								"edition_country":   editionCountryISO,
+								"edition_city": func() interface{} {
+									if editionCityLocationChID != nil {
+										return uint32(*editionCityLocationChID)
+									}
+									return nil
+								}(),
 								"edition_city_name": shared.ConvertToString(city["name"]),
 								"edition_city_state": func() string {
 									if city != nil && city["state"] != nil {
@@ -1349,11 +1457,8 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 									return "any"
 								}(),
 								"edition_city_state_id": func() interface{} {
-									if city != nil && city["state_id"] != nil {
-										if stateID, ok := city["state_id"].(int64); ok && stateID > 0 {
-											stateIDUint32 := uint32(stateID)
-											return stateIDUint32
-										}
+									if editionCityStateLocationChID != nil {
+										return uint32(*editionCityStateLocationChID)
 									}
 									return nil
 								}(),
@@ -1374,7 +1479,12 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 									}
 									return nil
 								}(),
-								"company_city": company["company_city"],
+								"company_city": func() interface{} {
+									if companyCityLocationChID != nil {
+										return uint32(*companyCityLocationChID)
+									}
+									return nil
+								}(),
 								"company_city_name": func() *string {
 									if companyCity != nil && companyCity["name"] != nil {
 										nameStr := shared.ConvertToString(companyCity["name"])
@@ -1385,7 +1495,12 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								"venue_id":      venue["id"],
 								"venue_name":    venue["venue_name"],
 								"venue_country": strings.ToUpper(shared.ConvertToString(venue["venue_country"])),
-								"venue_city":    venue["venue_city"],
+								"venue_city": func() interface{} {
+									if venueCityLocationChID != nil {
+										return uint32(*venueCityLocationChID)
+									}
+									return nil
+								}(),
 								"venue_city_name": func() *string {
 									if venueCity != nil && venueCity["name"] != nil {
 										nameStr := shared.ConvertToString(venueCity["name"])
@@ -1425,7 +1540,7 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 									val := uint32(0)
 									return &val
 								}(),
-								"maturity":                        determineAllEventMaturity(esInfoMap["total_edition"]),
+								"maturity":                        determinealleventMaturity(esInfoMap["total_edition"]),
 								"event_pricing":                   esInfoMap["event_pricing"],
 								"event_logo":                      esInfoMap["event_logo"],
 								"event_estimatedVisitors":         esInfoMap["eventEstimatedTag"],
@@ -1579,46 +1694,46 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 						}
 					} else {
 						skippedCount++
-						log.Printf("all event chunk %d: Skipping event %d - no event data found", chunkNum, eventID)
+						log.Printf("allevent chunk %d: Skipping event %d - no event data found", chunkNum, eventID)
 					}
 				}
 
 				// Count events with missing current editions
 				eventsWithMissingCurrentEdition := 0
-				for eventID := range allEvents {
+				for eventID := range allevents {
 					if currentEditionIDs[eventID] == 0 {
 						eventsWithMissingCurrentEdition++
 					}
 				}
 
-				log.Printf("all event chunk %d: Data completeness - Complete: %d, Partial: %d, Skipped: %d",
+				log.Printf("allevent chunk %d: Data completeness - Complete: %d, Partial: %d, Skipped: %d",
 					chunkNum, completeCount, partialCount, skippedCount)
 				if eventsWithMissingCurrentEdition > 0 {
-					log.Printf("all event chunk %d: Warning - %d events have no current edition (event_edition is NULL)",
+					log.Printf("allevent chunk %d: Warning - %d events have no current edition (allevent is NULL)",
 						chunkNum, eventsWithMissingCurrentEdition)
 				}
 
 				// Insert collected records into ClickHouse
-				log.Printf("all event chunk %d: Total records collected: %d", chunkNum, len(clickHouseRecords))
+				log.Printf("allevent chunk %d: Total records collected: %d", chunkNum, len(clickHouseRecords))
 				if len(clickHouseRecords) > 0 {
-					log.Printf("all event chunk %d: Attempting to insert %d records into ClickHouse...", chunkNum, len(clickHouseRecords))
+					log.Printf("allevent chunk %d: Attempting to insert %d records into ClickHouse...", chunkNum, len(clickHouseRecords))
 
 					insertErr := shared.RetryWithBackoff(
 						func() error {
-							return insertallEventDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers, config)
+							return insertalleventDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers, config)
 						},
 						3,
 						fmt.Sprintf("ClickHouse insertion for chunk %d", chunkNum),
 					)
 
 					if insertErr != nil {
-						log.Printf("all event chunk %d: ClickHouse insertion failed after retries: %v", chunkNum, insertErr)
-						log.Printf("all event chunk %d: %d records failed to insert - consider manual retry", chunkNum, len(clickHouseRecords))
+						log.Printf("allevent chunk %d: ClickHouse insertion failed after retries: %v", chunkNum, insertErr)
+						log.Printf("allevent chunk %d: %d records failed to insert - consider manual retry", chunkNum, len(clickHouseRecords))
 					} else {
-						log.Printf("all event chunk %d: Successfully inserted %d records into ClickHouse", chunkNum, len(clickHouseRecords))
+						log.Printf("allevent chunk %d: Successfully inserted %d records into ClickHouse", chunkNum, len(clickHouseRecords))
 					}
 				} else {
-					log.Printf("all event chunk %d: No records to insert into ClickHouse", chunkNum)
+					log.Printf("allevent chunk %d: No records to insert into ClickHouse", chunkNum)
 				}
 			}
 		}
@@ -1640,13 +1755,13 @@ func processallEventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 		}
 	}
 
-	results <- fmt.Sprintf("all event chunk %d completed successfully", chunkNum)
+	results <- fmt.Sprintf("allevent chunk %d completed successfully", chunkNum)
 }
 
-// 1. current_edition: The edition_id that matches event.event_edition (only one per event)
+// 1. current_edition: The edition_id that matches event.allevent (only one per event)
 // 2. future_edition: All editions with start_date > current_edition start_date
 // 3. past_edition: All editions with start_date < current_edition start_date
-func determineAllEventEditionType(editionStartDate, currentEditionStartDate interface{}, editionID, currentEditionID int64) *string {
+func determinealleventType(editionStartDate, currentEditionStartDate interface{}, editionID, currentEditionID int64) *string {
 	// edition is the current edition, return "current_edition"
 	if editionID == currentEditionID {
 		editionType := "current_edition"
@@ -1695,8 +1810,9 @@ func determineAllEventEditionType(editionStartDate, currentEditionStartDate inte
 	}
 }
 
+// determineMaturity determines the maturity level based on total_edition count
 // new: 1 edition, growing: 2-3 editions, established: 4-8 editions, flagship: 9+ editions
-func determineAllEventMaturity(totalEdition interface{}) *string {
+func determinealleventMaturity(totalEdition interface{}) *string {
 	if totalEdition == nil {
 		return nil
 	}
@@ -1744,7 +1860,111 @@ func determineAllEventMaturity(totalEdition interface{}) *string {
 	return &maturity
 }
 
-func extractAllEventCityIDs(editionData []map[string]interface{}) []int64 {
+func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[string]uint32, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT id, name, iso
+		FROM location_ch
+		WHERE location_type = 'CITY'
+	`
+
+	rows, err := clickhouseConn.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query location_ch for cities: %v", err)
+	}
+	defer rows.Close()
+
+	lookup := make(map[string]uint32)
+	for rows.Next() {
+		var locationChID uint32
+		var cityName *string
+		var countryISO *string
+		if err := rows.Scan(&locationChID, &cityName, &countryISO); err != nil {
+			log.Printf("Warning: Failed to scan city row: %v", err)
+			continue
+		}
+
+		if cityName != nil && *cityName != "" {
+			cityNameStr := strings.TrimSpace(*cityName)
+			isoStr := ""
+			if countryISO != nil && *countryISO != "" {
+				isoStr = strings.ToUpper(strings.TrimSpace(*countryISO))
+				if isoStr == "NAN" {
+					isoStr = ""
+				}
+			}
+			// Store both with and without ISO for flexible matching
+			keyWithISO := fmt.Sprintf("%s|%s", cityNameStr, isoStr)
+			keyWithoutISO := cityNameStr
+			if isoStr != "" {
+				lookup[keyWithISO] = locationChID
+			}
+			// Also store without ISO for fallback (only if not already exists to avoid overwriting)
+			if _, exists := lookup[keyWithoutISO]; !exists {
+				lookup[keyWithoutISO] = locationChID
+			}
+		}
+	}
+
+	log.Printf("Built city ID lookup: %d cities mapped from location_ch", len(lookup))
+	return lookup, nil
+}
+
+func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[string]uint32, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT id, name, iso
+		FROM location_ch
+		WHERE location_type = 'STATE'
+	`
+
+	rows, err := clickhouseConn.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query location_ch for states: %v", err)
+	}
+	defer rows.Close()
+
+	lookup := make(map[string]uint32)
+	for rows.Next() {
+		var locationChID uint32
+		var stateName *string
+		var countryISO *string
+		if err := rows.Scan(&locationChID, &stateName, &countryISO); err != nil {
+			log.Printf("Warning: Failed to scan state row: %v", err)
+			continue
+		}
+
+		if stateName != nil && *stateName != "" {
+			stateNameStr := strings.TrimSpace(*stateName)
+			isoStr := ""
+			if countryISO != nil && *countryISO != "" {
+				isoStr = strings.ToUpper(strings.TrimSpace(*countryISO))
+				if isoStr == "NAN" {
+					isoStr = ""
+				}
+			}
+			// Store both with and without ISO for flexible matching
+			keyWithISO := fmt.Sprintf("%s|%s", stateNameStr, isoStr)
+			keyWithoutISO := stateNameStr
+			if isoStr != "" {
+				lookup[keyWithISO] = locationChID
+			}
+			// Also store without ISO for fallback (only if not already exists to avoid overwriting)
+			if _, exists := lookup[keyWithoutISO]; !exists {
+				lookup[keyWithoutISO] = locationChID
+			}
+		}
+	}
+
+	log.Printf("Built state ID lookup: %d states mapped from location_ch", len(lookup))
+	return lookup, nil
+}
+
+func extractalleventCityIDs(editionData []map[string]interface{}) []int64 {
 	var cityIDs []int64
 	seen := make(map[int64]bool)
 	nullCount := 0
@@ -1770,7 +1990,7 @@ func extractAllEventCityIDs(editionData []map[string]interface{}) []int64 {
 	return cityIDs
 }
 
-func fetchAllEventElasticsearchBatch(esClient *elasticsearch.Client, indexName string, eventIDs []int64) map[int64]map[string]interface{} {
+func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName string, eventIDs []int64) map[int64]map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
 	}
@@ -1789,7 +2009,6 @@ func fetchAllEventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 
 	queryJSON, _ := json.Marshal(query)
 
-	// Execute search with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
@@ -1809,7 +2028,6 @@ func fetchAllEventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 		return results
 	}
 
-	// Parse response
 	var result map[string]interface{}
 	if err := json.NewDecoder(searchRes.Body).Decode(&result); err != nil {
 		log.Printf("Warning: Failed to decode Elasticsearch response: %v", err)
@@ -1819,7 +2037,6 @@ func fetchAllEventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 	hits := result["hits"].(map[string]interface{})
 	hitsArray := hits["hits"].([]interface{})
 
-	// Process each hit
 	if len(hitsArray) == 0 {
 		return results
 	}
@@ -1828,10 +2045,8 @@ func fetchAllEventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 		hitMap := hit.(map[string]interface{})
 		source := hitMap["_source"].(map[string]interface{})
 
-		// Handle id as either string or number (changed from event_id to id)
 		var eventIDInt int64
 		if eventIDStr, ok := source["id"].(string); ok {
-			// Convert string to int64
 			if parsedID, err := strconv.ParseInt(eventIDStr, 10, 64); err == nil {
 				eventIDInt = parsedID
 			} else {
@@ -1839,7 +2054,6 @@ func fetchAllEventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 				continue
 			}
 		} else if eventIDNum, ok := source["id"].(float64); ok {
-			// Convert float64 to int64
 			eventIDInt = int64(eventIDNum)
 		} else {
 			log.Printf("Warning: Unexpected id type: %T, value: %v", source["id"], source["id"])
@@ -1860,21 +2074,18 @@ func fetchAllEventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 
 		convertStringToUInt8 := func(key string) interface{} {
 			if val, exists := source[key]; exists && val != nil {
-				// Handle float64 values directly (common from Elasticsearch)
 				if floatVal, ok := val.(float64); ok {
 					if floatVal >= 0 && floatVal <= 255 && floatVal == float64(uint8(floatVal)) {
 						return uint8(floatVal)
 					}
 					return nil
 				}
-				// Handle other numeric types
 				if intVal, ok := val.(int); ok {
 					if intVal >= 0 && intVal <= 255 {
 						return uint8(intVal)
 					}
 					return nil
 				}
-				// Handle string conversion as fallback
 				strVal := shared.ConvertToString(val)
 				if strVal != "" {
 					if num, err := strconv.ParseUint(strVal, 10, 8); err == nil {
@@ -1949,17 +2160,17 @@ func fetchAllEventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 	return results
 }
 
-func fetchAllEventElasticsearchDataForEvents(esClient *elasticsearch.Client, indexName string, eventIDs []int64) map[int64]map[string]interface{} {
+func fetchalleventElasticsearchDataForEvents(esClient *elasticsearch.Client, indexName string, eventIDs []int64) map[int64]map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
 	}
 
 	results := make(map[int64]map[string]interface{})
-	batchSize := 200 //reduced batch size to prevent Elasticsearch timeouts
+	batchSize := 200
 
 	expectedBatches := (len(eventIDs) + batchSize - 1) / batchSize
 	resultsChan := make(chan map[int64]map[string]interface{}, expectedBatches)
-	semaphore := make(chan struct{}, 5) //reduced concurrency to prevent Elasticsearch overload
+	semaphore := make(chan struct{}, 5)
 
 	var allResults []map[int64]map[string]interface{}
 	var wg sync.WaitGroup
@@ -1980,16 +2191,14 @@ func fetchAllEventElasticsearchDataForEvents(esClient *elasticsearch.Client, ind
 				wg.Done()
 			}()
 
-			// Add small delay between batches to reduce Elasticsearch pressure
 			if batchNum > 0 {
 				time.Sleep(100 * time.Millisecond)
 			}
 
-			// Add retry logic for failed batches
 			var batchResults map[int64]map[string]interface{}
-			maxRetries := 3 //increased retries
+			maxRetries := 3
 			for retry := 0; retry <= maxRetries; retry++ {
-				batchResults = fetchAllEventElasticsearchBatch(esClient, indexName, eventIDBatch)
+				batchResults = fetchalleventElasticsearchBatch(esClient, indexName, eventIDBatch)
 				if len(batchResults) > 0 || retry == maxRetries {
 					if retry > 0 {
 						log.Printf("Elasticsearch batch %d: Success after %d retries, got %d results", batchNum, retry, len(batchResults))
@@ -1997,7 +2206,7 @@ func fetchAllEventElasticsearchDataForEvents(esClient *elasticsearch.Client, ind
 					break
 				}
 				if retry < maxRetries {
-					backoffTime := time.Duration(retry+1) * 3 * time.Second // Increased backoff time
+					backoffTime := time.Duration(retry+1) * 3 * time.Second
 					log.Printf("Elasticsearch batch %d: Retry %d/%d after %v backoff", batchNum, retry+1, maxRetries, backoffTime)
 					time.Sleep(backoffTime)
 				}
@@ -2029,7 +2238,6 @@ collectLoop:
 		}
 	}
 
-	// Merge all batch results
 	for _, batchResult := range allResults {
 		for eventID, data := range batchResult {
 			results[eventID] = data
@@ -2040,14 +2248,13 @@ collectLoop:
 	return results
 }
 
-// inserts all event data into allevent_ch
-func insertallEventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[string]interface{}, numWorkers int, config shared.Config) error {
+func insertalleventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[string]interface{}, numWorkers int, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
 	}
 
 	if numWorkers <= 1 {
-		return insertallEventDataSingleWorker(clickhouseConn, records, config)
+		return insertalleventDataSingleWorker(clickhouseConn, records, config)
 	}
 
 	batchSize := (len(records) + numWorkers - 1) / numWorkers
@@ -2068,7 +2275,7 @@ func insertallEventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[
 		go func(start, end int) {
 			defer func() { <-semaphore }()
 			batch := records[start:end]
-			err := insertallEventDataSingleWorker(clickhouseConn, batch, config)
+			err := insertalleventDataSingleWorker(clickhouseConn, batch, config)
 			results <- err
 		}(start, end)
 	}
@@ -2082,7 +2289,7 @@ func insertallEventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[
 	return nil
 }
 
-func insertallEventDataSingleWorker(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) error {
+func insertalleventDataSingleWorker(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -2096,22 +2303,22 @@ func insertallEventDataSingleWorker(clickhouseConn driver.Conn, records []map[st
 			}
 			chunk := records[i:end]
 			log.Printf("Inserting chunk %d-%d (%d records)", i+1, end, len(chunk))
-			if err := insertallEventDataChunk(clickhouseConn, chunk, config); err != nil {
+			if err := insertalleventDataChunk(clickhouseConn, chunk, config); err != nil {
 				return fmt.Errorf("failed to insert chunk %d-%d: %v", i+1, end, err)
 			}
 		}
 		return nil
 	}
 
-	return insertallEventDataChunk(clickhouseConn, records, config)
+	return insertalleventDataChunk(clickhouseConn, records, config)
 }
 
-func insertallEventDataChunk(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) error {
+func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second) // 15 minutes
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second)
 	defer cancel()
 
 	insertSQL := `
@@ -2161,87 +2368,87 @@ func insertallEventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 	}
 
 	for _, record := range records {
-		allEventRecord := convertToallEventRecord(record)
+		alleventRecord := convertToalleventRecord(record)
 
 		err := batch.Append(
-			allEventRecord.EventID,                         // event_id: UInt32 NOT NULL
-			allEventRecord.EventUUID,                       // event_uuid: UUID NOT NULL
-			allEventRecord.EventName,                       // event_name: String NOT NULL
-			allEventRecord.EventAbbrName,                   // event_abbr_name: Nullable(String)
-			allEventRecord.EventDescription,                // event_description: Nullable(String)
-			allEventRecord.EventPunchline,                  // event_punchline: Nullable(String)
-			allEventRecord.EventAvgRating,                  // event_avgRating: Nullable(Decimal(3,2))
-			allEventRecord.StartDate,                       // start_date: Date NOT NULL
-			allEventRecord.EndDate,                         // end_date: Date NOT NULL
-			allEventRecord.EditionID,                       // edition_id: UInt32 NOT NULL
-			allEventRecord.EditionCountry,                  // edition_country: LowCardinality(FixedString(2)) NOT NULL
-			allEventRecord.EditionCity,                     // edition_city: UInt32 NOT NULL
-			allEventRecord.EditionCityName,                 // edition_city_name: String NOT NULL
-			allEventRecord.EditionCityStateID,              // edition_city_state_id: Nullable(UInt32)
-			allEventRecord.EditionCityState,                // edition_city_state: LowCardinality(String) NOT NULL
-			allEventRecord.EditionCityLat,                  // edition_city_lat: Float64 NOT NULL
-			allEventRecord.EditionCityLong,                 // edition_city_long: Float64 NOT NULL
-			allEventRecord.CompanyID,                       // company_id: Nullable(UInt32)
-			allEventRecord.CompanyName,                     // company_name: Nullable(String)
-			allEventRecord.CompanyDomain,                   // company_domain: Nullable(String)
-			allEventRecord.CompanyWebsite,                  // company_website: Nullable(String)
-			allEventRecord.CompanyCountry,                  // company_country: LowCardinality(Nullable(FixedString(2)))
-			allEventRecord.CompanyState,                    // company_state: LowCardinality(Nullable(String))
-			allEventRecord.CompanyCity,                     // company_city: Nullable(UInt32)
-			allEventRecord.CompanyCityName,                 // company_city_name: Nullable(String)
-			allEventRecord.VenueID,                         // venue_id: Nullable(UInt32)
-			allEventRecord.VenueName,                       // venue_name: Nullable(String)
-			allEventRecord.VenueCountry,                    // venue_country: LowCardinality(Nullable(FixedString(2)))
-			allEventRecord.VenueCity,                       // venue_city: Nullable(UInt32)
-			allEventRecord.VenueCityName,                   // venue_city_name: Nullable(String)
-			allEventRecord.VenueLat,                        // venue_lat: Nullable(Float64)
-			allEventRecord.VenueLong,                       // venue_long: Nullable(Float64)
-			allEventRecord.Published,                       // published: Int8 NOT NULL
-			allEventRecord.Status,                          // status: LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
-			allEventRecord.EditionsAudianceType,            // editions_audiance_type: UInt16 NOT NULL
-			allEventRecord.EditionFunctionality,            // edition_functionality: LowCardinality(String) NOT NULL
-			allEventRecord.EditionWebsite,                  // edition_website: Nullable(String)
-			allEventRecord.EditionDomain,                   // edition_domain: Nullable(String)
-			allEventRecord.EditionType,                     // edition_type: LowCardinality(Nullable(String)) DEFAULT 'NA'
-			allEventRecord.EventFollowers,                  // event_followers: Nullable(UInt32)
-			allEventRecord.EditionFollowers,                // edition_followers: Nullable(UInt32)
-			allEventRecord.EventExhibitor,                  // event_exhibitor: Nullable(UInt32)
-			allEventRecord.EditionExhibitor,                // edition_exhibitor: Nullable(UInt32)
-			allEventRecord.ExhibitorsUpperBound,            // exhibitors_upper_bound: Nullable(UInt32)
-			allEventRecord.ExhibitorsLowerBound,            // exhibitors_lower_bound: Nullable(UInt32)
-			allEventRecord.ExhibitorsMean,                  // exhibitors_mean: Nullable(UInt32)
-			allEventRecord.EventSponsor,                    // event_sponsor: Nullable(UInt32)
-			allEventRecord.EditionSponsor,                  // edition_sponsor: Nullable(UInt32)
-			allEventRecord.EventSpeaker,                    // event_speaker: Nullable(UInt32)
-			allEventRecord.EditionSpeaker,                  // edition_speaker: Nullable(UInt32)
-			allEventRecord.EventCreated,                    // event_created: DateTime NOT NULL
-			allEventRecord.EditionCreated,                  // edition_created: DateTime NOT NULL
-			allEventRecord.EventHybrid,                     // event_hybrid: Nullable(UInt32)
-			allEventRecord.IsBranded,                       // isBranded: Nullable(UInt32)
-			allEventRecord.Maturity,                        // maturity: LowCardinality(Nullable(String))
-			allEventRecord.EventPricing,                    // event_pricing: LowCardinality(Nullable(String))
-			allEventRecord.EventLogo,                       // event_logo: Nullable(String)
-			allEventRecord.EventEstimatedVisitors,          // event_estimatedVisitors: LowCardinality(Nullable(String))
-			allEventRecord.EventFrequency,                  // event_frequency: LowCardinality(Nullable(String))
-			allEventRecord.InboundScore,                    // inboundScore: Nullable(UInt32)
-			allEventRecord.InternationalScore,              // internationalScore: Nullable(UInt32)
-			allEventRecord.RepeatSentimentChangePercentage, // repeatSentimentChangePercentage: Nullable(Float64)
-			allEventRecord.AudienceZone,                    // audienceZone: LowCardinality(Nullable(String))
-			allEventRecord.EventEconomicFoodAndBevarage,    // event_economic_FoodAndBevarage: Nullable(Float64)
-			allEventRecord.EventEconomicTransportation,     // event_economic_Transportation: Nullable(Float64)
-			allEventRecord.EventEconomicAccomodation,       // event_economic_Accomodation: Nullable(Float64)
-			allEventRecord.EventEconomicUtilities,          // event_economic_Utilities: Nullable(Float64)
-			allEventRecord.EventEconomicFlights,            // event_economic_flights: Nullable(Float64)
-			allEventRecord.EventEconomicValue,              // event_economic_value: Nullable(Float64)
-			allEventRecord.EventEconomicDayWiseImpact,      // event_economic_dayWiseEconomicImpact: JSON
-			allEventRecord.EventEconomicBreakdown,          // event_economic_breakdown: JSON
-			allEventRecord.EventEconomicImpact,             // event_economic_impact: JSON
-			allEventRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
+			alleventRecord.EventID,                         // event_id: UInt32 NOT NULL
+			alleventRecord.EventUUID,                       // event_uuid: UUID NOT NULL
+			alleventRecord.EventName,                       // event_name: String NOT NULL
+			alleventRecord.EventAbbrName,                   // event_abbr_name: Nullable(String)
+			alleventRecord.EventDescription,                // event_description: Nullable(String)
+			alleventRecord.EventPunchline,                  // event_punchline: Nullable(String)
+			alleventRecord.EventAvgRating,                  // event_avgRating: Nullable(Decimal(3,2))
+			alleventRecord.StartDate,                       // start_date: Date NOT NULL
+			alleventRecord.EndDate,                         // end_date: Date NOT NULL
+			alleventRecord.EditionID,                       // edition_id: UInt32 NOT NULL
+			alleventRecord.EditionCountry,                  // edition_country: LowCardinality(FixedString(2)) NOT NULL
+			alleventRecord.EditionCity,                     // edition_city: UInt32 NOT NULL
+			alleventRecord.EditionCityName,                 // edition_city_name: String NOT NULL
+			alleventRecord.EditionCityStateID,              // edition_city_state_id: Nullable(UInt32)
+			alleventRecord.EditionCityState,                // edition_city_state: LowCardinality(String) NOT NULL
+			alleventRecord.EditionCityLat,                  // edition_city_lat: Float64 NOT NULL
+			alleventRecord.EditionCityLong,                 // edition_city_long: Float64 NOT NULL
+			alleventRecord.CompanyID,                       // company_id: Nullable(UInt32)
+			alleventRecord.CompanyName,                     // company_name: Nullable(String)
+			alleventRecord.CompanyDomain,                   // company_domain: Nullable(String)
+			alleventRecord.CompanyWebsite,                  // company_website: Nullable(String)
+			alleventRecord.CompanyCountry,                  // company_country: LowCardinality(Nullable(FixedString(2)))
+			alleventRecord.CompanyState,                    // company_state: LowCardinality(Nullable(String))
+			alleventRecord.CompanyCity,                     // company_city: Nullable(UInt32)
+			alleventRecord.CompanyCityName,                 // company_city_name: Nullable(String)
+			alleventRecord.VenueID,                         // venue_id: Nullable(UInt32)
+			alleventRecord.VenueName,                       // venue_name: Nullable(String)
+			alleventRecord.VenueCountry,                    // venue_country: LowCardinality(Nullable(FixedString(2)))
+			alleventRecord.VenueCity,                       // venue_city: Nullable(UInt32)
+			alleventRecord.VenueCityName,                   // venue_city_name: Nullable(String)
+			alleventRecord.VenueLat,                        // venue_lat: Nullable(Float64)
+			alleventRecord.VenueLong,                       // venue_long: Nullable(Float64)
+			alleventRecord.Published,                       // published: Int8 NOT NULL
+			alleventRecord.Status,                          // status: LowCardinality(FixedString(1)) NOT NULL DEFAULT 'A'
+			alleventRecord.EditionsAudianceType,            // editions_audiance_type: UInt16 NOT NULL
+			alleventRecord.EditionFunctionality,            // edition_functionality: LowCardinality(String) NOT NULL
+			alleventRecord.EditionWebsite,                  // edition_website: Nullable(String)
+			alleventRecord.EditionDomain,                   // edition_domain: Nullable(String)
+			alleventRecord.EditionType,                     // edition_type: LowCardinality(Nullable(String)) DEFAULT 'NA'
+			alleventRecord.EventFollowers,                  // event_followers: Nullable(UInt32)
+			alleventRecord.EditionFollowers,                // edition_followers: Nullable(UInt32)
+			alleventRecord.EventExhibitor,                  // event_exhibitor: Nullable(UInt32)
+			alleventRecord.EditionExhibitor,                // edition_exhibitor: Nullable(UInt32)
+			alleventRecord.ExhibitorsUpperBound,            // exhibitors_upper_bound: Nullable(UInt32)
+			alleventRecord.ExhibitorsLowerBound,            // exhibitors_lower_bound: Nullable(UInt32)
+			alleventRecord.ExhibitorsMean,                  // exhibitors_mean: Nullable(UInt32)
+			alleventRecord.EventSponsor,                    // event_sponsor: Nullable(UInt32)
+			alleventRecord.EditionSponsor,                  // edition_sponsor: Nullable(UInt32)
+			alleventRecord.EventSpeaker,                    // event_speaker: Nullable(UInt32)
+			alleventRecord.EditionSpeaker,                  // edition_speaker: Nullable(UInt32)
+			alleventRecord.EventCreated,                    // event_created: DateTime NOT NULL
+			alleventRecord.EditionCreated,                  // edition_created: DateTime NOT NULL
+			alleventRecord.EventHybrid,                     // event_hybrid: Nullable(UInt32)
+			alleventRecord.IsBranded,                       // isBranded: Nullable(UInt32)
+			alleventRecord.Maturity,                        // maturity: LowCardinality(Nullable(String))
+			alleventRecord.EventPricing,                    // event_pricing: LowCardinality(Nullable(String))
+			alleventRecord.EventLogo,                       // event_logo: Nullable(String)
+			alleventRecord.EventEstimatedVisitors,          // event_estimatedVisitors: LowCardinality(Nullable(String))
+			alleventRecord.EventFrequency,                  // event_frequency: LowCardinality(Nullable(String))
+			alleventRecord.InboundScore,                    // inboundScore: Nullable(UInt32)
+			alleventRecord.InternationalScore,              // internationalScore: Nullable(UInt32)
+			alleventRecord.RepeatSentimentChangePercentage, // repeatSentimentChangePercentage: Nullable(Float64)
+			alleventRecord.AudienceZone,                    // audienceZone: LowCardinality(Nullable(String))
+			alleventRecord.EventEconomicFoodAndBevarage,    // event_economic_FoodAndBevarage: Nullable(Float64)
+			alleventRecord.EventEconomicTransportation,     // event_economic_Transportation: Nullable(Float64)
+			alleventRecord.EventEconomicAccomodation,       // event_economic_Accomodation: Nullable(Float64)
+			alleventRecord.EventEconomicUtilities,          // event_economic_Utilities: Nullable(Float64)
+			alleventRecord.EventEconomicFlights,            // event_economic_flights: Nullable(Float64)
+			alleventRecord.EventEconomicValue,              // event_economic_value: Nullable(Float64)
+			alleventRecord.EventEconomicDayWiseImpact,      // event_economic_dayWiseEconomicImpact: JSON
+			alleventRecord.EventEconomicBreakdown,          // event_economic_breakdown: JSON
+			alleventRecord.EventEconomicImpact,             // event_economic_impact: JSON
+			alleventRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append record to batch: %v", err)
 			log.Printf("Record data: EventID=%d, EventName=%s, EventAvgRating=%v",
-				allEventRecord.EventID, allEventRecord.EventName, allEventRecord.EventAvgRating)
+				alleventRecord.EventID, alleventRecord.EventName, alleventRecord.EventAvgRating)
 			return fmt.Errorf("failed to append record to batch: %v", err)
 		}
 	}
@@ -2251,6 +2458,6 @@ func insertallEventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
-	log.Printf("OK: Successfully inserted %d all event records", len(records))
+	log.Printf("OK: Successfully inserted %d allevent records", len(records))
 	return nil
 }
