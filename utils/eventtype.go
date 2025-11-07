@@ -1,3 +1,89 @@
+// event_type_priority = {
+//     1 : {
+//         "priority" : 1,
+//         "group" : "B2B"
+//         },
+//     2 : {
+//         "priority" : 2,
+//         "group" : "B2B"
+//         },
+//     3 : {
+//         "priority" : 3,
+//         "group" : "B2B"
+//         },
+//     5 : {
+//         "priority" : 4,
+//         "group" : "B2C"
+//         },
+//     7 : {
+//         "priority" : 5,
+//         "group" : "B2C"
+//         },
+//     6 : {
+//         "priority" : 6,
+//         "group" : "B2C"
+//         },
+//     12 : {
+//         "priority" : 7,
+//         "group" : "B2C"
+//         },
+//     13 : {
+//         "priority" : 8,
+//         "group" : "B2C"
+//         },
+// }
+
+// event_type_groups = {
+//     1 : ['business','attended'],
+//     2 : ['business','attended'],
+//     3 : ['business','attended'],
+//     5 : ['social','attended'],
+//     6 : ['social','attended'],
+//     7 : ['social','attended'],
+//     12 : ['social','attended'],
+//     13 : ['social','attended'],
+// }
+
+// holiday_event_types = [
+//     {
+//         "name" : "Holiday",
+//         "slug" : "holiday",
+//     },
+//     {
+//         "name" : "Local Holiday",
+//         "slug" : "local-holiday",
+//     },
+//     {
+//         "name" : "National Holiday",
+//         "slug" : "national-holiday",
+//     },
+//     {
+//         "name" : "International Holiday",
+//         "slug" : "international-holiday",
+//     },
+//     {
+//         "name" : "Observance Holiday",
+//         "slug" : "observance-holiday",
+//     },
+//     {
+//         "name" : "Cultural Holiday",
+//         "slug" : "cultural-holiday",
+//     },
+//     {
+//         "name" : "Religious Holiday",
+//         "slug" : "religious-holiday",
+//     }
+// ]
+
+// holiday_types_mapping = {
+//     "local" : "local-holiday",
+//     "national" : "national-holiday",
+//     "international" : "international-holiday",
+//     "observance" : "observance-holiday",
+//     "religious" : "religious-holiday",
+//     "cultural" : "cultural-holiday",
+// }
+
 package utils
 
 import (
@@ -13,15 +99,65 @@ import (
 )
 
 type EventTypeEventChRecord struct {
-	EventTypeID   uint32 `ch:"eventtype_id"`
-	EventTypeUUID string `ch:"eventtype_uuid"`
-	EventID       uint32 `ch:"event_id"`
-	Published     int8   `ch:"published"`
-	Name          string `ch:"name"`
-	Slug          string `ch:"slug"`
-	EventAudience uint16 `ch:"event_audience"`
-	Created       string `ch:"created"`
-	Version       uint32 `ch:"version"`
+	EventTypeID    uint32   `ch:"eventtype_id"`
+	EventTypeUUID  string   `ch:"eventtype_uuid"`
+	EventID        uint32   `ch:"event_id"`
+	Published      int8     `ch:"published"`
+	Name           string   `ch:"name"`
+	Slug           string   `ch:"slug"`
+	EventAudience  uint16   `ch:"event_audience"`
+	EventGroupType string   `ch:"eventGroupType"` // LowCardinality(String) - hardcoded to 'ATTENDED'
+	Groups         []string `ch:"groups"`         // Array(String) - empty array when not found
+	Priority       *int8    `ch:"priority"`       // Nullable(Int8)
+	Created        string   `ch:"created"`
+	Version        uint32   `ch:"version"`
+}
+
+
+var eventTypePriority = map[uint32]int8{
+	1:  1,
+	2:  2,
+	3:  3,
+	5:  4,
+	7:  5,
+	6:  6,
+	12: 7,
+	13: 8,
+}
+
+var eventTypeGroups = map[uint32][]string{
+	1:  {"business", "attended"},
+	2:  {"business", "attended"},
+	3:  {"business", "attended"},
+	5:  {"social", "attended"},
+	6:  {"social", "attended"},
+	7:  {"social", "attended"},
+	12: {"social", "attended"},
+	13: {"social", "attended"},
+}
+
+func getPriority(eventTypeID uint32) *int8 {
+	if priority, ok := eventTypePriority[eventTypeID]; ok {
+		if priority == 0 {
+			return nil
+		}
+		return &priority
+	}
+	return nil
+}
+
+func getGroups(eventTypeID uint32) []string {
+	if groups, ok := eventTypeGroups[eventTypeID]; ok {
+		return groups
+	}
+	return []string{}
+}
+
+func getEventGroupType(eventTypeID uint32) string {
+	if _, ok := eventTypePriority[eventTypeID]; ok {
+		return "ATTENDED"
+	}
+	return "NON_ATTENDED"
 }
 
 func ProcessEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
@@ -77,14 +213,12 @@ func ProcessEventTypeEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, co
 	log.Println("EventTypeEventCh processing completed!")
 }
 
-// processes a single chunk of event_type_ch data
 func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing event_type_ch chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
 	totalRecords := endID - startID + 1
 	processed := 0
 
-	// Use batching within the chunk
 	offset := 0
 	for {
 		batchData, err := buildEventTypeEventChMigrationData(mysqlDB, startID, endID, config.BatchSize)
@@ -103,22 +237,29 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 
 		var eventTypeEventChRecords []EventTypeEventChRecord
 		for _, record := range batchData {
+			eventTypeID := shared.ConvertToUInt32(record["eventtype_id"])
+			priority := getPriority(eventTypeID)
+			groups := getGroups(eventTypeID)
+			eventGroupType := getEventGroupType(eventTypeID)
+
 			eventTypeEventChRecord := EventTypeEventChRecord{
-				EventTypeID:   shared.ConvertToUInt32(record["eventtype_id"]),
-				EventTypeUUID: shared.GenerateEventTypeUUID(shared.ConvertToUInt32(record["eventtype_id"]),shared.ConvertToUInt32(record["event_id"]), shared.ConvertToString(record["name"]), record["created"]),
-				EventID:       shared.ConvertToUInt32(record["event_id"]),
-				Published:     shared.ConvertToInt8(record["published"]),
-				Name:          shared.ConvertToString(record["name"]),
-				Slug:          shared.ConvertToString(record["slug"]),
-				EventAudience: shared.SafeConvertToUInt16(record["event_audience"]),
-				Created:       shared.SafeConvertToDateTimeString(record["created"]),
-				Version:       1,
+				EventTypeID:    eventTypeID,
+				EventTypeUUID:  shared.GenerateEventTypeUUID(eventTypeID, shared.ConvertToUInt32(record["event_id"]), shared.ConvertToString(record["name"]), record["created"]),
+				EventID:        shared.ConvertToUInt32(record["event_id"]),
+				Published:      shared.ConvertToInt8(record["published"]),
+				Name:           shared.ConvertToString(record["name"]),
+				Slug:           shared.ConvertToString(record["slug"]),
+				EventAudience:  shared.SafeConvertToUInt16(record["event_audience"]),
+				EventGroupType: eventGroupType,
+				Groups:         groups,
+				Priority:       priority,
+				Created:        shared.SafeConvertToDateTimeString(record["created"]),
+				Version:        1,
 			}
 
 			eventTypeEventChRecords = append(eventTypeEventChRecords, eventTypeEventChRecord)
 		}
 
-		// Insert event_type_ch data into ClickHouse
 		if len(eventTypeEventChRecords) > 0 {
 			log.Printf("EventTypeEventCh chunk %d: Attempting to insert %d records into event_type_ch...", chunkNum, len(eventTypeEventChRecords))
 
@@ -139,9 +280,7 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 			}
 		}
 
-		// Update startID for next batch within this chunk (following the same pattern as other working tables)
 		if len(batchData) > 0 {
-			// Get the last record's ID from the batch and increment it for the next batch
 			lastRecord := batchData[len(batchData)-1]
 			if lastID, ok := lastRecord["id"].(int64); ok {
 				startID = int(lastID) + 1
@@ -212,7 +351,7 @@ func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTyp
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_type_ch (
-			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, created, version
+			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version
 		)
 	`)
 	if err != nil {
@@ -221,15 +360,18 @@ func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTyp
 
 	for _, record := range eventTypeEventChRecords {
 		err := batch.Append(
-			record.EventTypeID,   // eventtype_id: UInt32
-			record.EventTypeUUID, // eventtype_uuid: UUID
-			record.EventID,       // event_id: UInt32
-			record.Published,     // published: Int8
-			record.Name,          // name: LowCardinality(String)
-			record.Slug,          // slug: String
-			record.EventAudience, // event_audience: UInt16
-			record.Created,       // created: DateTime
-			record.Version,       // version: UInt32 DEFAULT 1
+			record.EventTypeID,    // eventtype_id: UInt32
+			record.EventTypeUUID,  // eventtype_uuid: UUID
+			record.EventID,        // event_id: UInt32
+			record.Published,      // published: Int8
+			record.Name,           // name: LowCardinality(String)
+			record.Slug,           // slug: String
+			record.EventAudience,  // event_audience: UInt16
+			record.EventGroupType, // eventGroupType: LowCardinality(String)
+			record.Groups,         // groups: Array(String)
+			record.Priority,       // priority: Nullable(Int8)
+			record.Created,        // created: DateTime
+			record.Version,        // version: UInt32 DEFAULT 1
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)

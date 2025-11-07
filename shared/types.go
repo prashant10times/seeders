@@ -410,6 +410,54 @@ func SafeConvertToInt8(value interface{}) int8 {
 	return 0
 }
 
+func SafeConvertToNullableInt8(value interface{}) *int8 {
+	if value == nil {
+		return nil
+	}
+
+	if num, ok := value.(int8); ok {
+		return &num
+	}
+	if num, ok := value.(int64); ok {
+		if num >= -128 && num <= 127 {
+			result := int8(num)
+			return &result
+		}
+		return nil
+	}
+	if num, ok := value.(int); ok {
+		if num >= -128 && num <= 127 {
+			result := int8(num)
+			return &result
+		}
+		return nil
+	}
+	if num, ok := value.(uint32); ok {
+		if num <= 127 {
+			result := int8(num)
+			return &result
+		}
+		return nil
+	}
+	if num, ok := value.(uint8); ok {
+		if num <= 127 {
+			result := int8(num)
+			return &result
+		}
+		return nil
+	}
+
+	str := SafeConvertToString(value)
+	if str == "" {
+		return nil
+	}
+	if num, err := strconv.ParseInt(str, 10, 8); err == nil {
+		result := int8(num)
+		return &result
+	}
+	return nil
+}
+
 func SafeConvertToNullableUInt32(value interface{}) *uint32 {
 	if value == nil {
 		return nil
