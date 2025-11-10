@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"seeders/microservice"
 	"seeders/shared"
 	"seeders/utils"
-	"seeders/microservice"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	_ "github.com/go-sql-driver/mysql"
@@ -1099,6 +1099,7 @@ func main() {
 	var eventDesignationOnly bool
 	var visitorSpreadOnly bool
 	var allEventOnly bool
+	var holidaysOnly bool
 
 	flag.IntVar(&numChunks, "chunks", 5, "Number of chunks to process data in (default: 5)")
 	flag.IntVar(&batchSize, "batch", 5000, "MySQL batch size for fetching data (default: 5000)")
@@ -1122,6 +1123,7 @@ func main() {
 	flag.BoolVar(&eventDesignationOnly, "eventdesignation", false, "Process only event designation data (default: false)")
 	flag.BoolVar(&visitorSpreadOnly, "visitorspread", false, "Process only visitor spread data (default: false)")
 	flag.BoolVar(&allEventOnly, "allevent", false, "Process only all event data (default: false)")
+	flag.BoolVar(&holidaysOnly, "holidays", false, "Process holidays into allevent_ch (automatically handles event types) (default: false)")
 	flag.BoolVar(&showHelp, "help", false, "Show help information")
 	flag.Parse()
 
@@ -1165,6 +1167,10 @@ func main() {
 		log.Println("        Process only visitor spread data (default: false)")
 		log.Println("  -allevent")
 		log.Println("        Process only all event data (default: false)")
+		log.Println("  -holiday-eventtypes")
+		log.Println("        Process only holiday event types into event_type_ch (default: false)")
+		log.Println("  -holidays")
+		log.Println("        Process only holidays into allevent_ch (default: false)")
 		log.Println("  -help")
 		log.Println("        Show this help message")
 		log.Println("\nExamples:")
@@ -1174,6 +1180,8 @@ func main() {
 		log.Println("  go run main.go -visitors -chunks=3 -workers=8 -batch=5000")
 		log.Println("  go run main.go -speakers -chunks=6 -workers=12 -batch=15000")
 		log.Println("  go run main.go -eventtype -chunks=5 -workers=10 -batch=10000")
+		log.Println("  go run main.go -holiday-eventtypes -clickhouse-workers=3")
+		log.Println("  go run main.go -holidays -batch=1000 -clickhouse-workers=5")
 		return
 	}
 
@@ -1261,6 +1269,8 @@ func main() {
 		log.Printf("Mode: VISITOR SPREAD ONLY")
 	} else if allEventOnly {
 		log.Printf("Mode: ALL EVENT ONLY")
+	} else if holidaysOnly {
+		log.Printf("Mode: HOLIDAYS ONLY")
 	} else if locationAll {
 		log.Printf("Mode: LOCATION ALL (countries, states, cities, venues, sub-venues)")
 	} else if locationCountriesOnly {
@@ -1311,7 +1321,7 @@ func main() {
 		log.Fatalf("ClickHouse connection test failed: %v", err)
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll {
+	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -1338,6 +1348,8 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_designation_ch processing)")
 		} else if locationAll || locationCountriesOnly || locationStatesOnly || locationCitiesOnly || locationVenuesOnly || locationSubVenuesOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for location_ch processing)")
+		} else if holidaysOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for holidays processing)")
 		}
 	}
 
@@ -1516,6 +1528,14 @@ func main() {
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		log.Println("=== ALL LOCATION TYPES PROCESSING COMPLETED SUCCESSFULLY! ===")
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	} else if holidaysOnly {
+		holidayConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		microservice.ProcessHolidays(mysqlDB, clickhouseDB, holidayConfig)
 	} else {
 		log.Println("Error: No specific table mode selected!")
 		log.Println("Please specify one of the following modes:")
@@ -1530,6 +1550,7 @@ func main() {
 		log.Println("  -eventdesignation # Process event designation data")
 		log.Println("  -visitorspread    # Process visitor spread data")
 		log.Println("  -allevent         # Process all event data")
+		log.Println("  -holidays         # Process holidays into allevent_ch (automatically handles event types)")
 		log.Println("  -location         # Process all location types (countries, states, cities, venues, sub-venues)")
 		log.Println("  -location-countries   # Process only location countries")
 		log.Println("  -location-states      # Process only location states")
