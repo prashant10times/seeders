@@ -104,51 +104,6 @@ func getMaxEventTypeID(clickhouseConn driver.Conn) (uint32, error) {
 	return maxID, nil
 }
 
-func insertHolidayEventTypes(clickhouseConn driver.Conn, records []HolidayEventTypeRecord) error {
-	if len(records) == 0 {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_type_ch (
-			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version
-		)
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
-	}
-
-	for _, record := range records {
-		err := batch.Append(
-			record.EventTypeID,    // eventtype_id: UInt32
-			record.EventTypeUUID,  // eventtype_uuid: UUID
-			record.EventID,        // event_id: UInt32 (placeholder for now)
-			record.Published,      // published: Int8
-			record.Name,           // name: LowCardinality(String)
-			record.Slug,           // slug: String
-			record.EventAudience,  // event_audience: Nullable(UInt16)
-			record.EventGroupType, // eventGroupType: LowCardinality(String)
-			record.Groups,         // groups: Array(String)
-			record.Priority,       // priority: Nullable(Int8)
-			record.Created,        // created: DateTime
-			record.Version,        // version: UInt32 DEFAULT 1
-		)
-		if err != nil {
-			return fmt.Errorf("failed to append record to batch: %v", err)
-		}
-	}
-
-	if err := batch.Send(); err != nil {
-		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
-	}
-
-	log.Printf("OK: Successfully inserted %d holiday event type records", len(records))
-	return nil
-}
-
 func ProcessHolidayEventTypes(clickhouseConn driver.Conn, config shared.Config) (map[string]uint32, error) {
 	log.Println("=== Starting Holiday Event Types Processing ===")
 
