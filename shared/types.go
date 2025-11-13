@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"crypto/sha1"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
@@ -201,29 +202,22 @@ func SafeConvertToNullableString(value interface{}) *string {
 	return nil
 }
 
-// generateEventUUID creates a deterministic UUID from event_id and event_created
 func GenerateEventUUID(eventID uint32, eventCreated interface{}) string {
-	// Convert event_created to string for consistent input
 	var createdStr string
 	if eventCreated != nil {
 		createdStr = SafeConvertToString(eventCreated)
 	}
 
-	// Create input string combining event_id and event_created
 	input := fmt.Sprintf("%d_%s", eventID, createdStr)
 
-	// Generate SHA256 hash of the input
 	hash := sha256.Sum256([]byte(input))
 
-	// Convert first 16 bytes to UUID format (version 5 style)
 	uuid := make([]byte, 16)
 	copy(uuid, hash[:16])
 
-	// Set version (4 bits) and variant (2 bits) for UUID v4 compatibility
-	uuid[6] = (uuid[6] & 0x0f) | 0x40 // Version 4
-	uuid[8] = (uuid[8] & 0x3f) | 0x80 // Variant bits
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
 
-	// Format as UUID string
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		binary.BigEndian.Uint32(uuid[0:4]),
 		binary.BigEndian.Uint16(uuid[4:6]),
@@ -259,10 +253,23 @@ func GenerateCategoryUUID(categoryID uint32, categoryName interface{}, categoryC
 }
 
 func GenerateUUIDFromString(input string) string {
-	hash := sha256.Sum256([]byte(input))
+	namespaceUUID := []byte{
+		0x27, 0x29, 0x0f, 0x87,
+		0x1a, 0x9e,
+		0x5a, 0xfe,
+		0x88, 0x33,
+		0x31, 0xfb, 0x5d, 0x5f, 0xc8, 0x1b,
+	}
+
+	data := append(namespaceUUID, []byte(input)...)
+
+	hash := sha1.Sum(data)
+
 	uuid := make([]byte, 16)
 	copy(uuid, hash[:16])
-	uuid[6] = (uuid[6] & 0x0f) | 0x40
+
+	uuid[6] = (uuid[6] & 0x0f) | 0x50
+
 	uuid[8] = (uuid[8] & 0x3f) | 0x80
 
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",

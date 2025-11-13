@@ -91,6 +91,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"seeders/shared"
@@ -112,7 +113,6 @@ type EventTypeEventChRecord struct {
 	Created        string   `ch:"created"`
 	Version        uint32   `ch:"version"`
 }
-
 
 var eventTypePriority = map[uint32]int8{
 	1:  1,
@@ -341,20 +341,75 @@ func insertEventTypeEventChDataIntoClickHouse(clickhouseConn driver.Conn, eventT
 	return nil
 }
 
+func checkClickHouseConnectionAlive(clickhouseConn driver.Conn) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var result uint8
+	query := "SELECT 1"
+	row := clickhouseConn.QueryRow(ctx, query)
+	if err := row.Scan(&result); err != nil {
+		return fmt.Errorf("ClickHouse connection check failed: %w", err)
+	}
+
+	if result != 1 {
+		return fmt.Errorf("ClickHouse connection check returned unexpected result: %d", result)
+	}
+
+	return nil
+}
+
 func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTypeEventChRecords []EventTypeEventChRecord) error {
 	if len(eventTypeEventChRecords) == 0 {
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d event_type_ch records", len(eventTypeEventChRecords))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return checkClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for event_type_ch",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with event_type_ch batch insert")
+
+	insertErr := shared.RetryWithBackoff(
+		func() error {
+			return insertEventTypeEventChBatch(clickhouseConn, eventTypeEventChRecords)
+		},
+		3,
+		"event_type_ch batch insert",
+	)
+
+	if insertErr != nil {
+		return fmt.Errorf("failed to insert event_type_ch batch after retries: %w", insertErr)
+	}
+
+	log.Printf("OK: Successfully inserted %d event_type_ch records", len(eventTypeEventChRecords))
+	return nil
+}
+
+func insertEventTypeEventChBatch(clickhouseConn driver.Conn, eventTypeEventChRecords []EventTypeEventChRecord) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	log.Printf("Preparing ClickHouse batch for %d event_type_ch records", len(eventTypeEventChRecords))
+
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_type_ch (
-			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version
+			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version,
+			alert_id, alert_level, alert_type, alert_start_date, alert_end_date
 		)
 	`)
 	if err != nil {
+		log.Printf("ERROR: Failed to prepare ClickHouse batch for event_type_ch: %v", err)
+		if strings.Contains(err.Error(), "EOF") {
+			return fmt.Errorf("connection error (table may not exist or connection dropped): %v. Please verify table 'event_type_ch' exists with alert fields", err)
+		}
 		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
 	}
 
@@ -372,17 +427,24 @@ func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTyp
 			record.Priority,       // priority: Nullable(Int8)
 			record.Created,        // created: DateTime
 			record.Version,        // version: UInt32 DEFAULT 1
+			nil,
+			nil,
+			nil,
+			nil,
+			nil,
 		)
 		if err != nil {
+			log.Printf("ERROR: Failed to append event_type record to batch: %v", err)
 			return fmt.Errorf("failed to append record to batch: %v", err)
 		}
 	}
 
+	log.Printf("Sending ClickHouse batch with %d event_type_ch records", len(eventTypeEventChRecords))
 	if err := batch.Send(); err != nil {
+		log.Printf("ERROR: Failed to send ClickHouse batch: %v", err)
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
-	log.Printf("OK: Successfully inserted %d event_type_ch records", len(eventTypeEventChRecords))
 	return nil
 }
 

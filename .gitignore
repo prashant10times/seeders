@@ -36,3 +36,4 @@ go.sum
 seeders
 
 .DS_Store
+polygon*

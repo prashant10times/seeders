@@ -1100,6 +1100,7 @@ func main() {
 	var visitorSpreadOnly bool
 	var allEventOnly bool
 	var holidaysOnly bool
+	var alertsOnly bool
 
 	flag.IntVar(&numChunks, "chunks", 5, "Number of chunks to process data in (default: 5)")
 	flag.IntVar(&batchSize, "batch", 5000, "MySQL batch size for fetching data (default: 5000)")
@@ -1124,6 +1125,7 @@ func main() {
 	flag.BoolVar(&visitorSpreadOnly, "visitorspread", false, "Process only visitor spread data (default: false)")
 	flag.BoolVar(&allEventOnly, "allevent", false, "Process only all event data (default: false)")
 	flag.BoolVar(&holidaysOnly, "holidays", false, "Process holidays into allevent_ch (automatically handles event types) (default: false)")
+	flag.BoolVar(&alertsOnly, "alerts", false, "Process alerts from GDAC API into alerts_ch (default: false)")
 	flag.BoolVar(&showHelp, "help", false, "Show help information")
 	flag.Parse()
 
@@ -1536,6 +1538,42 @@ func main() {
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
 		microservice.ProcessHolidays(mysqlDB, clickhouseDB, holidayConfig)
+	} else if alertsOnly {
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Println("=== PROCESSING ALERTS FROM GDAC API ===")
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+		gdacBaseURL := os.Getenv("gdac_base_url")
+		gdacEndpoint := os.Getenv("gdac_event_search_endpoint")
+
+		if gdacBaseURL == "" {
+			log.Fatal("ERROR: GDAC_BASE_URL environment variable is not set")
+		}
+		if gdacEndpoint == "" {
+			log.Fatal("ERROR: GDAC_EVENT_SEARCH_ENDPOINT environment variable is not set")
+		}
+
+		log.Printf("GDAC Base URL: %s", gdacBaseURL)
+		log.Printf("GDAC Endpoint: %s", gdacEndpoint)
+
+		validCountries, err := microservice.GetValidCountries()
+		if err != nil {
+			log.Fatalf("ERROR: Failed to get valid countries: %v", err)
+		}
+
+		if len(validCountries) == 0 {
+			log.Fatal("ERROR: No valid countries found")
+		}
+
+		log.Printf("Processing alerts for %d valid countries", len(validCountries))
+
+		if err := microservice.ProcessAlertsFromAPI(clickhouseDB, gdacBaseURL, gdacEndpoint, validCountries); err != nil {
+			log.Fatalf("ERROR: Failed to process alerts: %v", err)
+		}
+
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Println("=== ALERTS PROCESSING COMPLETED SUCCESSFULLY! ===")
+		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	} else {
 		log.Println("Error: No specific table mode selected!")
 		log.Println("Please specify one of the following modes:")
@@ -1551,6 +1589,7 @@ func main() {
 		log.Println("  -visitorspread    # Process visitor spread data")
 		log.Println("  -allevent         # Process all event data")
 		log.Println("  -holidays         # Process holidays into allevent_ch (automatically handles event types)")
+		log.Println("  -alerts           # Process alerts from GDAC API into alerts_ch")
 		log.Println("  -location         # Process all location types (countries, states, cities, venues, sub-venues)")
 		log.Println("  -location-countries   # Process only location countries")
 		log.Println("  -location-states      # Process only location states")
