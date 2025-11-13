@@ -14,7 +14,6 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// safeConvertToString safely converts a value to string
 func safeConvertToString(value interface{}) string {
 	if value == nil {
 		return ""
@@ -28,40 +27,38 @@ func safeConvertToString(value interface{}) string {
 	return fmt.Sprintf("%v", value)
 }
 
-// EventDesignationChRecord represents the structure for event_designation_ch table
 type EventDesignationChRecord struct {
-	EventID       uint32 `ch:"event_id"`
-	EditionID     uint32 `ch:"edition_id"`
-	DesignationID uint32 `ch:"designation_id"`
-	DisplayName   string `ch:"display_name"`
-	Department    string `ch:"department"`
-	Role          string `ch:"role"`
-	TotalVisitors uint32 `ch:"total_visitors"`
-	Version       uint32 `ch:"version"`
+	EventID         uint32 `ch:"event_id"`
+	EditionID       uint32 `ch:"edition_id"`
+	DesignationID   uint32 `ch:"designation_id"`
+	DesignationUUID string `ch:"designation_uuid"`
+	DisplayName     string `ch:"display_name"`
+	Department      string `ch:"department"`
+	Role            string `ch:"role"`
+	TotalVisitors   uint32 `ch:"total_visitors"`
+	Version         uint32 `ch:"version"`
 }
 
-// DesignationData represents the designation information from MySQL
 type DesignationData struct {
+	ID          uint32
 	DisplayName string
 	Department  string
 	Role        string
+	Created     interface{}
 }
 
-// FetchDesignationDisplayNameData fetches designation display names, department, and role from designation table
 func FetchDesignationDisplayNameData(db *sql.DB, designationIDs []uint32) (map[uint32]DesignationData, error) {
 	if len(designationIDs) == 0 {
 		return make(map[uint32]DesignationData), nil
 	}
 
-	// Convert to string slice for query building
 	idStrings := make([]string, len(designationIDs))
 	for i, id := range designationIDs {
 		idStrings[i] = fmt.Sprintf("%d", id)
 	}
 
-	// Use direct string formatting like other tables
 	query := fmt.Sprintf(`
-		SELECT id, display_name, department, role
+		SELECT id, display_name, department, role, created
 		FROM designation
 		WHERE id IN (%s)
 	`, strings.Join(idStrings, ","))
@@ -77,24 +74,40 @@ func FetchDesignationDisplayNameData(db *sql.DB, designationIDs []uint32) (map[u
 	for rows.Next() {
 		var id uint32
 		var displayName, department, role sql.NullString
-		if err := rows.Scan(&id, &displayName, &department, &role); err != nil {
+		var created interface{}
+		if err := rows.Scan(&id, &displayName, &department, &role, &created); err != nil {
 			log.Printf("Error scanning designation row: %v", err)
 			continue
 		}
 		designationMap[id] = DesignationData{
+			ID:          id,
 			DisplayName: displayName.String,
 			Department:  department.String,
 			Role:        role.String,
+			Created:     created,
 		}
 	}
 
 	log.Printf("Fetched %d designation records with display_name, department, and role", len(designationMap))
+
+	scannedIDs := make([]uint32, 0, len(designationMap))
+	for id := range designationMap {
+		scannedIDs = append(scannedIDs, id)
+	}
+	missingFromDB := make([]uint32, 0)
+	for _, requestedID := range designationIDs {
+		if _, found := designationMap[requestedID]; !found {
+			missingFromDB = append(missingFromDB, requestedID)
+		}
+	}
+	if len(missingFromDB) > 0 {
+		log.Printf("WARNING: %d designation IDs were requested but not found in database: %v", len(missingFromDB), missingFromDB)
+	}
+
 	return designationMap, nil
 }
 
-// ConvertToEventDesignationChRecords converts MySQL data to ClickHouse records
 func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *sql.DB) []EventDesignationChRecord {
-	// First, aggregate the individual visitor records
 	aggregatedData := make(map[string]map[string]interface{})
 
 	log.Printf("Processing %d raw visitor records for aggregation", len(mysqlData))
@@ -104,7 +117,6 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 		editionID := safeConvertToString(row["edition"])
 		designationID := safeConvertToString(row["designation_id"])
 
-		// Skip rows with empty or invalid data
 		if eventID == "" || editionID == "" || designationID == "" {
 			continue
 		}
@@ -116,17 +128,16 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 				"event":          row["event"],
 				"edition":        row["edition"],
 				"designation_id": row["designation_id"],
+				"created":        row["created"],
 				"total_visitors": 0,
 			}
 		}
 
-		// Increment the count
 		if count, ok := aggregatedData[key]["total_visitors"].(int); ok {
 			aggregatedData[key]["total_visitors"] = count + 1
 		}
 	}
 
-	// Convert aggregated data to slice
 	var aggregatedSlice []map[string]interface{}
 	for _, data := range aggregatedData {
 		aggregatedSlice = append(aggregatedSlice, data)
@@ -134,14 +145,14 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 
 	log.Printf("Aggregated %d raw records into %d unique event-edition-designation combinations", len(mysqlData), len(aggregatedSlice))
 
-	// Now process the aggregated data similar to before
 	var records []EventDesignationChRecord
 
 	designationIDSet := make(map[uint32]bool)
 	for _, row := range aggregatedSlice {
 		if designationID, ok := row["designation_id"]; ok && designationID != nil {
 			if designationIDVal, ok := designationID.(int64); ok {
-				designationIDSet[uint32(designationIDVal)] = true
+				designationIDUint := uint32(designationIDVal)
+				designationIDSet[designationIDUint] = true
 			}
 		}
 	}
@@ -158,6 +169,16 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 		if err != nil {
 			log.Printf("Warning: Could not fetch designation data: %v", err)
 			designationData = make(map[uint32]DesignationData)
+		} else {
+			missingIDs := make([]uint32, 0)
+			for _, requestedID := range uniqueDesignationIDs {
+				if _, exists := designationData[requestedID]; !exists {
+					missingIDs = append(missingIDs, requestedID)
+				}
+			}
+			if len(missingIDs) > 0 {
+				log.Printf("WARNING: %d requested designation IDs were not found in database: %v", len(missingIDs), missingIDs)
+			}
 		}
 	} else {
 		designationData = make(map[uint32]DesignationData)
@@ -184,16 +205,25 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 			if designationIDVal, ok := designationID.(int64); ok {
 				designationIDUint := uint32(designationIDVal)
 				record.DesignationID = designationIDUint
+
 				if designationInfo, exists := designationData[designationIDUint]; exists {
 					record.DisplayName = designationInfo.DisplayName
 					record.Department = designationInfo.Department
 					record.Role = designationInfo.Role
+					designationIDFromTable := designationInfo.ID
+					createdStr := shared.SafeConvertToString(designationInfo.Created)
+					idInputString := fmt.Sprintf("%d-%s", designationIDFromTable, createdStr)
+					record.DesignationUUID = shared.GenerateUUIDFromString(idInputString)
 				} else {
 					record.DisplayName = ""
 					record.Department = ""
 					record.Role = ""
+					createdFromEventVisitor := row["created"]
+					createdStr := shared.SafeConvertToString(createdFromEventVisitor)
+					idInputString := fmt.Sprintf("%d-%s", designationIDUint, createdStr)
+					record.DesignationUUID = shared.GenerateUUIDFromString(idInputString)
 				}
-			}
+			} 
 		}
 
 		if totalVisitors, ok := row["total_visitors"]; ok && totalVisitors != nil {
@@ -208,7 +238,6 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 	return records
 }
 
-// InsertEventDesignationChDataIntoClickHouse inserts event designation data into ClickHouse with parallel workers
 func InsertEventDesignationChDataIntoClickHouse(clickhouseConn driver.Conn, eventDesignationRecords []EventDesignationChRecord, numWorkers int) error {
 	if len(eventDesignationRecords) == 0 {
 		return nil
@@ -253,7 +282,6 @@ func InsertEventDesignationChDataIntoClickHouse(clickhouseConn driver.Conn, even
 	wg.Wait()
 	close(errorsChan)
 
-	// Check if any errors occurred
 	for err := range errorsChan {
 		if err != nil {
 			return err
@@ -263,7 +291,6 @@ func InsertEventDesignationChDataIntoClickHouse(clickhouseConn driver.Conn, even
 	return nil
 }
 
-// InsertEventDesignationChDataSingleWorker inserts event designation data into ClickHouse
 func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventDesignationRecords []EventDesignationChRecord) error {
 	if len(eventDesignationRecords) == 0 {
 		return nil
@@ -274,7 +301,7 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO testing_db.event_designation_ch (
-			event_id, edition_id, designation_id, display_name, department, role, total_visitors, version
+			event_id, edition_id, designation_id, designation_uuid, display_name, department, role, total_visitors, version
 		)
 	`)
 	if err != nil {
@@ -283,20 +310,26 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 	}
 
 	for _, record := range eventDesignationRecords {
+		if record.DesignationUUID == "" {
+			log.Printf("ERROR: Empty UUID detected before append - EventID=%d, EditionID=%d, DesignationID=%d",
+				record.EventID, record.EditionID, record.DesignationID)
+		}
+
 		err := batch.Append(
-			record.EventID,       // event_id: UInt32
-			record.EditionID,     // edition_id: UInt32
-			record.DesignationID, // designation_id: UInt32
-			record.DisplayName,   // display_name: LowCardinality(String)
-			record.Department,    // department: LowCardinality(String)
-			record.Role,          // role: LowCardinality(String)
-			record.TotalVisitors, // total_visitors: UInt32
-			record.Version,       // version: UInt32 DEFAULT 1
+			record.EventID,         // event_id: UInt32
+			record.EditionID,       // edition_id: UInt32
+			record.DesignationID,   // designation_id: UInt32
+			record.DesignationUUID, // designation_uuid: UUID
+			record.DisplayName,     // display_name: LowCardinality(String)
+			record.Department,      // department: LowCardinality(String)
+			record.Role,            // role: LowCardinality(String)
+			record.TotalVisitors,   // total_visitors: UInt32
+			record.Version,         // version: UInt32 DEFAULT 1
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append record to batch: %v", err)
-			log.Printf("Record data: EventID=%d, EditionID=%d, DesignationID=%d, DisplayName=%s, Department=%s, Role=%s, TotalVisitors=%d, Version=%d",
-				record.EventID, record.EditionID, record.DesignationID, record.DisplayName, record.Department, record.Role, record.TotalVisitors, record.Version)
+			log.Printf("ERROR Record data: EventID=%d, EditionID=%d, DesignationID=%d, DesignationUUID=%s (len=%d), DisplayName=%s, Department=%s, Role=%s, TotalVisitors=%d, Version=%d",
+				record.EventID, record.EditionID, record.DesignationID, record.DesignationUUID, len(record.DesignationUUID), record.DisplayName, record.Department, record.Role, record.TotalVisitors, record.Version)
 			return fmt.Errorf("failed to append record to batch: %v", err)
 		}
 	}
@@ -370,7 +403,6 @@ func ProcessEventDesignationChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 	totalRecords := endID - startID + 1
 	processed := 0
 
-	// Use batching within the chunk - following the SAME pattern as other tables
 	offset := 0
 	for {
 		batchData, err := BuildEventDesignationMigrationData(mysqlDB, startID, endID, config.BatchSize)
@@ -409,11 +441,9 @@ func ProcessEventDesignationChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 			log.Printf("EventDesignation chunk %d: Successfully inserted %d records", chunkNum, len(records))
 		}
 
-		// Get the last ID from this batch for next iteration - EXACT SAME PATTERN AS OTHER TABLES
 		if len(batchData) > 0 {
 			lastID := batchData[len(batchData)-1]["id"]
 			if lastID != nil {
-				// Update startID for next batch within this chunk - DIRECT MODIFICATION LIKE OTHER TABLES
 				if id, ok := lastID.(int64); ok {
 					startID = int(id) + 1
 				}
@@ -430,13 +460,13 @@ func ProcessEventDesignationChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 }
 
 func BuildEventDesignationMigrationData(mysqlDB *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
-	// Use the SAME pattern as other tables - direct query with string formatting
 	query := fmt.Sprintf(`
 		SELECT
 			id,
 			event,
 			edition,
-			designation_id
+			designation_id,
+			created
 		FROM event_visitor ev
 		WHERE
 			ev.evisitor = 0

@@ -1416,7 +1416,6 @@ func main() {
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
 		utils.ProcessEventDesignationOnly(mysqlDB, clickhouseDB, utilsConfig)
-		log.Println("=== Event Designation Processing Finished ===")
 	} else if visitorSpreadOnly {
 		utilsConfig := shared.Config{
 			BatchSize:          config.BatchSize,
