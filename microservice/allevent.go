@@ -100,6 +100,10 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		InternationalScore:              shared.SafeConvertToNullableUInt32(record["internationalScore"]),
 		RepeatSentimentChangePercentage: shared.SafeConvertToNullableFloat64(record["repeatSentimentChangePercentage"]),
 		AudienceZone:                    shared.SafeConvertToNullableString(record["audienceZone"]),
+		InboundPercentage:               shared.SafeConvertToUInt32(record["inboundPercentage"]),
+		InboundAttendance:               shared.SafeConvertToUInt32(record["inboundAttendance"]),
+		InternationalPercentage:         shared.SafeConvertToUInt32(record["internationalPercentage"]),
+		InternationalAttendance:         shared.SafeConvertToUInt32(record["internationalAttendance"]),
 		EventEconomicFoodAndBevarage:    shared.SafeConvertToNullableFloat64(record["event_economic_FoodAndBevarage"]),
 		EventEconomicTransportation:     shared.SafeConvertToNullableFloat64(record["event_economic_Transportation"]),
 		EventEconomicAccomodation:       shared.SafeConvertToNullableFloat64(record["event_economic_Accomodation"]),
@@ -181,6 +185,10 @@ type alleventRecord struct {
 	InternationalScore              *uint32  `ch:"internationalScore"`                   // Nullable(UInt32)
 	RepeatSentimentChangePercentage *float64 `ch:"repeatSentimentChangePercentage"`      // Nullable(Float64)
 	AudienceZone                    *string  `ch:"audienceZone"`                         // LowCardinality(Nullable(String))
+	InboundPercentage               uint32   `ch:"inboundPercentage"`                    // UInt32 NOT NULL
+	InboundAttendance               uint32   `ch:"inboundAttendance"`                    // UInt32 NOT NULL
+	InternationalPercentage         uint32   `ch:"internationalPercentage"`              // UInt32 NOT NULL
+	InternationalAttendance         uint32   `ch:"internationalAttendance"`              // UInt32 NOT NULL
 	EventEconomicFoodAndBevarage    *float64 `ch:"event_economic_FoodAndBevarage"`       // Nullable(Float64)
 	EventEconomicTransportation     *float64 `ch:"event_economic_Transportation"`        // Nullable(Float64)
 	EventEconomicAccomodation       *float64 `ch:"event_economic_Accomodation"`          // Nullable(Float64)
@@ -697,7 +705,15 @@ func fetchalleventEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]i
 	return results
 }
 
-func fetchalleventEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]string {
+type estimateData struct {
+	EconomicImpact          string
+	InboundPercentage       *uint32
+	InboundAttendance       *uint32
+	InternationalPercentage *uint32
+	InternationalAttendance *uint32
+}
+
+func fetchalleventEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]estimateData {
 	if len(eventIDs) == 0 {
 		return nil
 	}
@@ -709,7 +725,7 @@ func fetchalleventEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]s
 		args[i] = id
 	}
 
-	query := fmt.Sprintf(`SELECT event_id, economic_impact FROM estimate WHERE event_id IN (%s)`, strings.Join(placeholders, ","))
+	query := fmt.Sprintf(`SELECT event_id, economic_impact, inbound_per, inbound_attendees, international_per, international_attendees FROM estimate WHERE event_id IN (%s)`, strings.Join(placeholders, ","))
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -718,30 +734,63 @@ func fetchalleventEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]s
 	}
 	defer rows.Close()
 
-	result := make(map[int64]string)
+	result := make(map[int64]estimateData)
 	for rows.Next() {
 		var eventID int64
 		var economicImpact sql.NullString
-		if err := rows.Scan(&eventID, &economicImpact); err != nil {
+		var inboundPer sql.NullInt64
+		var inboundAttendees sql.NullInt64
+		var internationalPer sql.NullInt64
+		var internationalAttendees sql.NullInt64
+
+		if err := rows.Scan(&eventID, &economicImpact, &inboundPer, &inboundAttendees, &internationalPer, &internationalAttendees); err != nil {
 			continue
 		}
+
+		estimate := estimateData{}
 		if economicImpact.Valid {
-			result[eventID] = economicImpact.String
+			estimate.EconomicImpact = economicImpact.String
 		}
+
+		if inboundPer.Valid && inboundPer.Int64 >= 0 {
+			val := uint32(inboundPer.Int64)
+			estimate.InboundPercentage = &val
+		}
+
+		if inboundAttendees.Valid && inboundAttendees.Int64 >= 0 {
+			val := uint32(inboundAttendees.Int64)
+			estimate.InboundAttendance = &val
+		}
+
+		if internationalPer.Valid && internationalPer.Int64 >= 0 {
+			val := uint32(internationalPer.Int64)
+			estimate.InternationalPercentage = &val
+		}
+
+		if internationalAttendees.Valid && internationalAttendees.Int64 >= 0 {
+			val := uint32(internationalAttendees.Int64)
+			estimate.InternationalAttendance = &val
+		}
+
+		result[eventID] = estimate
 	}
 
 	return result
 }
 
-func processalleventEconomicImpactDataParallel(estimateDataMap map[int64]string) map[int64]map[string]interface{} {
+func processalleventEconomicImpactDataParallel(estimateDataMap map[int64]estimateData) map[int64]map[string]interface{} {
 	if len(estimateDataMap) == 0 {
 		return nil
 	}
 
 	finalResult := make(map[int64]map[string]interface{})
-	for eventID, economicImpact := range estimateDataMap {
-		result := processalleventSingleEconomicImpact(eventID, economicImpact)
+	for eventID, estimate := range estimateDataMap {
+		result := processalleventSingleEconomicImpact(eventID, estimate.EconomicImpact)
 		for id, data := range result {
+			data["inboundPercentage"] = estimate.InboundPercentage
+			data["inboundAttendance"] = estimate.InboundAttendance
+			data["internationalPercentage"] = estimate.InternationalPercentage
+			data["internationalAttendance"] = estimate.InternationalAttendance
 			finalResult[id] = data
 		}
 	}
@@ -1233,7 +1282,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					}
 				}
 
-				estimateDataMap := make(map[int64]string)
+				estimateDataMap := make(map[int64]estimateData)
 				if len(eventIDsForEditions) > 0 {
 					estimateDataMap = fetchalleventEstimateDataForBatch(mysqlDB, eventIDsForEditions)
 				}
@@ -1742,6 +1791,49 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								record["event_economic_dayWiseEconomicImpact"] = "{}"
 								record["event_economic_impact"] = "{}"
 							}
+
+							var inboundPerVal, inboundAttVal, internationalPerVal, internationalAttVal uint32
+
+							if economicData != nil {
+								if inboundPer, ok := economicData["inboundPercentage"].(*uint32); ok && inboundPer != nil {
+									inboundPerVal = *inboundPer
+								} else if inboundPer, ok := economicData["inboundPercentage"].(uint32); ok {
+									inboundPerVal = inboundPer
+								}
+								if inboundAtt, ok := economicData["inboundAttendance"].(*uint32); ok && inboundAtt != nil {
+									inboundAttVal = *inboundAtt
+								} else if inboundAtt, ok := economicData["inboundAttendance"].(uint32); ok {
+									inboundAttVal = inboundAtt
+								}
+								if internationalPer, ok := economicData["internationalPercentage"].(*uint32); ok && internationalPer != nil {
+									internationalPerVal = *internationalPer
+								} else if internationalPer, ok := economicData["internationalPercentage"].(uint32); ok {
+									internationalPerVal = internationalPer
+								}
+								if internationalAtt, ok := economicData["internationalAttendance"].(*uint32); ok && internationalAtt != nil {
+									internationalAttVal = *internationalAtt
+								} else if internationalAtt, ok := economicData["internationalAttendance"].(uint32); ok {
+									internationalAttVal = internationalAtt
+								}
+							} else if estimate, exists := estimateDataMap[eventID]; exists {
+								if estimate.InboundPercentage != nil {
+									inboundPerVal = *estimate.InboundPercentage
+								}
+								if estimate.InboundAttendance != nil {
+									inboundAttVal = *estimate.InboundAttendance
+								}
+								if estimate.InternationalPercentage != nil {
+									internationalPerVal = *estimate.InternationalPercentage
+								}
+								if estimate.InternationalAttendance != nil {
+									internationalAttVal = *estimate.InternationalAttendance
+								}
+							}
+
+							record["inboundPercentage"] = inboundPerVal
+							record["inboundAttendance"] = inboundAttVal
+							record["internationalPercentage"] = internationalPerVal
+							record["internationalAttendance"] = internationalAttVal
 
 							clickHouseRecords = append(clickHouseRecords, record)
 
@@ -2603,6 +2695,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
 			event_created, edition_created, event_hybrid, isBranded, maturity,
 			event_pricing, tickets, event_logo, event_estimatedVisitors, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
+			inboundPercentage, inboundAttendance, internationalPercentage, internationalAttendance,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
 			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, version
 		)
@@ -2705,6 +2798,10 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.InternationalScore,              // internationalScore: Nullable(UInt32)
 			alleventRecord.RepeatSentimentChangePercentage, // repeatSentimentChangePercentage: Nullable(Float64)
 			alleventRecord.AudienceZone,                    // audienceZone: LowCardinality(Nullable(String))
+			alleventRecord.InboundPercentage,               // inboundPercentage: UInt32 NOT NULL
+			alleventRecord.InboundAttendance,               // inboundAttendance: UInt32 NOT NULL
+			alleventRecord.InternationalPercentage,         // internationalPercentage: UInt32 NOT NULL
+			alleventRecord.InternationalAttendance,         // internationalAttendance: UInt32 NOT NULL
 			alleventRecord.EventEconomicFoodAndBevarage,    // event_economic_FoodAndBevarage: Nullable(Float64)
 			alleventRecord.EventEconomicTransportation,     // event_economic_Transportation: Nullable(Float64)
 			alleventRecord.EventEconomicAccomodation,       // event_economic_Accomodation: Nullable(Float64)
