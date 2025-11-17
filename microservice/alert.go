@@ -865,24 +865,6 @@ func getClassValue(class interface{}) int {
 	return 2
 }
 
-func checkClickHouseConnectionAlive(clickhouseConn driver.Conn) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var result uint8
-	query := "SELECT 1"
-	row := clickhouseConn.QueryRow(ctx, query)
-	if err := row.Scan(&result); err != nil {
-		return fmt.Errorf("ClickHouse connection check failed: %w", err)
-	}
-
-	if result != 1 {
-		return fmt.Errorf("ClickHouse connection check returned unexpected result: %d", result)
-	}
-
-	return nil
-}
-
 func InsertLocationPolygonsChDataSingleWorker(clickhouseConn driver.Conn, polygonRecords []LocationPolygonRecord) error {
 	if len(polygonRecords) == 0 {
 		return nil
@@ -903,7 +885,7 @@ func InsertLocationPolygonsChDataSingleWorker(clickhouseConn driver.Conn, polygo
 	log.Printf("Checking ClickHouse connection health before inserting %d location_polygons_ch records", len(polygonRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
-			return checkClickHouseConnectionAlive(clickhouseConn)
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
 		"ClickHouse connection health check",
@@ -1662,7 +1644,7 @@ func InsertEventTypeChDataSingleWorker(clickhouseConn driver.Conn, eventTypeReco
 	log.Printf("Checking ClickHouse connection health before inserting %d event_type_ch records", len(eventTypeRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
-			return checkClickHouseConnectionAlive(clickhouseConn)
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
 		"ClickHouse connection health check for event_type_ch",

@@ -341,24 +341,6 @@ func insertEventTypeEventChDataIntoClickHouse(clickhouseConn driver.Conn, eventT
 	return nil
 }
 
-func checkClickHouseConnectionAlive(clickhouseConn driver.Conn) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	var result uint8
-	query := "SELECT 1"
-	row := clickhouseConn.QueryRow(ctx, query)
-	if err := row.Scan(&result); err != nil {
-		return fmt.Errorf("ClickHouse connection check failed: %w", err)
-	}
-
-	if result != 1 {
-		return fmt.Errorf("ClickHouse connection check returned unexpected result: %d", result)
-	}
-
-	return nil
-}
-
 func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTypeEventChRecords []EventTypeEventChRecord) error {
 	if len(eventTypeEventChRecords) == 0 {
 		return nil
@@ -367,7 +349,7 @@ func insertEventTypeEventChDataSingleWorker(clickhouseConn driver.Conn, eventTyp
 	log.Printf("Checking ClickHouse connection health before inserting %d event_type_ch records", len(eventTypeEventChRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
-			return checkClickHouseConnectionAlive(clickhouseConn)
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
 		"ClickHouse connection health check for event_type_ch",

@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"database/sql"
@@ -12,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
 // Config represents the application configuration
@@ -1041,4 +1044,22 @@ func ConvertToStringArray(value interface{}) []string {
 		return result
 	}
 	return []string{}
+}
+
+func CheckClickHouseConnectionAlive(clickhouseConn driver.Conn) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var result uint8
+	query := "SELECT 1"
+	row := clickhouseConn.QueryRow(ctx, query)
+	if err := row.Scan(&result); err != nil {
+		return fmt.Errorf("ClickHouse connection check failed: %w", err)
+	}
+
+	if result != 1 {
+		return fmt.Errorf("ClickHouse connection check returned unexpected result: %d", result)
+	}
+
+	return nil
 }

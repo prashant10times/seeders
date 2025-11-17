@@ -82,6 +82,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EventSpeaker:         shared.SafeConvertToNullableUInt32(record["event_speaker"]),
 		EditionSpeaker:       shared.SafeConvertToNullableUInt32(record["edition_speaker"]),
 		EventCreated:         shared.SafeConvertToDateTimeString(record["event_created"]),
+		EventUpdated:         shared.SafeConvertToDateTimeString(record["event_updated"]),
 		EditionCreated:       shared.SafeConvertToDateTimeString(record["edition_created"]),
 		EventHybrid:          shared.SafeConvertToNullableUInt8(record["event_hybrid"]),
 		IsBranded: func() *uint32 {
@@ -117,6 +118,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		Keywords:                        shared.ConvertToStringArray(record["keywords"]),
 		Tickets:                         shared.ConvertToStringArray(record["tickets"]),
 		EventScore:                      shared.SafeConvertToNullableInt32(record["event_score"]),
+		LastUpdatedAt:                   shared.SafeConvertToDateTimeString(record["last_updated_at"]),
 		Version:                         shared.SafeConvertToUInt32(record["version"]),
 	}
 }
@@ -173,6 +175,7 @@ type alleventRecord struct {
 	EventSpeaker                    *uint32  `ch:"event_speaker"`
 	EditionSpeaker                  *uint32  `ch:"edition_speaker"`
 	EventCreated                    string   `ch:"event_created"`                        // DateTime NOT NULL
+	EventUpdated                    string   `ch:"event_updated"`                        // DateTime NOT NULL
 	EditionCreated                  string   `ch:"edition_created"`                      // DateTime NOT NULL
 	EventHybrid                     *uint8   `ch:"event_hybrid"`                         // Nullable(UInt8)
 	IsBranded                       *uint32  `ch:"isBranded"`                            // Nullable(UInt32)
@@ -202,6 +205,7 @@ type alleventRecord struct {
 	Keywords                        []string `ch:"keywords"`                             // Array(String)
 	Tickets                         []string `ch:"tickets"`                              // Array(String)
 	EventScore                      *int32   `ch:"event_score"`                          // Nullable(Int32)
+	LastUpdatedAt                   string   `ch:"last_updated_at"`                      // DateTime NOT NULL
 	Version                         uint32   `ch:"version"`
 }
 
@@ -664,7 +668,7 @@ func fetchalleventEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]i
 
 	query := fmt.Sprintf(`
 		SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, 
-		       country, published, status, event_audience, functionality, brand_id, created, event_type, score 
+		       country, published, status, event_audience, functionality, brand_id, created, modified, event_type, score 
 		FROM event 
 		WHERE id IN (%s)`, strings.Join(placeholders, ","))
 
@@ -1621,6 +1625,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								"event_speaker":          esInfoMap["event_speakers"],
 								"edition_speaker":        esInfoMap["edition_speaker"],
 								"event_created":          eventData["created"],
+								"event_updated":          eventData["modified"],
 								"edition_created":        edition["edition_created"],
 								"event_hybrid":           esInfoMap["event_hybrid"],
 								"isBranded": func() *uint32 {
@@ -1657,6 +1662,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								"event_avgRating":                 esInfoMap["avg_rating"],
 								"keywords":                        []string{},
 								"event_score":                     eventData["score"],
+								"last_updated_at":                 time.Now().Format("2006-01-02 15:04:05"),
 								"version":                         1,
 							}
 
@@ -2682,6 +2688,19 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d allevent_ch records", len(records))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for allevent_ch",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with allevent_ch batch insert")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second)
 	defer cancel()
 
@@ -2696,11 +2715,11 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			edition_type, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
-			event_created, edition_created, event_hybrid, isBranded, maturity,
+			event_created, event_updated, edition_created, event_hybrid, isBranded, maturity,
 			event_pricing, tickets, event_logo, event_estimatedVisitors, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
 			inboundPercentage, inboundAttendance, internationalPercentage, internationalAttendance,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
-			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, version
+			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, last_updated_at, version
 		)
 	`
 
@@ -2787,6 +2806,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.EventSpeaker,                    // event_speaker: Nullable(UInt32)
 			alleventRecord.EditionSpeaker,                  // edition_speaker: Nullable(UInt32)
 			alleventRecord.EventCreated,                    // event_created: DateTime NOT NULL
+			alleventRecord.EventUpdated,                    // event_updated: DateTime NOT NULL
 			alleventRecord.EditionCreated,                  // edition_created: DateTime NOT NULL
 			alleventRecord.EventHybrid,                     // event_hybrid: Nullable(UInt32)
 			alleventRecord.IsBranded,                       // isBranded: Nullable(UInt32)
@@ -2816,6 +2836,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.EventEconomicImpact,             // event_economic_impact: JSON
 			alleventRecord.Keywords,                        // keywords: Nullable(String)
 			alleventRecord.EventScore,                      // event_score: Nullable(Int32)
+			alleventRecord.LastUpdatedAt,                   // last_updated_at: DateTime NOT NULL
 			alleventRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
