@@ -93,6 +93,7 @@ func convertToEventEditionRecord(record map[string]interface{}) EventEditionReco
 		EventLogo:                       shared.SafeConvertToNullableString(record["event_logo"]),
 		EventEstimatedVisitors:          shared.SafeConvertToNullableString(record["event_estimatedVisitors"]),
 		EventFrequency:                  shared.SafeConvertToNullableString(record["event_frequency"]),
+		ImpactScore:                     shared.SafeConvertToNullableUInt32(record["impactScore"]),
 		InboundScore:                    shared.SafeConvertToNullableUInt32(record["inboundScore"]),
 		InternationalScore:              shared.SafeConvertToNullableUInt32(record["internationalScore"]),
 		RepeatSentimentChangePercentage: shared.SafeConvertToNullableFloat64(record["repeatSentimentChangePercentage"]),
@@ -174,6 +175,7 @@ type EventEditionRecord struct {
 	EventLogo                       *string  `ch:"event_logo"`                           // Nullable(String)
 	EventEstimatedVisitors          *string  `ch:"event_estimatedVisitors"`              // LowCardinality(Nullable(String))
 	EventFrequency                  *string  `ch:"event_frequency"`                      // LowCardinality(Nullable(String))
+	ImpactScore                     *uint32  `ch:"impactScore"`                          // Nullable(UInt32)
 	InboundScore                    *uint32  `ch:"inboundScore"`                         // Nullable(UInt32)
 	InternationalScore              *uint32  `ch:"internationalScore"`                   // Nullable(UInt32)
 	RepeatSentimentChangePercentage *float64 `ch:"repeatSentimentChangePercentage"`      // Nullable(Float64)
@@ -1483,6 +1485,7 @@ func processEventEditionChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 								"event_logo":                      esInfoMap["event_logo"],
 								"event_estimatedVisitors":         esInfoMap["eventEstimatedTag"],
 								"event_frequency":                 esInfoMap["event_frequency"],
+								"impactScore":                     esInfoMap["impactScore"],
 								"inboundScore":                    esInfoMap["inboundScore"],
 								"internationalScore":              esInfoMap["internationalScore"],
 								"repeatSentimentChangePercentage": esInfoMap["repeatSentimentChangePercentage"],
@@ -2053,7 +2056,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			},
 		},
 		"size":    len(eventIDs),
-		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "inboundScore", "internationalScore", "repeatSentimentChangePercentage", "audienceZone"},
+		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "impactScore", "inboundScore", "internationalScore", "repeatSentimentChangePercentage", "audienceZone"},
 	}
 
 	queryJSON, _ := json.Marshal(query)
@@ -2208,6 +2211,7 @@ func fetchElasticsearchBatch(esClient *elasticsearch.Client, indexName string, e
 			"total_edition":                   convertedTotalEdition,
 			"avg_rating":                      source["avg_rating"],
 			"eventEstimatedTag":               shared.ConvertToString(source["eventEstimatedTag"]),
+			"impactScore":                     convertStringToUInt32("impactScore"),
 			"inboundScore":                    convertStringToUInt32("inboundScore"),
 			"internationalScore":              convertStringToUInt32("internationalScore"),
 			"repeatSentimentChangePercentage": convertToFloat64("repeatSentimentChangePercentage"),
@@ -2395,7 +2399,7 @@ func insertEventEditionDataChunk(clickhouseConn driver.Conn, records []map[strin
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
 			event_created, edition_created, event_hybrid, isBranded, maturity,
-			event_pricing, tickets, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
+			event_pricing, tickets, event_logo, event_estimatedVisitors, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
 			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, version
 		)
@@ -2493,6 +2497,7 @@ func insertEventEditionDataChunk(clickhouseConn driver.Conn, records []map[strin
 			eventEditionRecord.EventLogo,                       // event_logo: Nullable(String)
 			eventEditionRecord.EventEstimatedVisitors,          // event_estimatedVisitors: LowCardinality(Nullable(String))
 			eventEditionRecord.EventFrequency,                  // event_frequency: LowCardinality(Nullable(String))
+			eventEditionRecord.ImpactScore,                     // impactScore: Nullable(UInt32)
 			eventEditionRecord.InboundScore,                    // inboundScore: Nullable(UInt32)
 			eventEditionRecord.InternationalScore,              // internationalScore: Nullable(UInt32)
 			eventEditionRecord.RepeatSentimentChangePercentage, // repeatSentimentChangePercentage: Nullable(Float64)

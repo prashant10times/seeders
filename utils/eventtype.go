@@ -244,7 +244,7 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 
 			eventTypeEventChRecord := EventTypeEventChRecord{
 				EventTypeID:    eventTypeID,
-				EventTypeUUID:  shared.GenerateEventTypeUUID(eventTypeID, shared.ConvertToUInt32(record["event_id"]), shared.ConvertToString(record["name"]), record["created"]),
+				EventTypeUUID:  shared.GenerateUUIDFromString(fmt.Sprintf("%d", eventTypeID)),
 				EventID:        shared.ConvertToUInt32(record["event_id"]),
 				Published:      shared.ConvertToInt8(record["published"]),
 				Name:           shared.ConvertToString(record["name"]),
