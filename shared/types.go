@@ -447,6 +447,52 @@ func SafeConvertToNullableInt8(value interface{}) *int8 {
 	return nil
 }
 
+func SafeConvertToNullableInt32(value interface{}) *int32 {
+	if value == nil {
+		return nil
+	}
+	if num, ok := value.(int32); ok {
+		return &num
+	}
+	if num, ok := value.(int64); ok {
+		if num >= -2147483648 && num <= 2147483647 {
+			i32 := int32(num)
+			return &i32
+		}
+		return nil
+	}
+	if num, ok := value.(int); ok {
+		if num >= -2147483648 && num <= 2147483647 {
+			i32 := int32(num)
+			return &i32
+		}
+		return nil
+	}
+	if num, ok := value.(uint32); ok {
+		if num <= 2147483647 {
+			i32 := int32(num)
+			return &i32
+		}
+		return nil
+	}
+	if num, ok := value.(uint64); ok {
+		if num <= 2147483647 {
+			i32 := int32(num)
+			return &i32
+		}
+		return nil
+	}
+	str := SafeConvertToString(value)
+	if str == "" {
+		return nil
+	}
+	if num, err := strconv.ParseInt(str, 10, 32); err == nil {
+		i32 := int32(num)
+		return &i32
+	}
+	return nil
+}
+
 func SafeConvertToNullableUInt32(value interface{}) *uint32 {
 	if value == nil {
 		return nil

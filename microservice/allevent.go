@@ -116,6 +116,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EventAvgRating:                  shared.SafeConvertFloat64ToDecimalString(record["event_avgRating"]),
 		Keywords:                        shared.ConvertToStringArray(record["keywords"]),
 		Tickets:                         shared.ConvertToStringArray(record["tickets"]),
+		EventScore:                      shared.SafeConvertToNullableInt32(record["event_score"]),
 		Version:                         shared.SafeConvertToUInt32(record["version"]),
 	}
 }
@@ -200,6 +201,7 @@ type alleventRecord struct {
 	EventEconomicImpact             string   `ch:"event_economic_impact"`                // JSON
 	Keywords                        []string `ch:"keywords"`                             // Array(String)
 	Tickets                         []string `ch:"tickets"`                              // Array(String)
+	EventScore                      *int32   `ch:"event_score"`                          // Nullable(Int32)
 	Version                         uint32   `ch:"version"`
 }
 
@@ -662,7 +664,7 @@ func fetchalleventEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]i
 
 	query := fmt.Sprintf(`
 		SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, 
-		       country, published, status, event_audience, functionality, brand_id, created, event_type 
+		       country, published, status, event_audience, functionality, brand_id, created, event_type, score 
 		FROM event 
 		WHERE id IN (%s)`, strings.Join(placeholders, ","))
 
@@ -1654,6 +1656,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								"audienceZone":                    esInfoMap["audienceZone"],
 								"event_avgRating":                 esInfoMap["avg_rating"],
 								"keywords":                        []string{},
+								"event_score":                     eventData["score"],
 								"version":                         1,
 							}
 
@@ -2697,7 +2700,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			event_pricing, tickets, event_logo, event_estimatedVisitors, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
 			inboundPercentage, inboundAttendance, internationalPercentage, internationalAttendance,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
-			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, version
+			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, version
 		)
 	`
 
@@ -2812,6 +2815,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.EventEconomicBreakdown,          // event_economic_breakdown: JSON
 			alleventRecord.EventEconomicImpact,             // event_economic_impact: JSON
 			alleventRecord.Keywords,                        // keywords: Nullable(String)
+			alleventRecord.EventScore,                      // event_score: Nullable(Int32)
 			alleventRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
