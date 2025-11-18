@@ -969,7 +969,8 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 	log.Printf("Processing allevent data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
 
 	// Global deduplication map - shared across all chunks
-	globalUniqueRecords := make(map[string]bool)
+	// Using uint64 keys (eventID << 32 | editionID) instead of strings for memory efficiency
+	globalUniqueRecords := make(map[uint64]bool)
 	var globalMutex sync.RWMutex
 
 	// Global counters for tracking total records processed
@@ -1072,7 +1073,7 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 }
 
 // processes a single chunk of allevent data
-func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config, startID, endID int, chunkNum int, results chan<- string, globalUniqueRecords map[string]bool, globalMutex *sync.RWMutex, totalRecordsProcessed *int64, totalRecordsSkipped *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
+func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config, startID, endID int, chunkNum int, results chan<- string, globalUniqueRecords map[uint64]bool, globalMutex *sync.RWMutex, totalRecordsProcessed *int64, totalRecordsSkipped *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
 	log.Printf("Processing allevent chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
 	totalRecords := endID - startID + 1
@@ -1411,9 +1412,10 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							)
 
 							// Create unique key for deduplication (event_id + edition_id)
-							eventIDStr := shared.ConvertToString(eventData["id"])
-							editionIDStr := shared.ConvertToString(edition["edition_id"])
-							uniqueKey := eventIDStr + "_" + editionIDStr
+							// Using uint64 key (eventID << 32 | editionID) for memory efficiency
+							eventIDUint32 := shared.ConvertToUInt32(eventData["id"])
+							editionIDUint32 := shared.ConvertToUInt32(edition["edition_id"])
+							uniqueKey := uint64(eventIDUint32)<<32 | uint64(editionIDUint32)
 
 							globalMutex.RLock()
 							exists := globalUniqueRecords[uniqueKey]
