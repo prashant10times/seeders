@@ -70,6 +70,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EditionWebsite:       shared.SafeConvertToNullableString(record["edition_website"]),
 		EditionDomain:        shared.SafeConvertToNullableString(record["edition_domain"]),
 		EditionType:          *shared.SafeConvertToNullableString(record["edition_type"]),
+		EventEditions:        shared.SafeConvertToNullableUInt32(record["event_editions"]),
 		EventFollowers:       shared.SafeConvertToNullableUInt32(record["event_followers"]),
 		EditionFollowers:     shared.SafeConvertToNullableUInt32(record["edition_followers"]),
 		EventExhibitor:       shared.SafeConvertToNullableUInt32(record["event_exhibitor"]),
@@ -85,6 +86,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EventUpdated:         shared.SafeConvertToDateTimeString(record["event_updated"]),
 		EditionCreated:       shared.SafeConvertToDateTimeString(record["edition_created"]),
 		EventHybrid:          shared.SafeConvertToNullableUInt8(record["event_hybrid"]),
+		EventFormat:          shared.SafeConvertToNullableString(record["event_format"]),
 		IsBranded: func() *uint32 {
 			if val, ok := record["isBranded"].(*uint32); ok {
 				return val
@@ -118,6 +120,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		Keywords:                        shared.ConvertToStringArray(record["keywords"]),
 		Tickets:                         shared.ConvertToStringArray(record["tickets"]),
 		EventScore:                      shared.SafeConvertToNullableInt32(record["event_score"]),
+		YoYGrowth:                       shared.SafeConvertToNullableUInt32(record["yoyGrowth"]),
 		LastUpdatedAt:                   shared.SafeConvertToDateTimeString(record["last_updated_at"]),
 		Version:                         shared.SafeConvertToUInt32(record["version"]),
 	}
@@ -162,7 +165,8 @@ type alleventRecord struct {
 	EditionFunctionality            string   `ch:"edition_functionality"`  // LowCardinality(String) NOT NULL
 	EditionWebsite                  *string  `ch:"edition_website"`
 	EditionDomain                   *string  `ch:"edition_domain"`
-	EditionType                     string   `ch:"edition_type"` // LowCardinality(Nullable(String)) DEFAULT 'NA'
+	EditionType                     string   `ch:"edition_type"`   // LowCardinality(Nullable(String)) DEFAULT 'NA'
+	EventEditions                   *uint32  `ch:"event_editions"` // Nullable(UInt32) - total number of editions for the event
 	EventFollowers                  *uint32  `ch:"event_followers"`
 	EditionFollowers                *uint32  `ch:"edition_followers"`
 	EventExhibitor                  *uint32  `ch:"event_exhibitor"`
@@ -178,6 +182,7 @@ type alleventRecord struct {
 	EventUpdated                    string   `ch:"event_updated"`                        // DateTime NOT NULL
 	EditionCreated                  string   `ch:"edition_created"`                      // DateTime NOT NULL
 	EventHybrid                     *uint8   `ch:"event_hybrid"`                         // Nullable(UInt8)
+	EventFormat                     *string  `ch:"event_format"`                         // LowCardinality(Nullable(String))
 	IsBranded                       *uint32  `ch:"isBranded"`                            // Nullable(UInt32)
 	Maturity                        *string  `ch:"maturity"`                             // LowCardinality(Nullable(String))
 	EventPricing                    *string  `ch:"event_pricing"`                        // LowCardinality(Nullable(String))
@@ -205,6 +210,7 @@ type alleventRecord struct {
 	Keywords                        []string `ch:"keywords"`                             // Array(String)
 	Tickets                         []string `ch:"tickets"`                              // Array(String)
 	EventScore                      *int32   `ch:"event_score"`                          // Nullable(Int32)
+	YoYGrowth                       *uint32  `ch:"yoyGrowth"`                            // Nullable(UInt32)
 	LastUpdatedAt                   string   `ch:"last_updated_at"`                      // DateTime NOT NULL
 	Version                         uint32   `ch:"version"`
 }
@@ -595,7 +601,7 @@ func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]int
 			event, id as edition_id, city as edition_city, 
 			company_id, venue as venue_id, website as edition_website, 
 			created as edition_created, start_date as edition_start_date,
-			exhibitors_total
+			exhibitors_total, online_event as is_online
 		FROM event_edition 
 		WHERE event IN (%s)`, strings.Join(placeholders, ","))
 
@@ -1664,6 +1670,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								"event_avgRating":                 esInfoMap["avg_rating"],
 								"keywords":                        []string{},
 								"event_score":                     eventData["score"],
+								"yoyGrowth":                       esInfoMap["yoyGrowth"],
 								"last_updated_at":                 time.Now().Format("2006-01-02 15:04:05"),
 								"version":                         1,
 							}
@@ -1759,6 +1766,58 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							} else {
 								record["edition_type"] = "NA"
 							}
+
+							// Only set event_editions for current_edition records
+							if editionType != nil && *editionType == "current_edition" {
+								if editions, exists := allevents[eventID]; exists {
+									eventEditionsCount := uint32(len(editions))
+									record["event_editions"] = eventEditionsCount
+								} else {
+									record["event_editions"] = nil
+								}
+							} else {
+								// Set to nil for past_edition, future_edition, or NA
+								record["event_editions"] = nil
+							}
+
+							// Determine event_format based on hybrid, city, and is_online
+							var eventFormat string
+							fieldHybrid := esInfoMap["event_hybrid"]
+							fieldCity := esInfoMap["event_city"]
+							var isOnline interface{}
+							if edition["is_online"] != nil {
+								isOnline = edition["is_online"]
+							}
+
+							// Check if hybrid == 1
+							if fieldHybrid != nil {
+								if h, ok := fieldHybrid.(uint8); ok && h == 1 {
+									eventFormat = "HYBRID"
+								} else if h, ok := fieldHybrid.(*uint8); ok && h != nil && *h == 1 {
+									eventFormat = "HYBRID"
+								}
+							}
+
+							// If not HYBRID, check for ONLINE
+							if eventFormat == "" {
+								var cityStr string
+								var isOnlineStr string
+
+								if fieldCity != nil {
+									cityStr = shared.ConvertToString(fieldCity)
+								}
+								if isOnline != nil {
+									isOnlineStr = shared.ConvertToString(isOnline)
+								}
+
+								if cityStr == "1" || isOnlineStr == "1" {
+									eventFormat = "ONLINE"
+								} else {
+									eventFormat = "OFFLINE"
+								}
+							}
+
+							record["event_format"] = &eventFormat
 
 							if economicData != nil {
 								if totalVal, ok := economicData["total"].(float64); ok {
@@ -2375,7 +2434,7 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 			},
 		},
 		"size":    len(eventIDs),
-		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "impactScore", "inboundScore", "internationalScore", "repeatSentimentChangePercentage", "audienceZone"},
+		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "impactScore", "inboundScore", "internationalScore", "repeatSentimentChangePercentage", "audienceZone", "yoyGrowth"},
 	}
 
 	queryJSON, _ := json.Marshal(query)
@@ -2433,6 +2492,28 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 
 		convertStringToUInt32 := func(key string) interface{} {
 			if val, exists := source[key]; exists && val != nil {
+				// Handle float64 (common from JSON/Elasticsearch)
+				if floatVal, ok := val.(float64); ok {
+					if floatVal >= 0 && floatVal == float64(uint32(floatVal)) {
+						return uint32(floatVal)
+					}
+					return nil
+				}
+				// Handle int
+				if intVal, ok := val.(int); ok {
+					if intVal >= 0 {
+						return uint32(intVal)
+					}
+					return nil
+				}
+				// Handle int64
+				if int64Val, ok := val.(int64); ok {
+					if int64Val >= 0 && int64Val <= math.MaxUint32 {
+						return uint32(int64Val)
+					}
+					return nil
+				}
+				// Handle string conversion as fallback
 				strVal := shared.ConvertToString(val)
 				if strVal != "" {
 					if num, err := strconv.ParseUint(strVal, 10, 32); err == nil {
@@ -2516,6 +2597,7 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 			"edition_followers":               convertStringToUInt32("following"),
 			"event_frequency":                 shared.ConvertToString(source["frequency"]),
 			"event_hybrid":                    convertStringToUInt8("hybrid"),
+			"event_city":                      source["city"], // Store city field for event_format logic
 			"event_logo":                      shared.ConvertToString(source["logo"]),
 			"event_pricing":                   shared.ConvertToString(source["pricing"]),
 			"total_edition":                   convertedTotalEdition,
@@ -2526,6 +2608,7 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 			"internationalScore":              convertStringToUInt32("internationalScore"),
 			"repeatSentimentChangePercentage": convertToFloat64("repeatSentimentChangePercentage"),
 			"audienceZone":                    shared.ConvertToString(source["audienceZone"]),
+			"yoyGrowth":                       convertStringToUInt32("yoyGrowth"),
 		}
 	}
 
@@ -2714,14 +2797,14 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			company_id, company_name, company_domain, company_website, company_country, company_state, company_city, company_city_name,
 			venue_id, venue_name, venue_country, venue_city, venue_city_name, venue_lat, venue_long,
 			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
-			edition_type, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
+			edition_type, event_editions, event_format, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
 			event_created, event_updated, edition_created, event_hybrid, isBranded, maturity,
 			event_pricing, tickets, event_logo, event_estimatedVisitors, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
 			inboundPercentage, inboundAttendance, internationalPercentage, internationalAttendance,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
-			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, last_updated_at, version
+			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, last_updated_at, version
 		)
 	`
 
@@ -2796,6 +2879,8 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.EditionWebsite,                  // edition_website: Nullable(String)
 			alleventRecord.EditionDomain,                   // edition_domain: Nullable(String)
 			alleventRecord.EditionType,                     // edition_type: LowCardinality(Nullable(String)) DEFAULT 'NA'
+			alleventRecord.EventEditions,                   // event_editions: Nullable(UInt32)
+			alleventRecord.EventFormat,                     // event_format: LowCardinality(Nullable(String))
 			alleventRecord.EventFollowers,                  // event_followers: Nullable(UInt32)
 			alleventRecord.EditionFollowers,                // edition_followers: Nullable(UInt32)
 			alleventRecord.EventExhibitor,                  // event_exhibitor: Nullable(UInt32)
@@ -2838,6 +2923,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.EventEconomicImpact,             // event_economic_impact: JSON
 			alleventRecord.Keywords,                        // keywords: Nullable(String)
 			alleventRecord.EventScore,                      // event_score: Nullable(Int32)
+			alleventRecord.YoYGrowth,                       // yoyGrowth: Nullable(UInt32)
 			alleventRecord.LastUpdatedAt,                   // last_updated_at: DateTime NOT NULL
 			alleventRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
