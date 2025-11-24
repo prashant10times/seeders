@@ -19,6 +19,86 @@ import (
 	"github.com/elastic/go-elasticsearch/v6"
 )
 
+// allowed_event_types = [1,2,3,5,6,7,12,13]
+
+// event_type_ids = {
+//     1 : "9b5524b4-60f5-5478-b3f0-38e2e12e3981",
+//     2 : "4de48054-46fb-5452-a23f-8aac6c00592e",
+//     3 : "ad7c83a5-b8fc-5109-a159-9306848de22c",
+//     5 : "e5283caa-f655-504b-8e44-49ae0edb3faa",
+//     6 : "69cf1329-0c71-5dae-b7a9-838c5712bce0",
+//     7 : "bffa5040-c654-5991-a1c5-0610e2c0ec74",
+//     12 : "94fcb56e-2838-5d74-9092-e582d873a03e",
+//     13 : "3a3609e5-56df-5a8b-ad47-c9e168eb4f59",
+// }
+
+// event_type_priority = {
+//     1 : {
+//         "priority" : 1,
+//         "group" : "B2B"
+//         },
+//     2 : {
+//         "priority" : 2,
+//         "group" : "B2B"
+//         },
+//     3 : {
+//         "priority" : 3,
+//         "group" : "B2B"
+//         },
+//     5 : {
+//         "priority" : 4,
+//         "group" : "B2C"
+//         },
+//     7 : {
+//         "priority" : 5,
+//         "group" : "B2C"
+//         },
+//     6 : {
+//         "priority" : 6,
+//         "group" : "B2C"
+//         },
+//     12 : {
+//         "priority" : 7,
+//         "group" : "B2C"
+//         },
+//     13 : {
+//         "priority" : 8,
+//         "group" : "B2C"
+//         },
+// }
+
+// Event type ID to UUID mapping
+var eventTypeIDs = map[uint32]string{
+	1:  "41ee28a5-918e-59bc-ada8-9f6e194869c4",
+	2:  "7050e5af-f491-5280-aa66-d6e8c55b1b3d",
+	3:  "21a41a54-43b0-5198-8306-5e8326a259ef",
+	5:  "455a1427-5459-5ae3-be3a-1c680f4bc4c7",
+	6:  "c1c8b213-0f3d-57fd-9555-5bcc7135130a",
+	7:  "504013af-dfc6-5e43-b1ca-34b0ec065c86",
+	12: "b87d299a-8688-5184-8f71-eefd53272501",
+	13: "c42d0a8e-d77e-5899-a3e4-3147803d2309",
+}
+
+// Event type priority and group mapping
+type eventTypePriorityInfo struct {
+	Priority int8
+	Group    string // "B2B" or "B2C"
+}
+
+var eventTypePriority = map[uint32]eventTypePriorityInfo{
+	1:  {Priority: 1, Group: "B2B"},
+	2:  {Priority: 2, Group: "B2B"},
+	3:  {Priority: 3, Group: "B2B"},
+	5:  {Priority: 4, Group: "B2C"},
+	7:  {Priority: 5, Group: "B2C"},
+	6:  {Priority: 6, Group: "B2C"},
+	12: {Priority: 7, Group: "B2C"},
+	13: {Priority: 8, Group: "B2C"},
+}
+
+// Allowed event types
+var allowedEventTypes = []uint32{1, 2, 3, 5, 6, 7, 12, 13}
+
 // converts a map to alleventRecord struct
 func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 	return alleventRecord{
@@ -39,9 +119,11 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EditionCityLat:     shared.SafeConvertToFloat64(record["edition_city_lat"]),
 		EditionCityLong:    shared.SafeConvertToFloat64(record["edition_city_long"]),
 		CompanyID:          shared.SafeConvertToNullableUInt32(record["company_id"]),
+		CompanyUUID:        shared.SafeConvertToString(record["company_uuid"]),
 		CompanyName:        shared.SafeConvertToNullableString(record["company_name"]),
 		CompanyDomain:      shared.SafeConvertToNullableString(record["company_domain"]),
 		CompanyWebsite:     shared.SafeConvertToNullableString(record["company_website"]),
+		CompanyLogoUrl:     shared.SafeConvertToNullableString(record["companyLogoUrl"]),
 		CompanyCountry:     shared.ToUpperNullableString(shared.SafeConvertToNullableString(record["company_country"])),
 		CompanyState:       shared.SafeConvertToNullableString(record["company_state"]),
 		CompanyCity:        shared.SafeConvertToNullableUInt32(record["company_city"]),
@@ -51,10 +133,11 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 			}
 			return nil
 		}(),
-		VenueID:      shared.SafeConvertToNullableUInt32(record["venue_id"]),
-		VenueName:    shared.SafeConvertToNullableString(record["venue_name"]),
-		VenueCountry: shared.ToUpperNullableString(shared.SafeConvertToNullableString(record["venue_country"])),
-		VenueCity:    shared.SafeConvertToNullableUInt32(record["venue_city"]),
+		CompanyAddress: shared.SafeConvertToNullableString(record["company_address"]),
+		VenueID:        shared.SafeConvertToNullableUInt32(record["venue_id"]),
+		VenueName:      shared.SafeConvertToNullableString(record["venue_name"]),
+		VenueCountry:   shared.ToUpperNullableString(shared.SafeConvertToNullableString(record["venue_country"])),
+		VenueCity:      shared.SafeConvertToNullableUInt32(record["venue_city"]),
 		VenueCityName: func() *string {
 			if val, ok := record["venue_city_name"].(*string); ok {
 				return val
@@ -93,15 +176,29 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 			}
 			return nil
 		}(),
-		Maturity:                        shared.SafeConvertToNullableString(record["maturity"]),
-		EventPricing:                    shared.SafeConvertToNullableString(record["event_pricing"]),
-		EventLogo:                       shared.SafeConvertToNullableString(record["event_logo"]),
-		EventEstimatedVisitors:          shared.SafeConvertToNullableString(record["event_estimatedVisitors"]),
+		EventBrandId:           shared.SafeConvertToNullableString(record["eventBrandId"]),
+		EventSeriesId:          shared.SafeConvertToNullableString(record["eventSeriesId"]),
+		Maturity:               shared.SafeConvertToNullableString(record["maturity"]),
+		EventPricing:           shared.SafeConvertToNullableString(record["event_pricing"]),
+		EventLogo:              shared.SafeConvertToNullableString(record["event_logo"]),
+		EventEstimatedVisitors: shared.SafeConvertToNullableString(record["event_estimatedVisitors"]),
+		EstimatedVisitorsMean: func() *uint32 {
+			val := record["estimatedVisitorsMean"]
+			if val == nil {
+				return nil
+			}
+			if ptr, ok := val.(*uint32); ok {
+				return ptr
+			}
+			return shared.SafeConvertToNullableUInt32(val)
+		}(),
 		EventFrequency:                  shared.SafeConvertToNullableString(record["event_frequency"]),
 		ImpactScore:                     shared.SafeConvertToNullableUInt32(record["impactScore"]),
 		InboundScore:                    shared.SafeConvertToNullableUInt32(record["inboundScore"]),
 		InternationalScore:              shared.SafeConvertToNullableUInt32(record["internationalScore"]),
 		RepeatSentimentChangePercentage: shared.SafeConvertToNullableFloat64(record["repeatSentimentChangePercentage"]),
+		RepeatSentiment:                 shared.SafeConvertToNullableUInt32(record["repeatSentiment"]),
+		ReputationChangePercentage:      shared.SafeConvertToNullableFloat64(record["reputationChangePercentage"]),
 		AudienceZone:                    shared.SafeConvertToNullableString(record["audienceZone"]),
 		InboundPercentage:               shared.SafeConvertToUInt32(record["inboundPercentage"]),
 		InboundAttendance:               shared.SafeConvertToUInt32(record["inboundAttendance"]),
@@ -117,10 +214,16 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EventEconomicBreakdown:          shared.SafeConvertToString(record["event_economic_breakdown"]),
 		EventEconomicImpact:             shared.SafeConvertToString(record["event_economic_impact"]),
 		EventAvgRating:                  shared.SafeConvertFloat64ToDecimalString(record["event_avgRating"]),
+		TenTimesEventPageUrl:            shared.SafeConvertToNullableString(record["10timesEventPageUrl"]),
 		Keywords:                        shared.ConvertToStringArray(record["keywords"]),
 		Tickets:                         shared.ConvertToStringArray(record["tickets"]),
+		Timings:                         shared.ConvertToStringArray(record["timings"]),
 		EventScore:                      shared.SafeConvertToNullableInt32(record["event_score"]),
 		YoYGrowth:                       shared.SafeConvertToNullableUInt32(record["yoyGrowth"]),
+		FutureExpectedStartDate:         shared.SafeConvertToNullableString(record["futureExpexctedStartDate"]),
+		FutureExpectedEndDate:           shared.SafeConvertToNullableString(record["futureExpexctedEndDate"]),
+		PrimaryEventType:                shared.SafeConvertToNullableString(record["PrimaryEventType"]),
+		VerifiedOn:                      shared.SafeConvertToNullableString(record["verifiedOn"]),
 		LastUpdatedAt:                   shared.SafeConvertToDateTimeString(record["last_updated_at"]),
 		Version:                         shared.SafeConvertToUInt32(record["version"]),
 	}
@@ -133,9 +236,10 @@ type alleventRecord struct {
 	EventAbbrName                   *string  `ch:"event_abbr_name"`
 	EventDescription                *string  `ch:"event_description"`
 	EventPunchline                  *string  `ch:"event_punchline"`
-	EventAvgRating                  *string  `ch:"event_avgRating"` // Nullable(Decimal(3,2))
-	StartDate                       string   `ch:"start_date"`      // Date NOT NULL
-	EndDate                         string   `ch:"end_date"`        // Date NOT NULL
+	EventAvgRating                  *string  `ch:"event_avgRating"`     // Nullable(Decimal(3,2))
+	TenTimesEventPageUrl            *string  `ch:"10timesEventPageUrl"` // Nullable(String)
+	StartDate                       string   `ch:"start_date"`          // Date NOT NULL
+	EndDate                         string   `ch:"end_date"`            // Date NOT NULL
 	EditionID                       uint32   `ch:"edition_id"`
 	EditionCountry                  string   `ch:"edition_country"`       // LowCardinality(FixedString(2)) NOT NULL
 	EditionCity                     uint32   `ch:"edition_city"`          // UInt32 NOT NULL
@@ -145,13 +249,16 @@ type alleventRecord struct {
 	EditionCityLat                  float64  `ch:"edition_city_lat"`      // Float64 NOT NULL
 	EditionCityLong                 float64  `ch:"edition_city_long"`     // Float64 NOT NULL
 	CompanyID                       *uint32  `ch:"company_id"`
+	CompanyUUID                     string   `ch:"company_uuid"` // UUID NOT NULL
 	CompanyName                     *string  `ch:"company_name"`
 	CompanyDomain                   *string  `ch:"company_domain"`
 	CompanyWebsite                  *string  `ch:"company_website"`
+	CompanyLogoUrl                  *string  `ch:"companyLogoUrl"` // Nullable(String)
 	CompanyCountry                  *string  `ch:"company_country"`
 	CompanyState                    *string  `ch:"company_state"` // LowCardinality(Nullable(String))
 	CompanyCity                     *uint32  `ch:"company_city"`
 	CompanyCityName                 *string  `ch:"company_city_name"`
+	CompanyAddress                  *string  `ch:"company_address"` // Nullable(String)
 	VenueID                         *uint32  `ch:"venue_id"`
 	VenueName                       *string  `ch:"venue_name"`
 	VenueCountry                    *string  `ch:"venue_country"`
@@ -184,15 +291,20 @@ type alleventRecord struct {
 	EventHybrid                     *uint8   `ch:"event_hybrid"`                         // Nullable(UInt8)
 	EventFormat                     *string  `ch:"event_format"`                         // LowCardinality(Nullable(String))
 	IsBranded                       *uint32  `ch:"isBranded"`                            // Nullable(UInt32)
+	EventBrandId                    *string  `ch:"eventBrandId"`                         // Nullable(UUID)
+	EventSeriesId                   *string  `ch:"eventSeriesId"`                        // Nullable(UUID)
 	Maturity                        *string  `ch:"maturity"`                             // LowCardinality(Nullable(String))
 	EventPricing                    *string  `ch:"event_pricing"`                        // LowCardinality(Nullable(String))
 	EventLogo                       *string  `ch:"event_logo"`                           // Nullable(String)
 	EventEstimatedVisitors          *string  `ch:"event_estimatedVisitors"`              // LowCardinality(Nullable(String))
+	EstimatedVisitorsMean           *uint32  `ch:"estimatedVisitorsMean"`                // Nullable(UInt32)
 	EventFrequency                  *string  `ch:"event_frequency"`                      // LowCardinality(Nullable(String))
 	ImpactScore                     *uint32  `ch:"impactScore"`                          // Nullable(UInt32)
 	InboundScore                    *uint32  `ch:"inboundScore"`                         // Nullable(UInt32)
 	InternationalScore              *uint32  `ch:"internationalScore"`                   // Nullable(UInt32)
 	RepeatSentimentChangePercentage *float64 `ch:"repeatSentimentChangePercentage"`      // Nullable(Float64)
+	RepeatSentiment                 *uint32  `ch:"repeatSentiment"`                      // Nullable(UInt32)
+	ReputationChangePercentage      *float64 `ch:"reputationChangePercentage"`           // Nullable(Float64)
 	AudienceZone                    *string  `ch:"audienceZone"`                         // LowCardinality(Nullable(String))
 	InboundPercentage               uint32   `ch:"inboundPercentage"`                    // UInt32 NOT NULL
 	InboundAttendance               uint32   `ch:"inboundAttendance"`                    // UInt32 NOT NULL
@@ -209,8 +321,13 @@ type alleventRecord struct {
 	EventEconomicImpact             string   `ch:"event_economic_impact"`                // JSON
 	Keywords                        []string `ch:"keywords"`                             // Array(String)
 	Tickets                         []string `ch:"tickets"`                              // Array(String)
+	Timings                         []string `ch:"timings"`                              // Array(String)
 	EventScore                      *int32   `ch:"event_score"`                          // Nullable(Int32)
 	YoYGrowth                       *uint32  `ch:"yoyGrowth"`                            // Nullable(UInt32)
+	FutureExpectedStartDate         *string  `ch:"futureExpexctedStartDate"`             // Nullable(Date)
+	FutureExpectedEndDate           *string  `ch:"futureExpexctedEndDate"`               // Nullable(Date)
+	PrimaryEventType                *string  `ch:"PrimaryEventType"`                     // Nullable(UUID)
+	VerifiedOn                      *string  `ch:"verifiedOn"`                           // Nullable(Date)
 	LastUpdatedAt                   string   `ch:"last_updated_at"`                      // DateTime NOT NULL
 	Version                         uint32   `ch:"version"`
 }
@@ -459,7 +576,7 @@ func fetchalleventCompanyDataParallel(db *sql.DB, companyIDs []int64) []map[stri
 
 	retrievedCompanyIDs := make(map[int64]bool)
 	for _, company := range allCompanyData {
-		if companyID, ok := company["id"].(int64); ok {
+		if companyID, ok := company["id_10x"].(int64); ok {
 			retrievedCompanyIDs[companyID] = true
 		}
 	}
@@ -481,11 +598,12 @@ func fetchalleventCompanyDataForBatch(db *sql.DB, companyIDs []int64) []map[stri
 
 	query := fmt.Sprintf(`
 		SELECT 
-			id, name as company_name, domain as company_domain, 
-			website as company_website, country as company_country, 
-			city as company_city
-		FROM company 
-		WHERE id IN (%s)`, strings.Join(placeholders, ","))
+			c.id as id_10x, c.name as company_name, c.domain as company_domain, 
+			c.website as company_website, c.country as company_country, 
+			c.city as company_city, c.address, c.created, a.cdn_url as company_logo_url
+		FROM company c
+		LEFT JOIN attachment a ON c.logo = a.id
+		WHERE c.id IN (%s)`, strings.Join(placeholders, ","))
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -673,10 +791,12 @@ func fetchalleventEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]i
 	}
 
 	query := fmt.Sprintf(`
-		SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, 
-		       country, published, status, event_audience, functionality, brand_id, created, modified, event_type, score 
-		FROM event 
-		WHERE id IN (%s)`, strings.Join(placeholders, ","))
+		SELECT e.id, e.name as event_name, e.abbr_name, e.punchline, e.start_date, e.end_date, 
+		       e.country, e.published, e.status, e.event_audience, e.functionality, e.brand_id, e.created, e.modified, e.event_type, e.score, e.url, e.multi_city, e.verified,
+		       eb.id as brand_id_from_table, eb.created as brand_created
+		FROM event e
+		LEFT JOIN event_brands eb ON e.brand_id = eb.id
+		WHERE e.id IN (%s)`, strings.Join(placeholders, ","))
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -788,6 +908,146 @@ func fetchalleventEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]e
 	}
 
 	return result
+}
+
+// fetchalleventEventTypesForBatch fetches event types for a batch of events from event_type_event table
+func fetchalleventEventTypesForBatch(db *sql.DB, eventIDs []int64) map[int64][]uint32 {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	// Build allowed event types string
+	allowedTypesStr := make([]string, len(allowedEventTypes))
+	for i, et := range allowedEventTypes {
+		allowedTypesStr[i] = fmt.Sprintf("%d", et)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT ete.id, et.id as event_type_id, ete.event_id, et.created 
+		FROM event_type_event ete 
+		LEFT JOIN event_type et ON ete.eventtype_id = et.id 
+		WHERE ete.published = 1 
+		AND ete.event_id IN (%s) 
+		AND et.id IN (%s)
+		ORDER BY ete.id ASC
+	`, strings.Join(placeholders, ","), strings.Join(allowedTypesStr, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("Error fetching event types: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	result := make(map[int64][]uint32)
+	for rows.Next() {
+		var id int64
+		var eventTypeID sql.NullInt64
+		var eventID sql.NullInt64
+		var created sql.NullString
+
+		if err := rows.Scan(&id, &eventTypeID, &eventID, &created); err != nil {
+			log.Printf("Error scanning event type row: %v", err)
+			continue
+		}
+
+		if !eventID.Valid || !eventTypeID.Valid {
+			continue
+		}
+
+		eventIDInt := eventID.Int64
+		eventTypeIDUint := uint32(eventTypeID.Int64)
+
+		// Check if event type is in allowed list
+		isAllowed := false
+		for _, allowedType := range allowedEventTypes {
+			if eventTypeIDUint == allowedType {
+				isAllowed = true
+				break
+			}
+		}
+
+		if isAllowed {
+			result[eventIDInt] = append(result[eventIDInt], eventTypeIDUint)
+		}
+	}
+
+	return result
+}
+
+// getPrimaryEventType calculates the primary event type UUID based on event types and event audience
+// Returns nil if no valid primary event type is found
+func getPrimaryEventType(eventTypes []uint32, eventAudience uint16) *string {
+	if len(eventTypes) == 0 {
+		return nil
+	}
+
+	// Convert event_audience integer to string group
+	// Mapping: B2B -> 11000, B2C -> 10100
+	var audienceGroup string
+	switch eventAudience {
+	case 11000:
+		audienceGroup = "B2B"
+	case 10100:
+		audienceGroup = "B2C"
+	default:
+		audienceGroup = "B2B"
+	}
+
+	// Filter valid event types that match the audience group
+	var validEventTypes []uint32
+	for _, eventType := range eventTypes {
+		if priorityInfo, ok := eventTypePriority[eventType]; ok {
+			if priorityInfo.Group == audienceGroup {
+				validEventTypes = append(validEventTypes, eventType)
+			}
+		}
+	}
+
+	// If no valid types for the audience, try opposite audience
+	if len(validEventTypes) == 0 {
+		oppositeGroup := "B2C"
+		if audienceGroup == "B2C" {
+			oppositeGroup = "B2B"
+		}
+		for _, eventType := range eventTypes {
+			if priorityInfo, ok := eventTypePriority[eventType]; ok {
+				if priorityInfo.Group == oppositeGroup {
+					validEventTypes = append(validEventTypes, eventType)
+				}
+			}
+		}
+	}
+
+	if len(validEventTypes) == 0 {
+		return nil
+	}
+
+	// Sort by priority
+	for i := 0; i < len(validEventTypes)-1; i++ {
+		for j := i + 1; j < len(validEventTypes); j++ {
+			priorityI := eventTypePriority[validEventTypes[i]].Priority
+			priorityJ := eventTypePriority[validEventTypes[j]].Priority
+			if priorityI > priorityJ {
+				validEventTypes[i], validEventTypes[j] = validEventTypes[j], validEventTypes[i]
+			}
+		}
+	}
+
+	// Get UUID for the primary event type (lowest priority number = highest priority)
+	primaryEventTypeID := validEventTypes[0]
+	if uuid, ok := eventTypeIDs[primaryEventTypeID]; ok {
+		return &uuid
+	}
+
+	return nil
 }
 
 func processalleventEconomicImpactDataParallel(estimateDataMap map[int64]estimateData) map[int64]map[string]interface{} {
@@ -1225,7 +1485,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 				companyLookup := make(map[int64]map[string]interface{})
 				if len(companyData) > 0 {
 					for _, company := range companyData {
-						if companyID, ok := company["id"].(int64); ok {
+						if companyID, ok := company["id_10x"].(int64); ok {
 							companyLookup[companyID] = company
 						}
 					}
@@ -1300,6 +1560,16 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					estimateDataMap = fetchalleventEstimateDataForBatch(mysqlDB, eventIDsForEditions)
 				}
 
+				// Fetch event types for events
+				eventTypesMap := make(map[int64][]uint32)
+				if len(eventIDsForEditions) > 0 {
+					log.Printf("allevent chunk %d: Fetching event types for %d events", chunkNum, len(eventIDsForEditions))
+					startTime = time.Now()
+					eventTypesMap = fetchalleventEventTypesForBatch(mysqlDB, eventIDsForEditions)
+					eventTypeTime := time.Since(startTime)
+					log.Printf("allevent chunk %d: Retrieved event types for %d events in %v", chunkNum, len(eventTypesMap), eventTypeTime)
+				}
+
 				processedEconomicData := make(map[int64]map[string]interface{})
 				if len(estimateDataMap) > 0 {
 					processedEconomicData = processalleventEconomicImpactDataParallel(estimateDataMap)
@@ -1339,6 +1609,16 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					}
 					ticketTime := time.Since(startTime)
 					log.Printf("allevent chunk %d: Retrieved ticket data for %d events in %v", chunkNum, len(ticketDataMap), ticketTime)
+				}
+
+				// Fetch timing data for event-edition combinations
+				timingDataMap := make(map[uint64][]string) // key: uint64(eventID)<<32 | uint64(editionID)
+				if len(editionData) > 0 {
+					log.Printf("allevent chunk %d: Fetching timing data for event-edition combinations", chunkNum)
+					startTime = time.Now()
+					timingDataMap = fetchalleventTimingDataForBatch(mysqlDB, editionData)
+					timingTime := time.Since(startTime)
+					log.Printf("allevent chunk %d: Retrieved timing data for %d event-edition combinations in %v", chunkNum, len(timingDataMap), timingTime)
 				}
 
 				for eventID, editions := range allevents {
@@ -1569,11 +1849,62 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								}(),
 								"edition_city_lat":  city["event_city_lat"],
 								"edition_city_long": city["event_city_long"],
-								"company_id":        company["id"],
-								"company_name":      company["company_name"],
-								"company_domain":    companyDomain,
-								"company_website":   company["company_website"],
-								"company_country":   strings.ToUpper(shared.ConvertToString(company["company_country"])),
+								"company_id":        company["id_10x"],
+								"company_uuid": func() string {
+									// First try to get from company map if it exists
+									if company != nil {
+										if companyID, ok := company["id_10x"].(int64); ok && companyID > 0 {
+											created := company["created"]
+											createdStr := shared.ConvertToString(created)
+											if createdStr != "" {
+												idInputString := fmt.Sprintf("%d-%s", companyID, createdStr)
+												return shared.GenerateUUIDFromString(idInputString)
+											}
+										}
+									}
+									// Fallback: use edition's company_id if company map is not available
+									if companyID := edition["company_id"]; companyID != nil {
+										var id int64
+										var ok bool
+										if id, ok = companyID.(int64); !ok {
+											if idVal, ok2 := companyID.(int); ok2 {
+												id = int64(idVal)
+												ok = true
+											} else if idVal, ok2 := companyID.(uint32); ok2 {
+												id = int64(idVal)
+												ok = true
+											}
+										}
+										if ok && id > 0 {
+											// Use edition created as fallback for created date
+											createdStr := shared.ConvertToString(edition["edition_created"])
+											if createdStr == "" {
+												createdStr = shared.ConvertToString(edition["start_date"])
+											}
+											if createdStr == "" {
+												createdStr = "1970-01-01 00:00:00"
+											}
+											idInputString := fmt.Sprintf("%d-%s", id, createdStr)
+											return shared.GenerateUUIDFromString(idInputString)
+										}
+									}
+									// Last resort: generate UUID from event_id + edition_id to ensure we always have a valid UUID
+									// This occurs when edition's company_id doesn't exist in company table or is invalid
+									eventIDStr := shared.ConvertToString(eventData["id"])
+									editionIDStr := shared.ConvertToString(edition["edition_id"])
+									companyIDStr := ""
+									if companyID := edition["company_id"]; companyID != nil {
+										companyIDStr = shared.ConvertToString(companyID)
+									}
+									log.Printf("Warning: Generating company UUID from event_id %s and edition_id %s (company_id: %s not found in company table)", eventIDStr, editionIDStr, companyIDStr)
+									idInputString := fmt.Sprintf("company-%s-%s", eventIDStr, editionIDStr)
+									return shared.GenerateUUIDFromString(idInputString)
+								}(),
+								"company_name":    company["company_name"],
+								"company_domain":  companyDomain,
+								"company_website": company["company_website"],
+								"companyLogoUrl":  company["company_logo_url"],
+								"company_country": strings.ToUpper(shared.ConvertToString(company["company_country"])),
 								"company_state": func() *string {
 									if companyCity != nil && companyCity["state"] != nil {
 										stateStr := shared.ConvertToString(companyCity["state"])
@@ -1594,6 +1925,16 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 									if companyCity != nil && companyCity["name"] != nil {
 										nameStr := shared.ConvertToString(companyCity["name"])
 										return &nameStr
+									}
+									return nil
+								}(),
+								"company_address": func() *string {
+									if company != nil && company["address"] != nil {
+										addressStr := shared.ConvertToString(company["address"])
+										if strings.TrimSpace(addressStr) == "" {
+											return nil
+										}
+										return &addressStr
 									}
 									return nil
 								}(),
@@ -1646,6 +1987,45 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 									val := uint32(0)
 									return &val
 								}(),
+								"eventBrandId": func() *string {
+									// Generate UUID from brand_id + brand_created
+									brandId := eventData["brand_id_from_table"]
+									brandCreated := eventData["brand_created"]
+									if brandId != nil && brandCreated != nil {
+										brandIdStr := shared.ConvertToString(brandId)
+										brandCreatedStr := shared.ConvertToString(brandCreated)
+										if brandIdStr != "" && brandCreatedStr != "" {
+											uuidInput := fmt.Sprintf("%s-%s", brandIdStr, brandCreatedStr)
+											uuid := shared.GenerateUUIDFromString(uuidInput)
+											return &uuid
+										}
+									}
+									return nil
+								}(),
+								"eventSeriesId": func() *string {
+									isSeries := eventData["multi_city"]
+									eventName := eventData["event_name"]
+
+									var isSeriesInt int
+									if isSeries != nil {
+										if val, ok := isSeries.(int64); ok {
+											isSeriesInt = int(val)
+										} else if val, ok := isSeries.(int); ok {
+											isSeriesInt = val
+										} else if val, ok := isSeries.(uint32); ok {
+											isSeriesInt = int(val)
+										}
+									}
+
+									if isSeriesInt == 1 && eventName != nil {
+										eventNameStr := shared.ConvertToString(eventName)
+										if eventNameStr != "" {
+											uuid := shared.GenerateUUIDFromString(eventNameStr)
+											return &uuid
+										}
+									}
+									return nil
+								}(),
 								"maturity": determinealleventMaturity(esInfoMap["total_edition"]),
 								"event_pricing": func() *string {
 									if ticketType, exists := ticketTypeMap[eventID]; exists && ticketType != "" {
@@ -1659,6 +2039,15 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 									}
 									return []string{}
 								}(),
+								"timings": func() []string {
+									editionIDUint32 := shared.ConvertToUInt32(edition["edition_id"])
+									eventIDUint32 := shared.ConvertToUInt32(eventID)
+									key := uint64(eventIDUint32)<<32 | uint64(editionIDUint32)
+									if timings, exists := timingDataMap[key]; exists {
+										return timings
+									}
+									return []string{}
+								}(),
 								"event_logo":                      esInfoMap["event_logo"],
 								"event_estimatedVisitors":         esInfoMap["eventEstimatedTag"],
 								"event_frequency":                 esInfoMap["event_frequency"],
@@ -1666,13 +2055,107 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								"inboundScore":                    esInfoMap["inboundScore"],
 								"internationalScore":              esInfoMap["internationalScore"],
 								"repeatSentimentChangePercentage": esInfoMap["repeatSentimentChangePercentage"],
+								"repeatSentiment":                 esInfoMap["repeatSentiment"],
+								"reputationChangePercentage":      esInfoMap["reputationChangePercentage"],
 								"audienceZone":                    esInfoMap["audienceZone"],
 								"event_avgRating":                 esInfoMap["avg_rating"],
+								"10timesEventPageUrl":             eventData["url"],
 								"keywords":                        []string{},
 								"event_score":                     eventData["score"],
 								"yoyGrowth":                       esInfoMap["yoyGrowth"],
-								"last_updated_at":                 time.Now().Format("2006-01-02 15:04:05"),
-								"version":                         1,
+								"futureExpexctedStartDate":        esInfoMap["futureExpexctedStartDate"],
+								"futureExpexctedEndDate":          esInfoMap["futureExpexctedEndDate"],
+								"PrimaryEventType": func() *string {
+									eventTypes := eventTypesMap[eventID]
+									eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
+									return getPrimaryEventType(eventTypes, eventAudience)
+								}(),
+								"verifiedOn": func() *string {
+									verified := eventData["verified"]
+									if verified != nil {
+										verifiedStr := shared.ConvertToString(verified)
+											if len(verifiedStr) >= 10 {
+												datePart := verifiedStr[:10]
+												return &datePart
+											}
+									}
+									return nil
+								}(),
+								"estimatedVisitorsMean": func() *uint32 {
+									if finalEstimate := esInfoMap["finalEstimate"]; finalEstimate != nil {
+										if finalEstimateStr, ok := finalEstimate.(string); ok && finalEstimateStr != "" {
+											if finalEstimateFloat, err := strconv.ParseFloat(finalEstimateStr, 64); err == nil {
+												result := uint32(finalEstimateFloat)
+												return &result
+											}
+										} else if finalEstimateFloat, ok := finalEstimate.(float64); ok {
+											result := uint32(finalEstimateFloat)
+											return &result
+										} else if finalEstimateInt, ok := finalEstimate.(int64); ok {
+											result := uint32(finalEstimateInt)
+											return &result
+										} else if finalEstimateInt, ok := finalEstimate.(int); ok {
+											result := uint32(finalEstimateInt)
+											return &result
+										}
+									}
+
+									highEstimate := esInfoMap["highEstimate"]
+									lowEstimate := esInfoMap["lowEstimate"]
+
+									var highVal, lowVal float64
+									highValid := false
+									lowValid := false
+
+									// Parse highEstimate
+									if highEstimate != nil {
+										if highStr, ok := highEstimate.(string); ok && highStr != "" {
+											if val, err := strconv.ParseFloat(highStr, 64); err == nil {
+												highVal = val
+												highValid = true
+											}
+										} else if val, ok := highEstimate.(float64); ok {
+											highVal = val
+											highValid = true
+										} else if val, ok := highEstimate.(int64); ok {
+											highVal = float64(val)
+											highValid = true
+										} else if val, ok := highEstimate.(int); ok {
+											highVal = float64(val)
+											highValid = true
+										}
+									}
+
+									// Parse lowEstimate
+									if lowEstimate != nil {
+										if lowStr, ok := lowEstimate.(string); ok && lowStr != "" {
+											if val, err := strconv.ParseFloat(lowStr, 64); err == nil {
+												lowVal = val
+												lowValid = true
+											}
+										} else if val, ok := lowEstimate.(float64); ok {
+											lowVal = val
+											lowValid = true
+										} else if val, ok := lowEstimate.(int64); ok {
+											lowVal = float64(val)
+											lowValid = true
+										} else if val, ok := lowEstimate.(int); ok {
+											lowVal = float64(val)
+											lowValid = true
+										}
+									}
+
+									// Calculate mean if both are available
+									if highValid && lowValid {
+										mean := uint32((highVal + lowVal) / 2)
+										return &mean
+									}
+
+									// Fallback: None
+									return nil
+								}(),
+								"last_updated_at": time.Now().Format("2006-01-02 15:04:05"),
+								"version":         1,
 							}
 
 							var currentEditionEventType interface{}
@@ -2332,6 +2815,149 @@ func processalleventTicketData(ticketData []map[string]interface{}) map[int64][]
 	return result
 }
 
+func fetchalleventTimingDataForBatch(db *sql.DB, editionData []map[string]interface{}) map[uint64][]string {
+	result := make(map[uint64][]string)
+	eventEditionPairs := make(map[uint64]bool)
+	var eventIDs []int64
+	var editionIDs []int64
+
+	for _, edition := range editionData {
+		eventID, eventOK := edition["event"].(int64)
+		editionID, editionOK := edition["edition_id"].(int64)
+		if eventOK && editionOK {
+			eventIDUint32 := shared.ConvertToUInt32(eventID)
+			editionIDUint32 := shared.ConvertToUInt32(editionID)
+			key := uint64(eventIDUint32)<<32 | uint64(editionIDUint32)
+			if !eventEditionPairs[key] {
+				eventEditionPairs[key] = true
+				eventIDs = append(eventIDs, eventID)
+				editionIDs = append(editionIDs, editionID)
+			}
+		}
+	}
+
+	if len(eventEditionPairs) == 0 {
+		return result
+	}
+
+	// Process in batches to avoid SQL query size limits
+	batchSize := 500 // Process 500 event-edition pairs at a time
+	for i := 0; i < len(eventIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(eventIDs) {
+			end = len(eventIDs)
+		}
+
+		batchEventIDs := eventIDs[i:end]
+		batchEditionIDs := editionIDs[i:end]
+
+		var conditions []string
+		var args []interface{}
+		for j := 0; j < len(batchEventIDs); j++ {
+			conditions = append(conditions, "(event = ? AND event_edition = ?)")
+			args = append(args, batchEventIDs[j], batchEditionIDs[j])
+		}
+
+		query := fmt.Sprintf(`
+			SELECT event, event_edition, value
+			FROM event_data
+			WHERE title = 'timing'
+			AND (%s)
+		`, strings.Join(conditions, " OR "))
+
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			log.Printf("Error fetching timing data batch %d-%d: %v", i+1, end, err)
+			continue
+		}
+
+		func() {
+			defer rows.Close()
+			for rows.Next() {
+				var eventID sql.NullInt64
+				var eventEdition sql.NullInt64
+				var value sql.NullString
+
+				if err := rows.Scan(&eventID, &eventEdition, &value); err != nil {
+					log.Printf("Error scanning timing data: %v", err)
+					continue
+				}
+
+				if !eventID.Valid || !eventEdition.Valid {
+					continue
+				}
+
+				eventIDUint32 := shared.ConvertToUInt32(eventID.Int64)
+				editionIDUint32 := shared.ConvertToUInt32(eventEdition.Int64)
+				key := uint64(eventIDUint32)<<32 | uint64(editionIDUint32)
+
+				if value.Valid && value.String != "" {
+					// Sanitize JSON: Replace MySQL NULL (uppercase) with JSON null (lowercase)
+					// Use regex to replace NULL only when it's a JSON value (not inside strings)
+					jsonStr := value.String
+					// Replace NULL that appears as a JSON value (after colon, comma, or at start/end)
+					jsonStr = strings.ReplaceAll(jsonStr, ":NULL", ":null")
+					jsonStr = strings.ReplaceAll(jsonStr, ": NULL", ": null")
+					jsonStr = strings.ReplaceAll(jsonStr, ",NULL", ",null")
+					jsonStr = strings.ReplaceAll(jsonStr, ", NULL", ", null")
+					jsonStr = strings.ReplaceAll(jsonStr, "[NULL", "[null")
+					jsonStr = strings.ReplaceAll(jsonStr, "[ NULL", "[ null")
+					jsonStr = strings.ReplaceAll(jsonStr, "NULL]", "null]")
+					jsonStr = strings.ReplaceAll(jsonStr, " NULL]", " null]")
+
+					var timingData interface{}
+					if err := json.Unmarshal([]byte(jsonStr), &timingData); err != nil {
+						log.Printf("Error parsing timing JSON for event %d, edition %d: %v. Original value: %s, Sanitized: %s", eventID.Int64, eventEdition.Int64, err, value.String, jsonStr)
+						result[key] = []string{}
+						continue
+					}
+
+					var timings []string
+					switch v := timingData.(type) {
+					case []interface{}:
+						for _, item := range v {
+							if str, ok := item.(string); ok {
+								timings = append(timings, str)
+							} else if itemMap, ok := item.(map[string]interface{}); ok {
+								if jsonBytes, err := json.Marshal(itemMap); err == nil {
+									timings = append(timings, string(jsonBytes))
+								} else {
+									timings = append(timings, shared.ConvertToString(item))
+								}
+							} else {
+								timings = append(timings, shared.ConvertToString(item))
+							}
+						}
+					case []string:
+						timings = v
+					case map[string]interface{}:
+						if jsonBytes, err := json.Marshal(v); err == nil {
+							timings = []string{string(jsonBytes)}
+						} else {
+							log.Printf("Error marshaling timing map to JSON for event %d, edition %d: %v", eventID.Int64, eventEdition.Int64, err)
+							timings = []string{}
+						}
+					case string:
+						timings = []string{v}
+					default:
+						if jsonBytes, err := json.Marshal(v); err == nil {
+							timings = []string{string(jsonBytes)}
+						} else {
+							timings = []string{shared.ConvertToString(v)}
+						}
+					}
+
+					result[key] = timings
+				} else {
+					result[key] = []string{}
+				}
+			}
+		}()
+	}
+
+	return result
+}
+
 func extractalleventKeywords(eventName string, eventAbbrName *string, eventDescription *string, eventPunchline *string, categoryNames []string) []string {
 	stopWords := map[string]bool{
 		"and": true, "or": true, "but": true, "for": true, "nor": true, "so": true, "yet": true,
@@ -2434,7 +3060,7 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 			},
 		},
 		"size":    len(eventIDs),
-		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "impactScore", "inboundScore", "internationalScore", "repeatSentimentChangePercentage", "audienceZone", "yoyGrowth"},
+		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "impactScore", "inboundScore", "internationalScore", "repeatSentimentChangePercentage", "repeatSentiment", "reputationSentiment", "audienceZone", "yoyGrowth", "futureExpexctedStartDate", "futureExpexctedEndDate", "finalEstimate", "highEstimate", "lowEstimate"},
 	}
 
 	queryJSON, _ := json.Marshal(query)
@@ -2607,8 +3233,15 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 			"inboundScore":                    convertStringToUInt32("inboundScore"),
 			"internationalScore":              convertStringToUInt32("internationalScore"),
 			"repeatSentimentChangePercentage": convertToFloat64("repeatSentimentChangePercentage"),
+			"repeatSentiment":                 convertStringToUInt32("repeatSentiment"),
+			"reputationChangePercentage":      convertToFloat64("reputationSentiment"),
 			"audienceZone":                    shared.ConvertToString(source["audienceZone"]),
 			"yoyGrowth":                       convertStringToUInt32("yoyGrowth"),
+			"futureExpexctedStartDate":        source["futureExpexctedStartDate"],
+			"futureExpexctedEndDate":          source["futureExpexctedEndDate"],
+			"finalEstimate":                   source["finalEstimate"],
+			"highEstimate":                    source["highEstimate"],
+			"lowEstimate":                     source["lowEstimate"],
 		}
 	}
 
@@ -2791,20 +3424,20 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 
 	insertSQL := `
 		INSERT INTO allevent_ch (
-			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating,
+			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating, 10timesEventPageUrl,
 			start_date, end_date,
 			edition_id, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
-			company_id, company_name, company_domain, company_website, company_country, company_state, company_city, company_city_name,
+			company_id, company_uuid, company_name, company_domain, company_website, companyLogoUrl, company_country, company_state, company_city, company_city_name, company_address,
 			venue_id, venue_name, venue_country, venue_city, venue_city_name, venue_lat, venue_long,
 			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
 			edition_type, event_editions, event_format, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
-			event_created, event_updated, edition_created, event_hybrid, isBranded, maturity,
-			event_pricing, tickets, event_logo, event_estimatedVisitors, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
+			event_created, event_updated, edition_created, event_hybrid, isBranded, eventBrandId, eventSeriesId, maturity,
+			event_pricing, tickets, timings, event_logo, event_estimatedVisitors, estimatedVisitorsMean, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, repeatSentiment, reputationChangePercentage, audienceZone,
 			inboundPercentage, inboundAttendance, internationalPercentage, internationalAttendance,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
-			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, last_updated_at, version
+			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, futureExpexctedStartDate, futureExpexctedEndDate, PrimaryEventType, verifiedOn, last_updated_at, version
 		)
 	`
 
@@ -2847,6 +3480,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.EventDescription,                // event_description: Nullable(String)
 			alleventRecord.EventPunchline,                  // event_punchline: Nullable(String)
 			alleventRecord.EventAvgRating,                  // event_avgRating: Nullable(Decimal(3,2))
+			alleventRecord.TenTimesEventPageUrl,            // 10timesEventPageUrl: Nullable(String)
 			alleventRecord.StartDate,                       // start_date: Date NOT NULL
 			alleventRecord.EndDate,                         // end_date: Date NOT NULL
 			alleventRecord.EditionID,                       // edition_id: UInt32 NOT NULL
@@ -2858,13 +3492,16 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.EditionCityLat,                  // edition_city_lat: Float64 NOT NULL
 			alleventRecord.EditionCityLong,                 // edition_city_long: Float64 NOT NULL
 			alleventRecord.CompanyID,                       // company_id: Nullable(UInt32)
+			alleventRecord.CompanyUUID,                     // company_uuid: UUID NOT NULL
 			alleventRecord.CompanyName,                     // company_name: Nullable(String)
 			alleventRecord.CompanyDomain,                   // company_domain: Nullable(String)
 			alleventRecord.CompanyWebsite,                  // company_website: Nullable(String)
+			alleventRecord.CompanyLogoUrl,                  // companyLogoUrl: Nullable(String)
 			alleventRecord.CompanyCountry,                  // company_country: LowCardinality(Nullable(FixedString(2)))
 			alleventRecord.CompanyState,                    // company_state: LowCardinality(Nullable(String))
 			alleventRecord.CompanyCity,                     // company_city: Nullable(UInt32)
 			alleventRecord.CompanyCityName,                 // company_city_name: Nullable(String)
+			alleventRecord.CompanyAddress,                  // company_address: Nullable(String)
 			alleventRecord.VenueID,                         // venue_id: Nullable(UInt32)
 			alleventRecord.VenueName,                       // venue_name: Nullable(String)
 			alleventRecord.VenueCountry,                    // venue_country: LowCardinality(Nullable(FixedString(2)))
@@ -2895,18 +3532,24 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.EventCreated,                    // event_created: DateTime NOT NULL
 			alleventRecord.EventUpdated,                    // event_updated: DateTime NOT NULL
 			alleventRecord.EditionCreated,                  // edition_created: DateTime NOT NULL
-			alleventRecord.EventHybrid,                     // event_hybrid: Nullable(UInt32)
+			alleventRecord.EventHybrid,                     // event_hybrid: Nullable(UInt8)
 			alleventRecord.IsBranded,                       // isBranded: Nullable(UInt32)
+			alleventRecord.EventBrandId,                    // eventBrandId: Nullable(UUID)
+			alleventRecord.EventSeriesId,                   // eventSeriesId: Nullable(UUID)
 			alleventRecord.Maturity,                        // maturity: LowCardinality(Nullable(String))
 			alleventRecord.EventPricing,                    // event_pricing: LowCardinality(Nullable(String))
 			alleventRecord.Tickets,                         // tickets: Array(String)
+			alleventRecord.Timings,                         // timings: Array(String)
 			alleventRecord.EventLogo,                       // event_logo: Nullable(String)
 			alleventRecord.EventEstimatedVisitors,          // event_estimatedVisitors: LowCardinality(Nullable(String))
+			alleventRecord.EstimatedVisitorsMean,           // estimatedVisitorsMean: Nullable(UInt32)
 			alleventRecord.EventFrequency,                  // event_frequency: LowCardinality(Nullable(String))
 			alleventRecord.ImpactScore,                     // impactScore: Nullable(UInt32)
 			alleventRecord.InboundScore,                    // inboundScore: Nullable(UInt32)
 			alleventRecord.InternationalScore,              // internationalScore: Nullable(UInt32)
 			alleventRecord.RepeatSentimentChangePercentage, // repeatSentimentChangePercentage: Nullable(Float64)
+			alleventRecord.RepeatSentiment,                 // repeatSentiment: Nullable(UInt32)
+			alleventRecord.ReputationChangePercentage,      // reputationChangePercentage: Nullable(Float64)
 			alleventRecord.AudienceZone,                    // audienceZone: LowCardinality(Nullable(String))
 			alleventRecord.InboundPercentage,               // inboundPercentage: UInt32 NOT NULL
 			alleventRecord.InboundAttendance,               // inboundAttendance: UInt32 NOT NULL
@@ -2924,6 +3567,10 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.Keywords,                        // keywords: Nullable(String)
 			alleventRecord.EventScore,                      // event_score: Nullable(Int32)
 			alleventRecord.YoYGrowth,                       // yoyGrowth: Nullable(UInt32)
+			alleventRecord.FutureExpectedStartDate,         // futureExpexctedStartDate: Nullable(Date)
+			alleventRecord.FutureExpectedEndDate,           // futureExpexctedEndDate: Nullable(Date)
+			alleventRecord.PrimaryEventType,                // PrimaryEventType: Nullable(UUID)
+			alleventRecord.VerifiedOn,                       // verifiedOn: Nullable(Date)
 			alleventRecord.LastUpdatedAt,                   // last_updated_at: DateTime NOT NULL
 			alleventRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
