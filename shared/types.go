@@ -547,6 +547,12 @@ func SafeConvertToNullableFloat64(value interface{}) *float64 {
 	if value == nil {
 		return nil
 	}
+	if nullFloat, ok := value.(sql.NullFloat64); ok {
+		if !nullFloat.Valid {
+			return nil
+		}
+		return &nullFloat.Float64
+	}
 	if ptr, ok := value.(*float64); ok {
 		return ptr
 	}
@@ -572,6 +578,26 @@ func SafeConvertToNullableFloat64(value interface{}) *float64 {
 	if num, ok := value.(uint64); ok {
 		f64 := float64(num)
 		return &f64
+	}
+	// Handle string representations of floats
+	if str, ok := value.(string); ok {
+		if str == "" {
+			return nil
+		}
+		if f, err := strconv.ParseFloat(str, 64); err == nil {
+			return &f
+		}
+		return nil
+	}
+	// Handle []byte (common when MySQL returns values)
+	if bytes, ok := value.([]byte); ok {
+		if len(bytes) == 0 {
+			return nil
+		}
+		if f, err := strconv.ParseFloat(string(bytes), 64); err == nil {
+			return &f
+		}
+		return nil
 	}
 	return nil
 }

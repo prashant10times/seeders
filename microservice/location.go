@@ -60,6 +60,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,8 +112,54 @@ type LocationChRecord struct {
 	Version       uint32    `ch:"version"`
 }
 
+type CountryCoordinates struct {
+	ID      string   `json:"id"`
+	GeoLat  *float64 `json:"geoLat"`
+	GeoLong *float64 `json:"geoLong"`
+}
+
+type CountryCoordinatesMap struct {
+	Latitude  *float64
+	Longitude *float64
+}
+
+func buildCountryCoordinatesLookup() (map[string]CountryCoordinatesMap, error) {
+	_, filename, _, _ := runtime.Caller(0)
+	dir := filepath.Dir(filename)
+	jsonPath := filepath.Join(dir, "Country_data.json")
+
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read Country_data.json: %w", err)
+	}
+
+	var countries []CountryCoordinates
+	if err := json.Unmarshal(data, &countries); err != nil {
+		return nil, fmt.Errorf("failed to parse Country_data.json: %w", err)
+	}
+
+	lookup := make(map[string]CountryCoordinatesMap)
+	for _, country := range countries {
+		if country.ID != "" {
+			isoUpper := strings.ToUpper(strings.TrimSpace(country.ID))
+			lookup[isoUpper] = CountryCoordinatesMap{
+				Latitude:  country.GeoLat,
+				Longitude: country.GeoLong,
+			}
+		}
+	}
+
+	log.Printf("Loaded coordinates for %d countries from Country_data.json", len(lookup))
+	return lookup, nil
+}
+
 func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID uint32) uint32 {
 	log.Println("=== Starting location_ch (countries) Processing ===")
+
+	countryCoordsLookup, err := buildCountryCoordinatesLookup()
+	if err != nil {
+		log.Fatalf("Failed to build country coordinates lookup: %v", err)
+	}
 
 	offset := 0
 	batchSize := config.BatchSize
@@ -171,6 +220,10 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 
 			var latPtr *float64
 			var lonPtr *float64
+			if coords, ok := countryCoordsLookup[isoUpper]; ok {
+				latPtr = coords.Latitude
+				lonPtr = coords.Longitude
+			}
 
 			isoPtr := (*string)(nil)
 			if isoUpper != "" {
