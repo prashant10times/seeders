@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"regexp"
 	"seeders/shared"
 	"strconv"
 	"strings"
@@ -98,6 +99,83 @@ var eventTypePriority = map[uint32]eventTypePriorityInfo{
 
 // Allowed event types
 var allowedEventTypes = []uint32{1, 2, 3, 5, 6, 7, 12, 13}
+
+// attendance_range_tag maps event type UUID to a map of range strings to size labels
+// Example: "uuid-here" -> {"0-1000": "NANO", "1000-5000": "MICRO", "50000+": "ULTRA"}
+var attendanceRangeTag = map[string]map[string]string{
+	"41ee28a5-918e-59bc-ada8-9f6e194869c4": {
+		"0-1000":       "NANO",
+		"1000-5000":    "MICRO",
+		"5000-10000":   "SMALL",
+		"10000-20000":  "MEDIUM",
+		"20000-50000":  "LARGE",
+		"50000-100000": "MEGA",
+		"100000+":      "ULTRA",
+	},
+	"7050e5af-f491-5280-aa66-d6e8c55b1b3d": {
+		"0-300":      "NANO",
+		"300-500":    "MICRO",
+		"500-1000":   "SMALL",
+		"1000-2000":  "MEDIUM",
+		"2000-5000":  "LARGE",
+		"5000-10000": "MEGA",
+		"10000+":     "ULTRA",
+	},
+	"21a41a54-43b0-5198-8306-5e8326a259ef": {
+		"0-300":      "NANO",
+		"300-500":    "MICRO",
+		"500-1000":   "SMALL",
+		"1000-2000":  "MEDIUM",
+		"2000-5000":  "LARGE",
+		"5000-10000": "MEGA",
+		"10000+":     "ULTRA",
+	},
+	"455a1427-5459-5ae3-be3a-1c680f4bc4c7": {
+		"0-1000":       "NANO",
+		"1000-5000":    "MICRO",
+		"5000-10000":   "SMALL",
+		"10000-20000":  "MEDIUM",
+		"20000-50000":  "LARGE",
+		"50000-100000": "MEGA",
+		"100000+":      "ULTRA",
+	},
+	"c1c8b213-0f3d-57fd-9555-5bcc7135130a": {
+		"0-1000":       "NANO",
+		"1000-5000":    "MICRO",
+		"5000-10000":   "SMALL",
+		"10000-20000":  "MEDIUM",
+		"20000-50000":  "LARGE",
+		"50000-100000": "MEGA",
+		"100000+":      "ULTRA",
+	},
+	"504013af-dfc6-5e43-b1ca-34b0ec065c86": {
+		"0-300":      "NANO",
+		"300-500":    "MICRO",
+		"500-1000":   "SMALL",
+		"1000-2000":  "MEDIUM",
+		"2000-5000":  "LARGE",
+		"5000-10000": "MEGA",
+		"10000+":     "ULTRA",
+	},
+	"b87d299a-8688-5184-8f71-eefd53272501": {
+		"0-300":      "NANO",
+		"300-500":    "MICRO",
+		"500-1000":   "SMALL",
+		"1000-2000":  "MEDIUM",
+		"2000-5000":  "LARGE",
+		"5000-10000": "MEGA",
+		"10000+":     "ULTRA",
+	},
+	"c42d0a8e-d77e-5899-a3e4-3147803d2309": {
+		"0-300":      "NANO",
+		"300-500":    "MICRO",
+		"500-1000":   "SMALL",
+		"1000-2000":  "MEDIUM",
+		"2000-5000":  "LARGE",
+		"5000-10000": "MEGA",
+		"10000+":     "ULTRA",
+	},
+}
 
 // converts a map to alleventRecord struct
 func convertToalleventRecord(record map[string]interface{}) alleventRecord {
@@ -192,6 +270,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 			}
 			return shared.SafeConvertToNullableUInt32(val)
 		}(),
+		EstimatedSize:                   shared.SafeConvertToNullableString(record["estimatedSize"]),
 		EventFrequency:                  shared.SafeConvertToNullableString(record["event_frequency"]),
 		ImpactScore:                     shared.SafeConvertToNullableUInt32(record["impactScore"]),
 		InboundScore:                    shared.SafeConvertToNullableUInt32(record["inboundScore"]),
@@ -298,6 +377,7 @@ type alleventRecord struct {
 	EventLogo                       *string  `ch:"event_logo"`                           // Nullable(String)
 	EventEstimatedVisitors          *string  `ch:"event_estimatedVisitors"`              // LowCardinality(Nullable(String))
 	EstimatedVisitorsMean           *uint32  `ch:"estimatedVisitorsMean"`                // Nullable(UInt32)
+	EstimatedSize                   *string  `ch:"estimatedSize"`                        // LowCardinality(Nullable(String))
 	EventFrequency                  *string  `ch:"event_frequency"`                      // LowCardinality(Nullable(String))
 	ImpactScore                     *uint32  `ch:"impactScore"`                          // Nullable(UInt32)
 	InboundScore                    *uint32  `ch:"inboundScore"`                         // Nullable(UInt32)
@@ -980,6 +1060,61 @@ func fetchalleventEventTypesForBatch(db *sql.DB, eventIDs []int64) map[int64][]u
 	}
 
 	return result
+}
+
+// getAttendanceRange returns the attendance range string for a given primary event type UUID and estimated visitor mean
+// Returns nil if no matching range is found or if inputs are invalid
+func getAttendanceRange(primaryEventType *string, estimatedVisitorMean *uint32) *string {
+	if primaryEventType == nil || estimatedVisitorMean == nil {
+		return nil
+	}
+
+	ranges, ok := attendanceRangeTag[*primaryEventType]
+	if !ok {
+		log.Printf("Warning: No attendance ranges found for event type UUID: %s", *primaryEventType)
+		return nil
+	}
+
+	// Regex to split range strings like "0-1000" or "50000+"
+	rangeRegex := regexp.MustCompile(`-|\+`)
+
+	var selectedRange *string
+	for rangeStr := range ranges {
+		parts := rangeRegex.Split(rangeStr, -1)
+		if len(parts) < 1 {
+			continue
+		}
+
+		minVal, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil {
+			log.Printf("Warning: Could not parse min value '%s' in range '%s': %v", parts[0], rangeStr, err)
+			continue
+		}
+
+		// Check if it's an open-ended range (ends with +)
+		if strings.HasSuffix(rangeStr, "+") {
+			// Open-ended range: e.g., "50000+"
+			if int64(*estimatedVisitorMean) >= minVal {
+				selectedRange = &rangeStr
+				break
+			}
+		} else if len(parts) >= 2 {
+			// Closed range: e.g., "0-1000"
+			maxVal, err := strconv.ParseInt(parts[1], 10, 64)
+			if err != nil {
+				log.Printf("Warning: Could not parse max value '%s' in range '%s': %v", parts[1], rangeStr, err)
+				continue
+			}
+
+			visitorMeanInt := int64(*estimatedVisitorMean)
+			if visitorMeanInt >= minVal && visitorMeanInt <= maxVal {
+				selectedRange = &rangeStr
+				break
+			}
+		}
+	}
+
+	return selectedRange
 }
 
 // getPrimaryEventType calculates the primary event type UUID based on event types and event audience
@@ -2074,10 +2209,10 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 									verified := eventData["verified"]
 									if verified != nil {
 										verifiedStr := shared.ConvertToString(verified)
-											if len(verifiedStr) >= 10 {
-												datePart := verifiedStr[:10]
-												return &datePart
-											}
+										if len(verifiedStr) >= 10 {
+											datePart := verifiedStr[:10]
+											return &datePart
+										}
 									}
 									return nil
 								}(),
@@ -2153,6 +2288,90 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 
 									// Fallback: None
 									return nil
+								}(),
+								"estimatedSize": func() *string {
+									// Get primary event type UUID (reuse the same calculation as PrimaryEventType)
+									eventTypes := eventTypesMap[eventID]
+									eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
+									primaryEventType := getPrimaryEventType(eventTypes, eventAudience)
+
+									// Reuse the already computed estimatedVisitorsMean from the record map
+									// Note: We need to compute it here since closures execute independently
+									// but we can extract it to a helper function for better code reuse
+									var estimatedVisitorMean *uint32
+									if finalEstimate := esInfoMap["finalEstimate"]; finalEstimate != nil {
+										if finalEstimateStr, ok := finalEstimate.(string); ok && finalEstimateStr != "" {
+											if finalEstimateFloat, err := strconv.ParseFloat(finalEstimateStr, 64); err == nil {
+												result := uint32(finalEstimateFloat)
+												estimatedVisitorMean = &result
+											}
+										} else if finalEstimateFloat, ok := finalEstimate.(float64); ok {
+											result := uint32(finalEstimateFloat)
+											estimatedVisitorMean = &result
+										} else if finalEstimateInt, ok := finalEstimate.(int64); ok {
+											result := uint32(finalEstimateInt)
+											estimatedVisitorMean = &result
+										} else if finalEstimateInt, ok := finalEstimate.(int); ok {
+											result := uint32(finalEstimateInt)
+											estimatedVisitorMean = &result
+										}
+									}
+
+									if estimatedVisitorMean == nil {
+										highEstimate := esInfoMap["highEstimate"]
+										lowEstimate := esInfoMap["lowEstimate"]
+
+										var highVal, lowVal float64
+										highValid := false
+										lowValid := false
+
+										// Parse highEstimate
+										if highEstimate != nil {
+											if highStr, ok := highEstimate.(string); ok && highStr != "" {
+												if val, err := strconv.ParseFloat(highStr, 64); err == nil {
+													highVal = val
+													highValid = true
+												}
+											} else if val, ok := highEstimate.(float64); ok {
+												highVal = val
+												highValid = true
+											} else if val, ok := highEstimate.(int64); ok {
+												highVal = float64(val)
+												highValid = true
+											} else if val, ok := highEstimate.(int); ok {
+												highVal = float64(val)
+												highValid = true
+											}
+										}
+
+										// Parse lowEstimate
+										if lowEstimate != nil {
+											if lowStr, ok := lowEstimate.(string); ok && lowStr != "" {
+												if val, err := strconv.ParseFloat(lowStr, 64); err == nil {
+													lowVal = val
+													lowValid = true
+												}
+											} else if val, ok := lowEstimate.(float64); ok {
+												lowVal = val
+												lowValid = true
+											} else if val, ok := lowEstimate.(int64); ok {
+												lowVal = float64(val)
+												lowValid = true
+											} else if val, ok := lowEstimate.(int); ok {
+												lowVal = float64(val)
+												lowValid = true
+											}
+										}
+
+										// Calculate mean if both are available
+										if highValid && lowValid {
+											mean := uint32((highVal + lowVal) / 2)
+											estimatedVisitorMean = &mean
+										}
+									}
+
+									// Call getAttendanceRange
+									return getAttendanceRange(primaryEventType, estimatedVisitorMean)
 								}(),
 								"last_updated_at": time.Now().Format("2006-01-02 15:04:05"),
 								"version":         1,
@@ -3434,7 +3653,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
 			event_sponsor, edition_sponsor, event_speaker, edition_speaker,
 			event_created, event_updated, edition_created, event_hybrid, isBranded, eventBrandId, eventSeriesId, maturity,
-			event_pricing, tickets, timings, event_logo, event_estimatedVisitors, estimatedVisitorsMean, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, repeatSentiment, reputationChangePercentage, audienceZone,
+			event_pricing, tickets, timings, event_logo, event_estimatedVisitors, estimatedVisitorsMean, estimatedSize, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, repeatSentiment, reputationChangePercentage, audienceZone,
 			inboundPercentage, inboundAttendance, internationalPercentage, internationalAttendance,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
 			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, futureExpexctedStartDate, futureExpexctedEndDate, PrimaryEventType, verifiedOn, last_updated_at, version
@@ -3543,6 +3762,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.EventLogo,                       // event_logo: Nullable(String)
 			alleventRecord.EventEstimatedVisitors,          // event_estimatedVisitors: LowCardinality(Nullable(String))
 			alleventRecord.EstimatedVisitorsMean,           // estimatedVisitorsMean: Nullable(UInt32)
+			alleventRecord.EstimatedSize,                   // estimatedSize: LowCardinality(Nullable(String))
 			alleventRecord.EventFrequency,                  // event_frequency: LowCardinality(Nullable(String))
 			alleventRecord.ImpactScore,                     // impactScore: Nullable(UInt32)
 			alleventRecord.InboundScore,                    // inboundScore: Nullable(UInt32)
@@ -3570,7 +3790,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.FutureExpectedStartDate,         // futureExpexctedStartDate: Nullable(Date)
 			alleventRecord.FutureExpectedEndDate,           // futureExpexctedEndDate: Nullable(Date)
 			alleventRecord.PrimaryEventType,                // PrimaryEventType: Nullable(UUID)
-			alleventRecord.VerifiedOn,                       // verifiedOn: Nullable(Date)
+			alleventRecord.VerifiedOn,                      // verifiedOn: Nullable(Date)
 			alleventRecord.LastUpdatedAt,                   // last_updated_at: DateTime NOT NULL
 			alleventRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
