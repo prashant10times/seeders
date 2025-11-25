@@ -1602,7 +1602,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 			}
 
 			if len(editionData) > 0 {
-				log.Printf("allevent chunk %d: Building location_ch lookups for cities and states", chunkNum)
+				log.Printf("allevent chunk %d: Building location_ch lookups for cities, states, and venues", chunkNum)
 				startTime := time.Now()
 				cityIDLookup, err := buildalleventCityIDLookupFromLocationCh(clickhouseConn)
 				if err != nil {
@@ -1614,8 +1614,13 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					log.Printf("allevent chunk %d: WARNING - Failed to build state ID lookup: %v", chunkNum, err)
 					stateIDLookup = make(map[string]uint32) // Empty lookup on error
 				}
+				venueIDLookup, err := buildalleventVenueIDLookupFromLocationCh(clickhouseConn)
+				if err != nil {
+					log.Printf("allevent chunk %d: WARNING - Failed to build venue ID lookup: %v", chunkNum, err)
+					venueIDLookup = make(map[string]uint32) // Empty lookup on error
+				}
 				lookupTime := time.Since(startTime)
-				log.Printf("allevent chunk %d: Built location_ch lookups in %v (cities: %d, states: %d)", chunkNum, lookupTime, len(cityIDLookup), len(stateIDLookup))
+				log.Printf("allevent chunk %d: Built location_ch lookups in %v (cities: %d, states: %d, venues: %d)", chunkNum, lookupTime, len(cityIDLookup), len(stateIDLookup), len(venueIDLookup))
 
 				companyLookup := make(map[int64]map[string]interface{})
 				if len(companyData) > 0 {
@@ -1695,7 +1700,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					estimateDataMap = fetchalleventEstimateDataForBatch(mysqlDB, eventIDsForEditions)
 				}
 
-				// Fetch event types for events
 				eventTypesMap := make(map[int64][]uint32)
 				if len(eventIDsForEditions) > 0 {
 					log.Printf("allevent chunk %d: Fetching event types for %d events", chunkNum, len(eventIDsForEditions))
@@ -1710,7 +1714,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					processedEconomicData = processalleventEconomicImpactDataParallel(estimateDataMap)
 				}
 
-				// Fetch category names for events
 				categoryNamesMap := make(map[int64][]string)
 				if len(eventIDsForEditions) > 0 {
 					log.Printf("allevent chunk %d: Fetching category names for %d events", chunkNum, len(eventIDsForEditions))
@@ -1720,7 +1723,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					log.Printf("allevent chunk %d: Retrieved category names for %d events in %v", chunkNum, len(categoryNamesMap), categoryTime)
 				}
 
-				// Fetch ticket data for events
 				ticketDataMap := make(map[int64][]string)
 				ticketTypeMap := make(map[int64]string)
 				if len(eventIDsForEditions) > 0 {
@@ -1746,8 +1748,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					log.Printf("allevent chunk %d: Retrieved ticket data for %d events in %v", chunkNum, len(ticketDataMap), ticketTime)
 				}
 
-				// Fetch timing data for event-edition combinations
-				timingDataMap := make(map[uint64][]string) // key: uint64(eventID)<<32 | uint64(editionID)
+				timingDataMap := make(map[uint64][]string)
 				if len(editionData) > 0 {
 					log.Printf("allevent chunk %d: Fetching timing data for event-edition combinations", chunkNum)
 					startTime = time.Now()
@@ -1790,7 +1791,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								}
 							}
 
-							// Get company city data
 							var companyCity map[string]interface{}
 							if company != nil && company["company_city"] != nil {
 								if companyCityID, ok := company["company_city"].(int64); ok {
@@ -1800,7 +1800,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								}
 							}
 
-							// Get venue city data
 							var venueCity map[string]interface{}
 							if venue != nil && venue["venue_city"] != nil {
 								if venueCityID, ok := venue["venue_city"].(int64); ok {
@@ -1812,19 +1811,16 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 
 							esInfoMap := esData[eventID]
 
-							// Extract domain from edition website
 							var editionDomain string
 							if editionWebsite != nil {
 								editionDomain = shared.ExtractDomainFromWebsite(editionWebsite)
 							}
 
-							// Extract domain from company website
 							var companyDomain string
 							if company != nil && company["company_website"] != nil {
 								companyDomain = shared.ExtractDomainFromWebsite(company["company_website"])
 							}
 
-							// Determine edition type using simplified logic
 							editionType := determinealleventType(
 								edition["edition_start_date"],
 								currentEditionStartDates[eventID],
@@ -1832,8 +1828,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								currentEditionIDs[eventID],
 							)
 
-							// Create unique key for deduplication (event_id + edition_id)
-							// Using uint64 key (eventID << 32 | editionID) for memory efficiency
 							eventIDUint32 := shared.ConvertToUInt32(eventData["id"])
 							editionIDUint32 := shared.ConvertToUInt32(edition["edition_id"])
 							uniqueKey := uint64(eventIDUint32)<<32 | uint64(editionIDUint32)
@@ -1853,21 +1847,18 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							globalUniqueRecords[uniqueKey] = true
 							globalMutex.Unlock()
 
-							// Get location_ch.id for edition city (query by name + country ISO)
 							var editionCityLocationChID *uint32
 							editionCountryISO := strings.ToUpper(shared.ConvertToString(eventData["country"]))
 							if city != nil && city["name"] != nil {
 								cityName := shared.ConvertToString(city["name"])
 								if cityName != "" {
 									cityNameStr := strings.TrimSpace(cityName)
-									// First try with country ISO
 									if editionCountryISO != "" && editionCountryISO != "NAN" {
 										cityKeyWithISO := fmt.Sprintf("%s|%s", cityNameStr, editionCountryISO)
 										if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
 											editionCityLocationChID = &locationChID
 										}
 									}
-									// If not found with ISO, try without ISO as fallback
 									if editionCityLocationChID == nil {
 										cityKeyWithoutISO := cityNameStr
 										if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
@@ -1877,21 +1868,18 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								}
 							}
 
-							// Get location_ch.id for company city (query by name + country ISO)
 							var companyCityLocationChID *uint32
 							if companyCity != nil && companyCity["name"] != nil {
 								companyCityName := shared.ConvertToString(companyCity["name"])
 								companyCountryISO := strings.ToUpper(shared.ConvertToString(company["company_country"]))
 								if companyCityName != "" {
 									companyCityNameStr := strings.TrimSpace(companyCityName)
-									// First try with country ISO
 									if companyCountryISO != "" && companyCountryISO != "NAN" {
 										cityKeyWithISO := fmt.Sprintf("%s|%s", companyCityNameStr, companyCountryISO)
 										if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
 											companyCityLocationChID = &locationChID
 										}
 									}
-									// If not found with ISO, try without ISO as fallback
 									if companyCityLocationChID == nil {
 										cityKeyWithoutISO := companyCityNameStr
 										if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
@@ -1925,24 +1913,42 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								}
 							}
 
-							// Get location_ch.id for edition city state (query by name + country ISO)
 							var editionCityStateLocationChID *uint32
 							if city != nil && city["state"] != nil {
 								stateName := shared.ConvertToString(city["state"])
 								if stateName != "" {
 									stateNameStr := strings.TrimSpace(stateName)
-									// First try with country ISO
 									if editionCountryISO != "" && editionCountryISO != "NAN" {
 										stateKeyWithISO := fmt.Sprintf("%s|%s", stateNameStr, editionCountryISO)
 										if locationChID, exists := stateIDLookup[stateKeyWithISO]; exists {
 											editionCityStateLocationChID = &locationChID
 										}
 									}
-									// If not found with ISO, try without ISO as fallback
 									if editionCityStateLocationChID == nil {
 										stateKeyWithoutISO := stateNameStr
 										if locationChID, exists := stateIDLookup[stateKeyWithoutISO]; exists {
 											editionCityStateLocationChID = &locationChID
+										}
+									}
+								}
+							}
+
+							var venueLocationChID *uint32
+							if venue != nil && venue["venue_name"] != nil {
+								venueName := shared.ConvertToString(venue["venue_name"])
+								venueCountryISO := strings.ToUpper(shared.ConvertToString(venue["venue_country"]))
+								if venueName != "" {
+									venueNameStr := strings.TrimSpace(venueName)
+									if venueCountryISO != "" && venueCountryISO != "NAN" {
+										venueKeyWithISO := fmt.Sprintf("%s|%s", venueNameStr, venueCountryISO)
+										if locationChID, exists := venueIDLookup[venueKeyWithISO]; exists {
+											venueLocationChID = &locationChID
+										}
+									}
+									if venueLocationChID == nil {
+										venueKeyWithoutISO := venueNameStr
+										if locationChID, exists := venueIDLookup[venueKeyWithoutISO]; exists {
+											venueLocationChID = &locationChID
 										}
 									}
 								}
@@ -2073,7 +2079,12 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 									}
 									return nil
 								}(),
-								"venue_id":      venue["id"],
+								"venue_id": func() interface{} {
+									if venueLocationChID != nil {
+										return uint32(*venueLocationChID)
+									}
+									return nil
+								}(),
 								"venue_name":    venue["venue_name"],
 								"venue_country": strings.ToUpper(shared.ConvertToString(venue["venue_country"])),
 								"venue_city": func() interface{} {
@@ -2469,7 +2480,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								record["edition_type"] = "NA"
 							}
 
-							// Only set event_editions for current_edition records
 							if editionType != nil && *editionType == "current_edition" {
 								if editions, exists := allevents[eventID]; exists {
 									eventEditionsCount := uint32(len(editions))
@@ -2478,11 +2488,9 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 									record["event_editions"] = nil
 								}
 							} else {
-								// Set to nil for past_edition, future_edition, or NA
 								record["event_editions"] = nil
 							}
 
-							// Determine event_format based on hybrid, city, and is_online
 							var eventFormat string
 							fieldHybrid := esInfoMap["event_hybrid"]
 							fieldCity := esInfoMap["event_city"]
@@ -2491,7 +2499,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								isOnline = edition["is_online"]
 							}
 
-							// Check if hybrid == 1
 							if fieldHybrid != nil {
 								if h, ok := fieldHybrid.(uint8); ok && h == 1 {
 									eventFormat = "HYBRID"
@@ -2500,7 +2507,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								}
 							}
 
-							// If not HYBRID, check for ONLINE
 							if eventFormat == "" {
 								var cityStr string
 								var isOnlineStr string
@@ -2626,7 +2632,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					}
 				}
 
-				// Count events with missing current editions
 				eventsWithMissingCurrentEdition := 0
 				for eventID := range allevents {
 					if currentEditionIDs[eventID] == 0 {
@@ -2641,7 +2646,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 						chunkNum, eventsWithMissingCurrentEdition)
 				}
 
-				// Insert collected records into ClickHouse
 				log.Printf("allevent chunk %d: Total records collected: %d", chunkNum, len(clickHouseRecords))
 				if len(clickHouseRecords) > 0 {
 					log.Printf("allevent chunk %d: Attempting to insert %d records into ClickHouse...", chunkNum, len(clickHouseRecords))
@@ -2666,11 +2670,9 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 			}
 		}
 
-		// Get the last ID from this batch for next iteration
 		if len(batchData) > 0 {
 			lastID := batchData[len(batchData)-1]["id"]
 			if lastID != nil {
-				// Update startID for next batch within this chunk
 				if id, ok := lastID.(int64); ok {
 					startID = int(id) + 1
 				}
@@ -2823,13 +2825,11 @@ func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[st
 					isoStr = ""
 				}
 			}
-			// Store both with and without ISO for flexible matching
 			keyWithISO := fmt.Sprintf("%s|%s", cityNameStr, isoStr)
 			keyWithoutISO := cityNameStr
 			if isoStr != "" {
 				lookup[keyWithISO] = locationChID
 			}
-			// Also store without ISO for fallback (only if not already exists to avoid overwriting)
 			if _, exists := lookup[keyWithoutISO]; !exists {
 				lookup[keyWithoutISO] = locationChID
 			}
@@ -2875,13 +2875,11 @@ func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[s
 					isoStr = ""
 				}
 			}
-			// Store both with and without ISO for flexible matching
 			keyWithISO := fmt.Sprintf("%s|%s", stateNameStr, isoStr)
 			keyWithoutISO := stateNameStr
 			if isoStr != "" {
 				lookup[keyWithISO] = locationChID
 			}
-			// Also store without ISO for fallback (only if not already exists to avoid overwriting)
 			if _, exists := lookup[keyWithoutISO]; !exists {
 				lookup[keyWithoutISO] = locationChID
 			}
@@ -2892,7 +2890,56 @@ func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[s
 	return lookup, nil
 }
 
-// fetchalleventCategoryNamesForEvents fetches category names for given event IDs
+func buildalleventVenueIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[string]uint32, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	query := `
+		SELECT id, name, iso
+		FROM location_ch
+		WHERE location_type = 'VENUE'
+	`
+
+	rows, err := clickhouseConn.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query location_ch for venues: %v", err)
+	}
+	defer rows.Close()
+
+	lookup := make(map[string]uint32)
+	for rows.Next() {
+		var locationChID uint32
+		var venueName *string
+		var countryISO *string
+		if err := rows.Scan(&locationChID, &venueName, &countryISO); err != nil {
+			log.Printf("Warning: Failed to scan venue row: %v", err)
+			continue
+		}
+
+		if venueName != nil && *venueName != "" {
+			venueNameStr := strings.TrimSpace(*venueName)
+			isoStr := ""
+			if countryISO != nil && *countryISO != "" {
+				isoStr = strings.ToUpper(strings.TrimSpace(*countryISO))
+				if isoStr == "NAN" {
+					isoStr = ""
+				}
+			}
+			keyWithISO := fmt.Sprintf("%s|%s", venueNameStr, isoStr)
+			keyWithoutISO := venueNameStr
+			if isoStr != "" {
+				lookup[keyWithISO] = locationChID
+			}
+			if _, exists := lookup[keyWithoutISO]; !exists {
+				lookup[keyWithoutISO] = locationChID
+			}
+		}
+	}
+
+	log.Printf("Built venue ID lookup: %d venues mapped from location_ch", len(lookup))
+	return lookup, nil
+}
+
 func fetchalleventCategoryNamesForEvents(db *sql.DB, eventIDs []int64) map[int64][]string {
 	if len(eventIDs) == 0 {
 		return make(map[int64][]string)
@@ -2934,7 +2981,6 @@ func fetchalleventCategoryNamesForEvents(db *sql.DB, eventIDs []int64) map[int64
 	return categoryMap
 }
 
-// fetchalleventTicketDataForBatch fetches ticket data for given event IDs
 func fetchalleventTicketDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
@@ -2994,7 +3040,6 @@ func fetchalleventTicketDataForBatch(db *sql.DB, eventIDs []int64) []map[string]
 	return results
 }
 
-// processalleventTicketData processes raw ticket data and converts it to JSON strings
 func processalleventTicketData(ticketData []map[string]interface{}) map[int64][]string {
 	result := make(map[int64][]string)
 
@@ -3059,8 +3104,7 @@ func fetchalleventTimingDataForBatch(db *sql.DB, editionData []map[string]interf
 		return result
 	}
 
-	// Process in batches to avoid SQL query size limits
-	batchSize := 500 // Process 500 event-edition pairs at a time
+	batchSize := 500
 	for i := 0; i < len(eventIDs); i += batchSize {
 		end := i + batchSize
 		if end > len(eventIDs) {
@@ -3111,10 +3155,7 @@ func fetchalleventTimingDataForBatch(db *sql.DB, editionData []map[string]interf
 				key := uint64(eventIDUint32)<<32 | uint64(editionIDUint32)
 
 				if value.Valid && value.String != "" {
-					// Sanitize JSON: Replace MySQL NULL (uppercase) with JSON null (lowercase)
-					// Use regex to replace NULL only when it's a JSON value (not inside strings)
 					jsonStr := value.String
-					// Replace NULL that appears as a JSON value (after colon, comma, or at start/end)
 					jsonStr = strings.ReplaceAll(jsonStr, ":NULL", ":null")
 					jsonStr = strings.ReplaceAll(jsonStr, ": NULL", ": null")
 					jsonStr = strings.ReplaceAll(jsonStr, ",NULL", ",null")
@@ -3337,28 +3378,24 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 
 		convertStringToUInt32 := func(key string) interface{} {
 			if val, exists := source[key]; exists && val != nil {
-				// Handle float64 (common from JSON/Elasticsearch)
 				if floatVal, ok := val.(float64); ok {
 					if floatVal >= 0 && floatVal == float64(uint32(floatVal)) {
 						return uint32(floatVal)
 					}
 					return nil
 				}
-				// Handle int
 				if intVal, ok := val.(int); ok {
 					if intVal >= 0 {
 						return uint32(intVal)
 					}
 					return nil
 				}
-				// Handle int64
 				if int64Val, ok := val.(int64); ok {
 					if int64Val >= 0 && int64Val <= math.MaxUint32 {
 						return uint32(int64Val)
 					}
 					return nil
 				}
-				// Handle string conversion as fallback
 				strVal := shared.ConvertToString(val)
 				if strVal != "" {
 					if num, err := strconv.ParseUint(strVal, 10, 32); err == nil {
@@ -3442,7 +3479,7 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 			"edition_followers":               convertStringToUInt32("following"),
 			"event_frequency":                 shared.ConvertToString(source["frequency"]),
 			"event_hybrid":                    convertStringToUInt8("hybrid"),
-			"event_city":                      source["city"], // Store city field for event_format logic
+			"event_city":                      source["city"],
 			"event_logo":                      shared.ConvertToString(source["logo"]),
 			"event_pricing":                   shared.ConvertToString(source["pricing"]),
 			"total_edition":                   convertedTotalEdition,
