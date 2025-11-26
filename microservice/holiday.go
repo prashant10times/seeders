@@ -570,7 +570,7 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 			event_created, edition_created, event_hybrid, isBranded, maturity,
 			event_pricing, tickets, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
-			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, version
+			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, PrimaryEventType, version
 		)
 	`
 
@@ -655,6 +655,7 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 			record.EventEconomicBreakdown,          // event_economic_breakdown: JSON
 			record.EventEconomicImpact,             // event_economic_impact: JSON
 			record.Keywords,                        // keywords: Array(String)
+			record.PrimaryEventType,                // PrimaryEventType: Nullable(UUID)
 			record.Version,                         // version: UInt32
 		)
 		if err != nil {
@@ -828,6 +829,7 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 					EventUUID:   eventUUID,
 				}
 
+				primaryEventTypeUUID := "5b37e581-53f7-5dcf-8177-c6a43774b168"
 				record := alleventRecord{
 					EventID:                         currentEventID,
 					EventUUID:                       eventUUID,
@@ -867,7 +869,7 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 					EditionFunctionality:            "",
 					EditionWebsite:                  nil,
 					EditionDomain:                   nil,
-					EditionType:                     "NA",
+					EditionType:                     "current_edition",
 					EventFollowers:                  nil,
 					EditionFollowers:                nil,
 					EventExhibitor:                  nil,
@@ -903,6 +905,7 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 					EventEconomicBreakdown:          "{}",
 					EventEconomicImpact:             "{}",
 					Keywords:                        keywords,
+					PrimaryEventType:                &primaryEventTypeUUID,
 					Version:                         1,
 				}
 
