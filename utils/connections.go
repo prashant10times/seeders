@@ -269,13 +269,13 @@ func TestClickHouseConnection(clickhouseConn driver.Conn) error {
 		return fmt.Errorf("ClickHouse query returned unexpected result: %d", result)
 	}
 
-	tableQuery := "SELECT count() FROM event_edition_ch LIMIT 1"
+	tableQuery := "SELECT count() FROM allevent_ch LIMIT 1"
 	if err := clickhouseConn.Exec(ctx, tableQuery); err != nil {
 		return fmt.Errorf("ClickHouse table access test failed: %v", err)
 	}
 
 	log.Println("OK: ClickHouse connection successful")
-	log.Printf("OK: ClickHouse table 'event_edition_ch' is accessible")
+	log.Printf("OK: ClickHouse table 'allevent_ch' is accessible")
 
 	return nil
 }
