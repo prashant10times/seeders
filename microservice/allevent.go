@@ -1135,7 +1135,6 @@ func getPrimaryEventType(eventTypes []uint32, eventAudience uint16) *string {
 		}
 	}
 
-	// If no valid types for the audience, try opposite audience
 	if len(validEventTypes) == 0 {
 		oppositeGroup := "B2C"
 		if audienceGroup == "B2C" {
@@ -1858,21 +1857,18 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								}
 							}
 
-							// Get location_ch.id for venue city (query by name + country ISO)
 							var venueCityLocationChID *uint32
 							if venueCity != nil && venueCity["name"] != nil {
 								venueCityName := shared.ConvertToString(venueCity["name"])
 								venueCountryISO := strings.ToUpper(shared.ConvertToString(venue["venue_country"]))
 								if venueCityName != "" {
 									venueCityNameStr := strings.TrimSpace(venueCityName)
-									// First try with country ISO
 									if venueCountryISO != "" && venueCountryISO != "NAN" {
 										cityKeyWithISO := fmt.Sprintf("%s|%s", venueCityNameStr, venueCountryISO)
 										if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
 											venueCityLocationChID = &locationChID
 										}
 									}
-									// If not found with ISO, try without ISO as fallback
 									if venueCityLocationChID == nil {
 										cityKeyWithoutISO := venueCityNameStr
 										if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
@@ -1961,7 +1957,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								"edition_city_long": city["event_city_long"],
 								"company_id":        company["id_10x"],
 								"company_uuid": func() string {
-									// First try to get from company map if it exists
 									if company != nil {
 										if companyID, ok := company["id_10x"].(int64); ok && companyID > 0 {
 											created := company["created"]
@@ -1972,7 +1967,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 											}
 										}
 									}
-									// Fallback: use edition's company_id if company map is not available
 									if companyID := edition["company_id"]; companyID != nil {
 										var id int64
 										var ok bool
@@ -1986,7 +1980,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 											}
 										}
 										if ok && id > 0 {
-											// Use edition created as fallback for created date
 											createdStr := shared.ConvertToString(edition["edition_created"])
 											if createdStr == "" {
 												createdStr = shared.ConvertToString(edition["start_date"])
@@ -1998,15 +1991,8 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 											return shared.GenerateUUIDFromString(idInputString)
 										}
 									}
-									// Last resort: generate UUID from event_id + edition_id to ensure we always have a valid UUID
-									// This occurs when edition's company_id doesn't exist in company table or is invalid
 									eventIDStr := shared.ConvertToString(eventData["id"])
 									editionIDStr := shared.ConvertToString(edition["edition_id"])
-									companyIDStr := ""
-									if companyID := edition["company_id"]; companyID != nil {
-										companyIDStr = shared.ConvertToString(companyID)
-									}
-									log.Printf("Warning: Generating company UUID from event_id %s and edition_id %s (company_id: %s not found in company table)", eventIDStr, editionIDStr, companyIDStr)
 									idInputString := fmt.Sprintf("company-%s-%s", eventIDStr, editionIDStr)
 									return shared.GenerateUUIDFromString(idInputString)
 								}(),
@@ -2184,9 +2170,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 									eventTypes := eventTypesMap[eventID]
 									eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
 									result := getPrimaryEventType(eventTypes, eventAudience)
-									if result == nil {
-										log.Printf("WARNING: PrimaryEventType is nil for event_id=%d, edition_id=%d. Event types: %v, Event audience: %d", eventID, edition["edition_id"], eventTypes, eventAudience)
-									}
 									return result
 								}(),
 								"verifiedOn": func() *string {
@@ -3040,6 +3023,56 @@ func processalleventTicketData(ticketData []map[string]interface{}) map[int64][]
 	return result
 }
 
+func sanitizeInvalidJSONEscapes(jsonStr string) string {
+	var result strings.Builder
+	result.Grow(len(jsonStr))
+
+	validEscapes := map[byte]bool{
+		'"':  true, // \"
+		'\\': true, // \\
+		'/':  true, // \/
+		'b':  true, // \b
+		'f':  true, // \f
+		'n':  true, // \n
+		'r':  true, // \r
+		't':  true, // \t
+		'u':  true, // \uXXXX
+	}
+
+	bytes := []byte(jsonStr)
+	for i := 0; i < len(bytes); i++ {
+		if bytes[i] == '\\' && i+1 < len(bytes) {
+			nextChar := bytes[i+1]
+			if validEscapes[nextChar] {
+				result.WriteByte(bytes[i])
+				result.WriteByte(nextChar)
+				i++
+				if nextChar == 'u' && i+4 < len(bytes) {
+					allHex := true
+					for j := i + 1; j <= i+4 && j < len(bytes); j++ {
+						c := bytes[j]
+						if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+							allHex = false
+							break
+						}
+					}
+					if allHex {
+						result.Write(bytes[i+1 : i+5])
+						i += 4
+					}
+				}
+			} else {
+				result.WriteByte(nextChar)
+				i++
+			}
+		} else {
+			result.WriteByte(bytes[i])
+		}
+	}
+
+	return result.String()
+}
+
 func fetchalleventTimingDataForBatch(db *sql.DB, editionData []map[string]interface{}) map[uint64][]string {
 	result := make(map[uint64][]string)
 	eventEditionPairs := make(map[uint64]bool)
@@ -3125,6 +3158,7 @@ func fetchalleventTimingDataForBatch(db *sql.DB, editionData []map[string]interf
 					jsonStr = strings.ReplaceAll(jsonStr, "[ NULL", "[ null")
 					jsonStr = strings.ReplaceAll(jsonStr, "NULL]", "null]")
 					jsonStr = strings.ReplaceAll(jsonStr, " NULL]", " null]")
+					jsonStr = sanitizeInvalidJSONEscapes(jsonStr)
 
 					var timingData interface{}
 					if err := json.Unmarshal([]byte(jsonStr), &timingData); err != nil {
