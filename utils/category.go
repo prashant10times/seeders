@@ -274,11 +274,24 @@ func insertEventCategoryEventChDataSingleWorker(clickhouseConn driver.Conn, even
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d event_category_ch records", len(eventCategoryEventChRecords))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for event_category_ch",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with event_category_ch batch insert")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_category_ch (
+		INSERT INTO event_category_temp (
 			category, category_uuid, event, name, slug, published, short_name, is_group, created, version, last_updated_at
 		)
 	`)

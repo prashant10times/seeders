@@ -446,11 +446,24 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d event_sponsors_ch records", len(sponsorRecords))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for event_sponsors_ch",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with event_sponsors_ch batch insert")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_sponsors_ch (
+		INSERT INTO event_sponsors_temp (
 			company_id, company_uuid, company_id_name, edition_id, event_id, company_website,
 			company_domain, company_country, company_state, company_state_name, company_city, company_city_name, facebook_id,
 			linkedin_id, twitter_id, created, version, last_updated_at

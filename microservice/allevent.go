@@ -1062,8 +1062,6 @@ func fetchalleventEventTypesForBatch(db *sql.DB, eventIDs []int64) map[int64][]u
 	return result
 }
 
-// getAttendanceRange returns the attendance range string for a given primary event type UUID and estimated visitor mean
-// Returns nil if no matching range is found or if inputs are invalid
 func getAttendanceRange(primaryEventType *string, estimatedVisitorMean *uint32) *string {
 	if primaryEventType == nil || estimatedVisitorMean == nil {
 		return nil
@@ -1075,7 +1073,6 @@ func getAttendanceRange(primaryEventType *string, estimatedVisitorMean *uint32) 
 		return nil
 	}
 
-	// Regex to split range strings like "0-1000" or "50000+"
 	rangeRegex := regexp.MustCompile(`-|\+`)
 
 	var selectedRange *string
@@ -1091,15 +1088,12 @@ func getAttendanceRange(primaryEventType *string, estimatedVisitorMean *uint32) 
 			continue
 		}
 
-		// Check if it's an open-ended range (ends with +)
 		if strings.HasSuffix(rangeStr, "+") {
-			// Open-ended range: e.g., "50000+"
 			if int64(*estimatedVisitorMean) >= minVal {
 				selectedRange = &rangeStr
 				break
 			}
 		} else if len(parts) >= 2 {
-			// Closed range: e.g., "0-1000"
 			maxVal, err := strconv.ParseInt(parts[1], 10, 64)
 			if err != nil {
 				log.Printf("Warning: Could not parse max value '%s' in range '%s': %v", parts[1], rangeStr, err)
@@ -1117,15 +1111,11 @@ func getAttendanceRange(primaryEventType *string, estimatedVisitorMean *uint32) 
 	return selectedRange
 }
 
-// getPrimaryEventType calculates the primary event type UUID based on event types and event audience
-// Returns nil if no valid primary event type is found
 func getPrimaryEventType(eventTypes []uint32, eventAudience uint16) *string {
 	if len(eventTypes) == 0 {
 		return nil
 	}
 
-	// Convert event_audience integer to string group
-	// Mapping: B2B -> 11000, B2C -> 10100
 	var audienceGroup string
 	switch eventAudience {
 	case 11000:
@@ -1136,7 +1126,6 @@ func getPrimaryEventType(eventTypes []uint32, eventAudience uint16) *string {
 		audienceGroup = "B2B"
 	}
 
-	// Filter valid event types that match the audience group
 	var validEventTypes []uint32
 	for _, eventType := range eventTypes {
 		if priorityInfo, ok := eventTypePriority[eventType]; ok {
@@ -1165,7 +1154,6 @@ func getPrimaryEventType(eventTypes []uint32, eventAudience uint16) *string {
 		return nil
 	}
 
-	// Sort by priority
 	for i := 0; i < len(validEventTypes)-1; i++ {
 		for j := i + 1; j < len(validEventTypes); j++ {
 			priorityI := eventTypePriority[validEventTypes[i]].Priority
@@ -1176,7 +1164,6 @@ func getPrimaryEventType(eventTypes []uint32, eventAudience uint16) *string {
 		}
 	}
 
-	// Get UUID for the primary event type (lowest priority number = highest priority)
 	primaryEventTypeID := validEventTypes[0]
 	if uuid, ok := eventTypeIDs[primaryEventTypeID]; ok {
 		return &uuid
@@ -1221,13 +1208,11 @@ func processalleventSingleEconomicImpact(eventID int64, economicImpact string) m
 		return result
 	}
 
-	// Skip processing if error field exists, but still save raw data
 	if errorField, exists := economicImpactJSON["error"]; exists && errorField != nil {
 		result[eventID] = processedData
 		return result
 	}
 
-	// Try to extract data, but continue even if extraction fails
 	total, totalBreakdown, dayWiseFormatted := formatalleventEconomicImpact(eventID, economicImpact)
 
 	if totalVal, ok := total.(float64); ok {
@@ -1324,7 +1309,7 @@ func formatalleventEconomicImpact(_ int64, economicImpact string) (interface{}, 
 
 		for key, value := range dayTotalData {
 			if val, ok := value.(float64); ok {
-				roundedVal := math.Round(val*100) / 100 // Round to 2 decimal places
+				roundedVal := math.Round(val*100) / 100
 				if strings.ToLower(key) == "cost" {
 					dayTotal = roundedVal
 					continue
@@ -1349,7 +1334,6 @@ func formatalleventEconomicImpact(_ int64, economicImpact string) (interface{}, 
 func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
 	log.Println("=== Starting allevent ONLY Processing ===")
 
-	// Get total records and min/max ID's count from event table
 	totalRecords, minID, maxID, err := shared.GetTotalRecordsAndIDRange(mysqlDB, "event")
 	if err != nil {
 		log.Fatal("Failed to get total records and ID range from event:", err)
@@ -1357,7 +1341,6 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 
 	log.Printf("Total event records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
 
-	// Calculate chunk size based on user input
 	if config.NumChunks <= 0 {
 		config.NumChunks = 5 // Default to 5 chunks if not specified
 	}
@@ -1369,12 +1352,9 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 
 	log.Printf("Processing allevent data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
 
-	// Global deduplication map - shared across all chunks
-	// Using uint64 keys (eventID << 32 | editionID) instead of strings for memory efficiency
 	globalUniqueRecords := make(map[uint64]bool)
 	var globalMutex sync.RWMutex
 
-	// Global counters for tracking total records processed
 	var totalRecordsProcessed int64
 	var totalRecordsSkipped int64
 	var totalRecordsInserted int64
@@ -1387,12 +1367,10 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 		startID := minID + (i * chunkSize)
 		endID := startID + chunkSize - 1
 
-		// last chunk to include remaining records
 		if i == config.NumChunks-1 {
 			endID = maxID
 		}
 
-		// delay between chunk launches
 		if i > 0 {
 			delay := 3 * time.Second
 			log.Printf("Waiting %v before launching allevent chunk %d...", delay, i+1)
@@ -1411,20 +1389,17 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 		log.Printf("allevent Result: %s", result)
 	}
 
-	// Print final summary
 	globalCountMutex.Lock()
 	log.Printf("=== FINAL SUMMARY ===")
 	log.Printf("Total records processed: %d", totalRecordsProcessed)
 	log.Printf("Total records skipped (duplicates): %d", totalRecordsSkipped)
 	log.Printf("Total records inserted: %d", totalRecordsInserted)
 
-	// Check for missing records in source data
 	var nullEventCount int
 	var invalidEventCount int
 	var totalEditionsInSource int
 	var validEventCount int
 
-	// Get total editions in source
 	err = mysqlDB.QueryRow("SELECT COUNT(*) FROM event_edition").Scan(&totalEditionsInSource)
 	if err != nil {
 		log.Printf("Error getting total editions count: %v", err)
@@ -1432,7 +1407,6 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 		log.Printf("Total editions in source (event_edition table): %d", totalEditionsInSource)
 	}
 
-	// Check for editions with NULL event values
 	err = mysqlDB.QueryRow("SELECT COUNT(*) FROM event_edition WHERE event IS NULL").Scan(&nullEventCount)
 	if err != nil {
 		log.Printf("Error checking NULL events: %v", err)
@@ -1440,7 +1414,6 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 		log.Printf("Editions with NULL event values: %d", nullEventCount)
 	}
 
-	// Check for editions with invalid event IDs (not in event table)
 	err = mysqlDB.QueryRow(`
 		SELECT COUNT(*) 
 		FROM event_edition ee 
@@ -1453,7 +1426,6 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 		log.Printf("Editions with invalid event IDs: %d", invalidEventCount)
 	}
 
-	// Check for editions that should be processed (valid event IDs)
 	err = mysqlDB.QueryRow(`
 		SELECT COUNT(*) 
 		FROM event_edition ee 
@@ -1473,7 +1445,6 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 	log.Println("allevent processing completed!")
 }
 
-// processes a single chunk of allevent data
 func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config, startID, endID int, chunkNum int, results chan<- string, globalUniqueRecords map[uint64]bool, globalMutex *sync.RWMutex, totalRecordsProcessed *int64, totalRecordsSkipped *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
 	log.Printf("Processing allevent chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
@@ -1501,7 +1472,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 		if len(eventIDs) > 0 {
 			log.Printf("allevent chunk %d: Fetching edition data for %d events", chunkNum, len(eventIDs))
 
-			// Fetch edition data in parallel
 			startTime := time.Now()
 			editionData := fetchallalleventDataParallel(mysqlDB, eventIDs)
 			editionTime := time.Since(startTime)
@@ -1519,7 +1489,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 				}
 			}
 
-			// Fetch venue data for all editions
 			var venueData []map[string]interface{}
 			if len(editionData) > 0 {
 				venueIDs := extractalleventVenueIDs(editionData)
@@ -1607,17 +1576,17 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 				cityIDLookup, err := buildalleventCityIDLookupFromLocationCh(clickhouseConn)
 				if err != nil {
 					log.Printf("allevent chunk %d: WARNING - Failed to build city ID lookup: %v", chunkNum, err)
-					cityIDLookup = make(map[string]uint32) // Empty lookup on error
+					cityIDLookup = make(map[string]uint32)
 				}
 				stateIDLookup, err := buildalleventStateIDLookupFromLocationCh(clickhouseConn)
 				if err != nil {
 					log.Printf("allevent chunk %d: WARNING - Failed to build state ID lookup: %v", chunkNum, err)
-					stateIDLookup = make(map[string]uint32) // Empty lookup on error
+					stateIDLookup = make(map[string]uint32)
 				}
 				venueIDLookup, err := buildalleventVenueIDLookupFromLocationCh(clickhouseConn)
 				if err != nil {
 					log.Printf("allevent chunk %d: WARNING - Failed to build venue ID lookup: %v", chunkNum, err)
-					venueIDLookup = make(map[string]uint32) // Empty lookup on error
+					venueIDLookup = make(map[string]uint32)
 				}
 				lookupTime := time.Since(startTime)
 				log.Printf("allevent chunk %d: Built location_ch lookups in %v (cities: %d, states: %d, venues: %d)", chunkNum, lookupTime, len(cityIDLookup), len(stateIDLookup), len(venueIDLookup))
@@ -2214,7 +2183,11 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								"PrimaryEventType": func() *string {
 									eventTypes := eventTypesMap[eventID]
 									eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
-									return getPrimaryEventType(eventTypes, eventAudience)
+									result := getPrimaryEventType(eventTypes, eventAudience)
+									if result == nil {
+										log.Printf("WARNING: PrimaryEventType is nil for event_id=%d, edition_id=%d. Event types: %v, Event audience: %d", eventID, edition["edition_id"], eventTypes, eventAudience)
+									}
+									return result
 								}(),
 								"verifiedOn": func() *string {
 									verified := eventData["verified"]
@@ -2253,7 +2226,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 									highValid := false
 									lowValid := false
 
-									// Parse highEstimate
 									if highEstimate != nil {
 										if highStr, ok := highEstimate.(string); ok && highStr != "" {
 											if val, err := strconv.ParseFloat(highStr, 64); err == nil {
@@ -2272,7 +2244,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 										}
 									}
 
-									// Parse lowEstimate
 									if lowEstimate != nil {
 										if lowStr, ok := lowEstimate.(string); ok && lowStr != "" {
 											if val, err := strconv.ParseFloat(lowStr, 64); err == nil {
@@ -2291,24 +2262,18 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 										}
 									}
 
-									// Calculate mean if both are available
 									if highValid && lowValid {
 										mean := uint32((highVal + lowVal) / 2)
 										return &mean
 									}
 
-									// Fallback: None
 									return nil
 								}(),
 								"estimatedSize": func() *string {
-									// Get primary event type UUID (reuse the same calculation as PrimaryEventType)
 									eventTypes := eventTypesMap[eventID]
 									eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
 									primaryEventType := getPrimaryEventType(eventTypes, eventAudience)
 
-									// Reuse the already computed estimatedVisitorsMean from the record map
-									// Note: We need to compute it here since closures execute independently
-									// but we can extract it to a helper function for better code reuse
 									var estimatedVisitorMean *uint32
 									if finalEstimate := esInfoMap["finalEstimate"]; finalEstimate != nil {
 										if finalEstimateStr, ok := finalEstimate.(string); ok && finalEstimateStr != "" {
@@ -2336,7 +2301,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 										highValid := false
 										lowValid := false
 
-										// Parse highEstimate
 										if highEstimate != nil {
 											if highStr, ok := highEstimate.(string); ok && highStr != "" {
 												if val, err := strconv.ParseFloat(highStr, 64); err == nil {
@@ -2355,7 +2319,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 											}
 										}
 
-										// Parse lowEstimate
 										if lowEstimate != nil {
 											if lowStr, ok := lowEstimate.(string); ok && lowStr != "" {
 												if val, err := strconv.ParseFloat(lowStr, 64); err == nil {
@@ -2374,14 +2337,12 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 											}
 										}
 
-										// Calculate mean if both are available
 										if highValid && lowValid {
 											mean := uint32((highVal + lowVal) / 2)
 											estimatedVisitorMean = &mean
 										}
 									}
 
-									// Call getAttendanceRange
 									return getAttendanceRange(primaryEventType, estimatedVisitorMean)
 								}(),
 								"last_updated_at": time.Now().Format("2006-01-02 15:04:05"),
@@ -3679,7 +3640,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 	defer cancel()
 
 	insertSQL := `
-		INSERT INTO allevent_ch (
+		INSERT INTO allevent_temp (
 			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating, 10timesEventPageUrl,
 			start_date, end_date,
 			edition_id, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,

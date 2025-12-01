@@ -47,6 +47,16 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 		log.Printf("WARNING: Failed to remove existing error log file: %v", err)
 	}
 
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Println("STEP 0: PREPARING DATABASE - ENSURING TEMP TABLES EXIST")
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	if err := shared.EnsureTempTablesExist(clickhouseDB, config, errorLogFile); err != nil {
+		logErrorToFile("Ensure Temp Tables", err)
+		log.Fatalf("Failed to ensure temp tables exist: %v", err)
+	}
+	log.Println("✓ STEP 0 (PREPARE DATABASE) COMPLETED SUCCESSFULLY")
+	log.Println("")
+
 	scripts := []struct {
 		name     string
 		critical bool
@@ -71,6 +81,14 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				nextID = microservice.ProcessLocationVenuesCh(mysqlDB, clickhouseDB, locConfig, nextID)
 				microservice.ProcessLocationSubVenuesCh(mysqlDB, clickhouseDB, locConfig, nextID)
 				log.Println("✓ STEP 1/13 (LOCATION) COMPLETED SUCCESSFULLY")
+
+				// Swap location_ch immediately after sync
+				log.Println("Swapping location_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "location_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Location Table Swap", err)
+					return fmt.Errorf("failed to swap location_ch: %v", err)
+				}
+				log.Println("✓ location_ch swapped successfully")
 				log.Println("")
 				return nil
 			},
@@ -91,6 +109,14 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				}
 				utils.ProcessEventTypeEventChOnly(mysqlDB, clickhouseDB, utilsConfig)
 				log.Println("✓ STEP 2/13 (EVENT TYPE) COMPLETED SUCCESSFULLY")
+
+				// Swap event_type_ch immediately after sync
+				log.Println("Swapping event_type_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "event_type_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Event Type Table Swap", err)
+					return fmt.Errorf("failed to swap event_type_ch: %v", err)
+				}
+				log.Println("✓ event_type_ch swapped successfully")
 				log.Println("")
 				return nil
 			},
@@ -112,6 +138,14 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				}
 				microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 				log.Println("✓ STEP 3/13 (ALL EVENT) COMPLETED SUCCESSFULLY")
+
+				// Swap allevent_ch immediately after sync
+				log.Println("Swapping allevent_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
+					logErrorToFile("All Event Table Swap", err)
+					return fmt.Errorf("failed to swap allevent_ch: %v", err)
+				}
+				log.Println("✓ allevent_ch swapped successfully")
 				log.Println("")
 				return nil
 			},
@@ -132,6 +166,14 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				}
 				utils.ProcessEventCategoryEventChOnly(mysqlDB, clickhouseDB, utilsConfig)
 				log.Println("✓ STEP 4/13 (EVENT CATEGORY) COMPLETED SUCCESSFULLY")
+
+				// Swap event_category_ch immediately after sync
+				log.Println("Swapping event_category_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "event_category_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Event Category Table Swap", err)
+					return fmt.Errorf("failed to swap event_category_ch: %v", err)
+				}
+				log.Println("✓ event_category_ch swapped successfully")
 				log.Println("")
 				return nil
 			},
@@ -152,6 +194,14 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				}
 				utils.ProcessEventRankingOnly(mysqlDB, clickhouseDB, utilsConfig)
 				log.Println("✓ STEP 5/13 (EVENT RANKING) COMPLETED SUCCESSFULLY")
+
+				// Swap event_ranking_ch immediately after sync
+				log.Println("Swapping event_ranking_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "event_ranking_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Event Ranking Table Swap", err)
+					return fmt.Errorf("failed to swap event_ranking_ch: %v", err)
+				}
+				log.Println("✓ event_ranking_ch swapped successfully")
 				log.Println("")
 				return nil
 			},
@@ -172,6 +222,14 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				}
 				utils.ProcessEventDesignationOnly(mysqlDB, clickhouseDB, utilsConfig)
 				log.Println("✓ STEP 6/13 (EVENT DESIGNATION) COMPLETED SUCCESSFULLY")
+
+				// Swap event_designation_ch immediately after sync
+				log.Println("Swapping event_designation_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "event_designation_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Event Designation Table Swap", err)
+					return fmt.Errorf("failed to swap event_designation_ch: %v", err)
+				}
+				log.Println("✓ event_designation_ch swapped successfully")
 				log.Println("")
 				return nil
 			},
@@ -192,17 +250,148 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				}
 				microservice.ProcessHolidays(mysqlDB, clickhouseDB, holidayConfig)
 				log.Println("✓ STEP 7/13 (HOLIDAYS) COMPLETED SUCCESSFULLY")
+				// Note: Holidays reads from location_ch, allevent_ch, event_type_ch (already swapped in previous steps)
+				// and writes directly to allevent_ch and event_type_ch (since they're already the new tables)
 				log.Println("")
 				return nil
 			},
 		},
-		// 8. Alerts
+		// 8. Exhibitor
+		{
+			name:     "Exhibitor",
+			critical: false,
+			run: func() error {
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				log.Println("STEP 8/13: PROCESSING EXHIBITOR")
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				utilsConfig := shared.Config{
+					BatchSize:         config.BatchSize,
+					NumChunks:         config.NumChunks,
+					NumWorkers:        config.NumWorkers,
+					ClickHouseWorkers: config.ClickHouseWorkers,
+				}
+				utils.ProcessExhibitorOnly(mysqlDB, clickhouseDB, utilsConfig)
+				log.Println("✓ STEP 8/13 (EXHIBITOR) COMPLETED SUCCESSFULLY")
+
+				// Swap event_exhibitor_ch immediately after sync
+				log.Println("Swapping event_exhibitor_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "event_exhibitor_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Exhibitor Table Swap", err)
+					return fmt.Errorf("failed to swap event_exhibitor_ch: %v", err)
+				}
+				log.Println("✓ event_exhibitor_ch swapped successfully")
+				log.Println("")
+				return nil
+			},
+		},
+		// 9. Speaker
+		{
+			name:     "Speaker",
+			critical: false,
+			run: func() error {
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				log.Println("STEP 9/13: PROCESSING SPEAKER")
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				processSpeakersOnly(mysqlDB, clickhouseDB, config)
+				log.Println("✓ STEP 9/13 (SPEAKER) COMPLETED SUCCESSFULLY")
+
+				// Swap event_speaker_ch immediately after sync
+				log.Println("Swapping event_speaker_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "event_speaker_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Speaker Table Swap", err)
+					return fmt.Errorf("failed to swap event_speaker_ch: %v", err)
+				}
+				log.Println("✓ event_speaker_ch swapped successfully")
+				log.Println("")
+				return nil
+			},
+		},
+		// 10. Sponsor
+		{
+			name:     "Sponsor",
+			critical: false,
+			run: func() error {
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				log.Println("STEP 10/13: PROCESSING SPONSOR")
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				utilsConfig := shared.Config{
+					BatchSize:         config.BatchSize,
+					NumChunks:         config.NumChunks,
+					NumWorkers:        config.NumWorkers,
+					ClickHouseWorkers: config.ClickHouseWorkers,
+				}
+				utils.ProcessSponsorsOnly(mysqlDB, clickhouseDB, utilsConfig)
+				log.Println("✓ STEP 10/13 (SPONSOR) COMPLETED SUCCESSFULLY")
+
+				// Swap event_sponsors_ch immediately after sync
+				log.Println("Swapping event_sponsors_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "event_sponsors_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Sponsor Table Swap", err)
+					return fmt.Errorf("failed to swap event_sponsors_ch: %v", err)
+				}
+				log.Println("✓ event_sponsors_ch swapped successfully")
+				log.Println("")
+				return nil
+			},
+		},
+		// 11. Visitors
+		{
+			name:     "Visitors",
+			critical: false,
+			run: func() error {
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				log.Println("STEP 11/13: PROCESSING VISITORS")
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				processVisitorsOnly(mysqlDB, clickhouseDB, config)
+				log.Println("✓ STEP 11/13 (VISITORS) COMPLETED SUCCESSFULLY")
+
+				// Swap event_visitors_ch immediately after sync
+				log.Println("Swapping event_visitors_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "event_visitors_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Visitors Table Swap", err)
+					return fmt.Errorf("failed to swap event_visitors_ch: %v", err)
+				}
+				log.Println("✓ event_visitors_ch swapped successfully")
+				log.Println("")
+				return nil
+			},
+		},
+		// 12. Visitor Spread
+		{
+			name:     "Visitor Spread",
+			critical: false,
+			run: func() error {
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				log.Println("STEP 12/13: PROCESSING VISITOR SPREAD")
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				utilsConfig := shared.Config{
+					BatchSize:          config.BatchSize,
+					NumChunks:          config.NumChunks,
+					NumWorkers:         config.NumWorkers,
+					ClickHouseWorkers:  config.ClickHouseWorkers,
+					ElasticsearchIndex: config.ElasticsearchIndex,
+				}
+				utils.ProcessVisitorSpreadOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
+				log.Println("✓ STEP 12/13 (VISITOR SPREAD) COMPLETED SUCCESSFULLY")
+
+				// Swap event_visitorSpread_ch immediately after sync
+				log.Println("Swapping event_visitorSpread_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "event_visitorSpread_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Visitor Spread Table Swap", err)
+					return fmt.Errorf("failed to swap event_visitorSpread_ch: %v", err)
+				}
+				log.Println("✓ event_visitorSpread_ch swapped successfully")
+				log.Println("")
+				return nil
+			},
+		},
+		// 13. Alerts
 		{
 			name:     "Alerts",
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 8/13: PROCESSING ALERTS")
+				log.Println("STEP 13/13: PROCESSING ALERTS")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				gdacBaseURL := os.Getenv("gdac_base_url")
 				gdacEndpoint := os.Getenv("gdac_event_search_endpoint")
@@ -226,96 +415,22 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				if err := microservice.ProcessAlertsFromAPI(clickhouseDB, gdacBaseURL, gdacEndpoint, validCountries); err != nil {
 					return err
 				}
-				log.Println("✓ STEP 8/13 (ALERTS) COMPLETED SUCCESSFULLY")
-				log.Println("")
-				return nil
-			},
-		},
-		// 9. Exhibitor
-		{
-			name:     "Exhibitor",
-			critical: false,
-			run: func() error {
-				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 9/13: PROCESSING EXHIBITOR")
-				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				utilsConfig := shared.Config{
-					BatchSize:         config.BatchSize,
-					NumChunks:         config.NumChunks,
-					NumWorkers:        config.NumWorkers,
-					ClickHouseWorkers: config.ClickHouseWorkers,
+				log.Println("✓ STEP 13/13 (ALERTS) COMPLETED SUCCESSFULLY")
+
+				// Swap alerts_ch and location_polygons_ch immediately after sync
+				log.Println("Swapping alerts_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "alerts_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Alerts Table Swap", err)
+					return fmt.Errorf("failed to swap alerts_ch: %v", err)
 				}
-				utils.ProcessExhibitorOnly(mysqlDB, clickhouseDB, utilsConfig)
-				log.Println("✓ STEP 9/13 (EXHIBITOR) COMPLETED SUCCESSFULLY")
-				log.Println("")
-				return nil
-			},
-		},
-		// 10. Speaker
-		{
-			name:     "Speaker",
-			critical: false,
-			run: func() error {
-				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 10/13: PROCESSING SPEAKER")
-				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				processSpeakersOnly(mysqlDB, clickhouseDB, config)
-				log.Println("✓ STEP 10/13 (SPEAKER) COMPLETED SUCCESSFULLY")
-				log.Println("")
-				return nil
-			},
-		},
-		// 11. Sponsor
-		{
-			name:     "Sponsor",
-			critical: false,
-			run: func() error {
-				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 11/13: PROCESSING SPONSOR")
-				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				utilsConfig := shared.Config{
-					BatchSize:         config.BatchSize,
-					NumChunks:         config.NumChunks,
-					NumWorkers:        config.NumWorkers,
-					ClickHouseWorkers: config.ClickHouseWorkers,
+				log.Println("✓ alerts_ch swapped successfully")
+
+				log.Println("Swapping location_polygons_ch table...")
+				if err := shared.SwapSingleTable(clickhouseDB, "location_polygons_ch", config, errorLogFile); err != nil {
+					logErrorToFile("Location Polygons Table Swap", err)
+					return fmt.Errorf("failed to swap location_polygons_ch: %v", err)
 				}
-				utils.ProcessSponsorsOnly(mysqlDB, clickhouseDB, utilsConfig)
-				log.Println("✓ STEP 11/13 (SPONSOR) COMPLETED SUCCESSFULLY")
-				log.Println("")
-				return nil
-			},
-		},
-		// 12. Visitors
-		{
-			name:     "Visitors",
-			critical: false,
-			run: func() error {
-				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 12/13: PROCESSING VISITORS")
-				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				processVisitorsOnly(mysqlDB, clickhouseDB, config)
-				log.Println("✓ STEP 12/13 (VISITORS) COMPLETED SUCCESSFULLY")
-				log.Println("")
-				return nil
-			},
-		},
-		// 13. Visitor Spread
-		{
-			name:     "Visitor Spread",
-			critical: false,
-			run: func() error {
-				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 13/13: PROCESSING VISITOR SPREAD")
-				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				utilsConfig := shared.Config{
-					BatchSize:          config.BatchSize,
-					NumChunks:          config.NumChunks,
-					NumWorkers:         config.NumWorkers,
-					ClickHouseWorkers:  config.ClickHouseWorkers,
-					ElasticsearchIndex: config.ElasticsearchIndex,
-				}
-				utils.ProcessVisitorSpreadOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
-				log.Println("✓ STEP 13/13 (VISITOR SPREAD) COMPLETED SUCCESSFULLY")
+				log.Println("✓ location_polygons_ch swapped successfully")
 				log.Println("")
 				return nil
 			},
@@ -863,6 +978,19 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d event_visitors_ch records", len(visitorRecords))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for event_visitors_ch",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with event_visitors_ch batch insert")
+
 	log.Printf("Starting ClickHouse insertion for %d visitor records", len(visitorRecords))
 
 	for i, record := range visitorRecords {
@@ -886,13 +1014,8 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// if err := clickhouseConn.Ping(ctx); err != nil {
-	// 	log.Printf("ERROR: ClickHouse connection ping failed for visitors insertion")
-	// 	return fmt.Errorf("ClickHouse connection ping failed for event_visitors_ch_v2: %v", err)
-	// }
-
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_visitors_ch (
+		INSERT INTO event_visitors_temp (
 			user_id, event_id, edition_id, user_name, user_company,
 			user_designation, user_city, user_city_name, user_country, user_state_id, user_state, version, last_updated_at
 		)
@@ -1345,11 +1468,24 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d event_speaker_ch records", len(speakerRecords))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for event_speaker_ch",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with event_speaker_ch batch insert")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_speaker_ch (
+		INSERT INTO event_speaker_temp (
 			user_id, event_id, edition_id, user_name, user_company,
 			user_designation, user_state, user_state_name, user_city, user_city_name, user_country, version, last_updated_at
 		)
@@ -1709,6 +1845,12 @@ func main() {
 	}
 
 	if exhibitorOnly {
+		// Ensure temp table exists
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_exhibitor_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Exhibitor)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		utilsConfig := shared.Config{
 			BatchSize:         config.BatchSize,
 			NumChunks:         config.NumChunks,
@@ -1716,7 +1858,21 @@ func main() {
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
 		utils.ProcessExhibitorOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		// Swap table after processing
+		log.Println("Swapping event_exhibitor_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_exhibitor_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Exhibitor Table Swap", err)
+			log.Fatalf("Failed to swap event_exhibitor_ch: %v", err)
+		}
+		log.Println("✓ event_exhibitor_ch swapped successfully")
 	} else if sponsorsOnly {
+		// Ensure temp table exists
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_sponsors_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Sponsors)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		utilsConfig := shared.Config{
 			BatchSize:         config.BatchSize,
 			NumChunks:         config.NumChunks,
@@ -1724,10 +1880,46 @@ func main() {
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
 		utils.ProcessSponsorsOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		// Swap table after processing
+		log.Println("Swapping event_sponsors_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_sponsors_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Sponsors Table Swap", err)
+			log.Fatalf("Failed to swap event_sponsors_ch: %v", err)
+		}
+		log.Println("✓ event_sponsors_ch swapped successfully")
 	} else if visitorsOnly {
+		// Ensure temp table exists
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_visitors_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Visitors)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		processVisitorsOnly(mysqlDB, clickhouseDB, config)
+
+		// Swap table after processing
+		log.Println("Swapping event_visitors_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_visitors_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Visitors Table Swap", err)
+			log.Fatalf("Failed to swap event_visitors_ch: %v", err)
+		}
+		log.Println("✓ event_visitors_ch swapped successfully")
 	} else if speakersOnly {
+		// Ensure temp table exists
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_speaker_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Speakers)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		processSpeakersOnly(mysqlDB, clickhouseDB, config)
+
+		// Swap table after processing
+		log.Println("Swapping event_speaker_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_speaker_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Speakers Table Swap", err)
+			log.Fatalf("Failed to swap event_speaker_ch: %v", err)
+		}
+		log.Println("✓ event_speaker_ch swapped successfully")
 	} else if eventEditionOnly {
 		utilsConfig := shared.Config{
 			BatchSize:          config.BatchSize,
@@ -1738,6 +1930,12 @@ func main() {
 		}
 		utils.ProcessEventEditionOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 	} else if eventTypeEventChOnly {
+		// Ensure temp table exists
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_type_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Event Type)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		utilsConfig := shared.Config{
 			BatchSize:         config.BatchSize,
 			NumChunks:         config.NumChunks,
@@ -1745,7 +1943,21 @@ func main() {
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
 		utils.ProcessEventTypeEventChOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		// Swap table after processing
+		log.Println("Swapping event_type_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_type_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Event Type Table Swap", err)
+			log.Fatalf("Failed to swap event_type_ch: %v", err)
+		}
+		log.Println("✓ event_type_ch swapped successfully")
 	} else if eventCategoryEventChOnly {
+		// Ensure temp table exists
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_category_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Event Category)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		utilsConfig := shared.Config{
 			BatchSize:         config.BatchSize,
 			NumChunks:         config.NumChunks,
@@ -1753,7 +1965,21 @@ func main() {
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
 		utils.ProcessEventCategoryEventChOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		// Swap table after processing
+		log.Println("Swapping event_category_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_category_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Event Category Table Swap", err)
+			log.Fatalf("Failed to swap event_category_ch: %v", err)
+		}
+		log.Println("✓ event_category_ch swapped successfully")
 	} else if eventRankingOnly {
+		// Ensure temp table exists
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_ranking_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Event Ranking)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		utilsConfig := shared.Config{
 			BatchSize:         config.BatchSize,
 			NumChunks:         config.NumChunks,
@@ -1761,7 +1987,21 @@ func main() {
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
 		utils.ProcessEventRankingOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		// Swap table after processing
+		log.Println("Swapping event_ranking_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_ranking_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Event Ranking Table Swap", err)
+			log.Fatalf("Failed to swap event_ranking_ch: %v", err)
+		}
+		log.Println("✓ event_ranking_ch swapped successfully")
 	} else if eventDesignationOnly {
+		// Ensure temp table exists
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_designation_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Event Designation)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		utilsConfig := shared.Config{
 			BatchSize:         config.BatchSize,
 			NumChunks:         config.NumChunks,
@@ -1769,7 +2009,21 @@ func main() {
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
 		utils.ProcessEventDesignationOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		// Swap table after processing
+		log.Println("Swapping event_designation_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_designation_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Event Designation Table Swap", err)
+			log.Fatalf("Failed to swap event_designation_ch: %v", err)
+		}
+		log.Println("✓ event_designation_ch swapped successfully")
 	} else if visitorSpreadOnly {
+		// Ensure temp table exists
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_visitorSpread_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Visitor Spread)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		utilsConfig := shared.Config{
 			BatchSize:          config.BatchSize,
 			NumChunks:          config.NumChunks,
@@ -1778,7 +2032,21 @@ func main() {
 			ElasticsearchIndex: config.ElasticsearchIndex,
 		}
 		utils.ProcessVisitorSpreadOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
+
+		// Swap table after processing
+		log.Println("Swapping event_visitorSpread_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_visitorSpread_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Visitor Spread Table Swap", err)
+			log.Fatalf("Failed to swap event_visitorSpread_ch: %v", err)
+		}
+		log.Println("✓ event_visitorSpread_ch swapped successfully")
 	} else if allEventOnly {
+		// Ensure temp table exists
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (All Event)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		utilsConfig := shared.Config{
 			BatchSize:          config.BatchSize,
 			NumChunks:          config.NumChunks,
@@ -1787,47 +2055,53 @@ func main() {
 			ElasticsearchIndex: config.ElasticsearchIndex,
 		}
 		microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
-	} else if locationCountriesOnly {
+
+		// Swap table after processing
+		log.Println("Swapping allevent_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
+			logErrorToFile("All Event Table Swap", err)
+			log.Fatalf("Failed to swap allevent_ch: %v", err)
+		}
+		log.Println("✓ allevent_ch swapped successfully")
+	} else if locationCountriesOnly || locationStatesOnly || locationCitiesOnly || locationVenuesOnly || locationSubVenuesOnly {
+		// Ensure temp table exists (all location types use location_ch)
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "location_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Location)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		locConfig := shared.Config{
 			BatchSize:         config.BatchSize,
 			NumChunks:         config.NumChunks,
 			NumWorkers:        config.NumWorkers,
 			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
-		microservice.ProcessLocationCountriesCh(mysqlDB, clickhouseDB, locConfig, 1)
-	} else if locationStatesOnly {
-		locConfig := shared.Config{
-			BatchSize:         config.BatchSize,
-			NumChunks:         config.NumChunks,
-			NumWorkers:        config.NumWorkers,
-			ClickHouseWorkers: config.ClickHouseWorkers,
+
+		if locationCountriesOnly {
+			microservice.ProcessLocationCountriesCh(mysqlDB, clickhouseDB, locConfig, 1)
+		} else if locationStatesOnly {
+			microservice.ProcessLocationStatesCh(mysqlDB, clickhouseDB, locConfig, 1)
+		} else if locationCitiesOnly {
+			microservice.ProcessLocationCitiesCh(mysqlDB, clickhouseDB, locConfig, 1)
+		} else if locationVenuesOnly {
+			microservice.ProcessLocationVenuesCh(mysqlDB, clickhouseDB, locConfig, 1)
+		} else if locationSubVenuesOnly {
+			microservice.ProcessLocationSubVenuesCh(mysqlDB, clickhouseDB, locConfig, 1)
 		}
-		microservice.ProcessLocationStatesCh(mysqlDB, clickhouseDB, locConfig, 1)
-	} else if locationCitiesOnly {
-		locConfig := shared.Config{
-			BatchSize:         config.BatchSize,
-			NumChunks:         config.NumChunks,
-			NumWorkers:        config.NumWorkers,
-			ClickHouseWorkers: config.ClickHouseWorkers,
+
+		// Swap location_ch after processing (all location types use the same table)
+		log.Println("Swapping location_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "location_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Location Table Swap", err)
+			log.Fatalf("Failed to swap location_ch: %v", err)
 		}
-		microservice.ProcessLocationCitiesCh(mysqlDB, clickhouseDB, locConfig, 1)
-	} else if locationVenuesOnly {
-		locConfig := shared.Config{
-			BatchSize:         config.BatchSize,
-			NumChunks:         config.NumChunks,
-			NumWorkers:        config.NumWorkers,
-			ClickHouseWorkers: config.ClickHouseWorkers,
-		}
-		microservice.ProcessLocationVenuesCh(mysqlDB, clickhouseDB, locConfig, 1)
-	} else if locationSubVenuesOnly {
-		locConfig := shared.Config{
-			BatchSize:         config.BatchSize,
-			NumChunks:         config.NumChunks,
-			NumWorkers:        config.NumWorkers,
-			ClickHouseWorkers: config.ClickHouseWorkers,
-		}
-		microservice.ProcessLocationSubVenuesCh(mysqlDB, clickhouseDB, locConfig, 1)
+		log.Println("✓ location_ch swapped successfully")
 	} else if locationAll {
+		// Ensure temp table exists
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "location_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Location All)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
 		// Process all location types in sequence
 		locConfig := shared.Config{
 			BatchSize:         config.BatchSize,
@@ -1882,6 +2156,14 @@ func main() {
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		log.Println("=== ALL LOCATION TYPES PROCESSING COMPLETED SUCCESSFULLY! ===")
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+		// Swap location_ch after processing
+		log.Println("Swapping location_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "location_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Location Table Swap", err)
+			log.Fatalf("Failed to swap location_ch: %v", err)
+		}
+		log.Println("✓ location_ch swapped successfully")
 	} else if holidaysOnly {
 		holidayConfig := shared.Config{
 			BatchSize:         config.BatchSize,
@@ -1891,6 +2173,15 @@ func main() {
 		}
 		microservice.ProcessHolidays(mysqlDB, clickhouseDB, holidayConfig)
 	} else if alertsOnly {
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "alerts_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Alerts)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "location_polygons_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Location Polygons)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		log.Println("=== PROCESSING ALERTS FROM GDAC API ===")
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -1925,6 +2216,20 @@ func main() {
 
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		log.Println("=== ALERTS PROCESSING COMPLETED SUCCESSFULLY! ===")
+
+		log.Println("Swapping alerts_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "alerts_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Alerts Table Swap", err)
+			log.Fatalf("Failed to swap alerts_ch: %v", err)
+		}
+		log.Println("✓ alerts_ch swapped successfully")
+
+		log.Println("Swapping location_polygons_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "location_polygons_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Location Polygons Table Swap", err)
+			log.Fatalf("Failed to swap location_polygons_ch: %v", err)
+		}
+		log.Println("✓ location_polygons_ch swapped successfully")
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	} else {
 		log.Println("Error: No specific table mode selected!")

@@ -2384,6 +2384,19 @@ func insertEventEditionDataChunk(clickhouseConn driver.Conn, records []map[strin
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d event_edition_ch records", len(records))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for event_edition_ch",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with event_edition_ch batch insert")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second) // 15 minutes
 	defer cancel()
 

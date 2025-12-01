@@ -385,7 +385,7 @@ func insertEventTypeEventChBatch(clickhouseConn driver.Conn, eventTypeEventChRec
 	log.Printf("Preparing ClickHouse batch for %d event_type_ch records", len(eventTypeEventChRecords))
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_type_ch (
+		INSERT INTO event_type_temp (
 			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version,
 			alert_id, alert_level, alert_type, alert_start_date, alert_end_date, last_updated_at
 		)

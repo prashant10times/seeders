@@ -373,11 +373,24 @@ func insertLocationCountriesChSingleWorker(clickhouseConn driver.Conn, records [
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d location_ch (countries) records", len(records))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for location_ch (countries)",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with location_ch (countries) batch insert")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-        INSERT INTO location_ch (
+        INSERT INTO location_temp (
             id_uuid, id, id_10x, location_type, name, alias, phonecode, currency, continent,
             regions, latitude, longitude, published, iso, last_updated_at, version
         )
@@ -707,11 +720,24 @@ func insertLocationStatesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d location_ch (states) records", len(records))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for location_ch (states)",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with location_ch (states) batch insert")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-        INSERT INTO location_ch (
+        INSERT INTO location_temp (
             id_uuid, id, id_10x, location_type, name, alias, geometry,
             latitude, longitude, published, iso, country_uuid, country_name,
             last_updated_at, version
@@ -1048,11 +1074,24 @@ func insertLocationCitiesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d location_ch (cities) records", len(records))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for location_ch (cities)",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with location_ch (cities) batch insert")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-        INSERT INTO location_ch (
+        INSERT INTO location_temp (
             id_uuid, id, id_10x, location_type, name, alias, latitude, longitude,
             utc_offset, timezone, published, iso, state_uuid, state_name,
             country_uuid, country_name, last_updated_at, version
@@ -1429,11 +1468,24 @@ func insertLocationVenuesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d location_ch (venues) records", len(records))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for location_ch (venues)",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with location_ch (venues) batch insert")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-        INSERT INTO location_ch (
+        INSERT INTO location_temp (
             id_uuid, id, id_10x, location_type, name, address, latitude, longitude,
             website, postalcode, published, iso, state_uuid, state_name,
             country_uuid, country_name, city_uuid, city_name, city_latitude,
@@ -1711,9 +1763,22 @@ func insertLocationSubVenuesChSingleWorker(clickhouseConn driver.Conn, records [
 		return nil
 	}
 
+	log.Printf("Checking ClickHouse connection health before inserting %d location_ch (sub-venues) records", len(records))
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for location_ch (sub-venues)",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with location_ch (sub-venues) batch insert")
+
 	ctx := context.Background()
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO location_ch (
+		INSERT INTO location_temp (
 			id_uuid, id, id_10x, location_type, name, area, published,
 			venue_uuid, last_updated_at, version
 		) VALUES`)
