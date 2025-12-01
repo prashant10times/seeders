@@ -112,6 +112,7 @@ type EventTypeEventChRecord struct {
 	Priority       *int8    `ch:"priority"`       // Nullable(Int8)
 	Created        string   `ch:"created"`
 	Version        uint32   `ch:"version"`
+	LastUpdatedAt  string   `ch:"last_updated_at"`
 }
 
 var eventTypePriority = map[uint32]int8{
@@ -236,6 +237,7 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 		log.Printf("EventTypeEventCh chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
 
 		var eventTypeEventChRecords []EventTypeEventChRecord
+		now := time.Now().Format("2006-01-02 15:04:05")
 		for _, record := range batchData {
 			eventTypeID := shared.ConvertToUInt32(record["eventtype_id"])
 			priority := getPriority(eventTypeID)
@@ -255,6 +257,7 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 				Priority:       priority,
 				Created:        shared.SafeConvertToDateTimeString(record["created"]),
 				Version:        1,
+				LastUpdatedAt:  now,
 			}
 
 			eventTypeEventChRecords = append(eventTypeEventChRecords, eventTypeEventChRecord)
@@ -384,7 +387,7 @@ func insertEventTypeEventChBatch(clickhouseConn driver.Conn, eventTypeEventChRec
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_type_ch (
 			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version,
-			alert_id, alert_level, alert_type, alert_start_date, alert_end_date
+			alert_id, alert_level, alert_type, alert_start_date, alert_end_date, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -409,11 +412,12 @@ func insertEventTypeEventChBatch(clickhouseConn driver.Conn, eventTypeEventChRec
 			record.Priority,       // priority: Nullable(Int8)
 			record.Created,        // created: DateTime
 			record.Version,        // version: UInt32 DEFAULT 1
-			nil,
-			nil,
-			nil,
-			nil,
-			nil,
+			nil,                   // alert_id: Nullable(UUID)
+			nil,                   // alert_level: Nullable(String)
+			nil,                   // alert_type: Nullable(String)
+			nil,                   // alert_start_date: Nullable(Date)
+			nil,                   // alert_end_date: Nullable(Date)
+			record.LastUpdatedAt,  // last_updated_at: DateTime
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append event_type record to batch: %v", err)

@@ -13,16 +13,17 @@ import (
 )
 
 type EventCategoryEventChRecord struct {
-	Category     uint32 `ch:"category"`      // UInt32
-	CategoryUUID string `ch:"category_uuid"` // UUID generated
-	Event        uint32 `ch:"event"`         // UInt32
-	Name         string `ch:"name"`          // LowCardinality(String)
-	Slug         string `ch:"slug"`          // String
-	Published    int8   `ch:"published"`     // Int8
-	ShortName    string `ch:"short_name"`    // String
-	IsGroup      uint8  `ch:"is_group"`      // UInt8
-	Created      string `ch:"created"`       // DateTime
-	Version      uint32 `ch:"version"`       // UInt32
+	Category      uint32 `ch:"category"`        // UInt32
+	CategoryUUID  string `ch:"category_uuid"`   // UUID generated
+	Event         uint32 `ch:"event"`           // UInt32
+	Name          string `ch:"name"`            // LowCardinality(String)
+	Slug          string `ch:"slug"`            // String
+	Published     int8   `ch:"published"`       // Int8
+	ShortName     string `ch:"short_name"`      // String
+	IsGroup       uint8  `ch:"is_group"`        // UInt8
+	Created       string `ch:"created"`         // DateTime
+	Version       uint32 `ch:"version"`         // UInt32
+	LastUpdatedAt string `ch:"last_updated_at"` // DateTime
 }
 
 func ProcessEventCategoryEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
@@ -102,18 +103,20 @@ func processEventCategoryEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Con
 		log.Printf("EventCategoryEventCh chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
 
 		var eventCategoryEventChRecords []EventCategoryEventChRecord
+		now := time.Now().Format("2006-01-02 15:04:05")
 		for _, record := range batchData {
 			eventCategoryEventChRecord := EventCategoryEventChRecord{
-				Category:     shared.ConvertToUInt32(record["category"]),
-				CategoryUUID: shared.GenerateCategoryUUID(shared.ConvertToUInt32(record["category"]), record["name"], record["created"]),
-				Event:        shared.ConvertToUInt32(record["event"]),
-				Name:         shared.ConvertToString(record["name"]),
-				Slug:         shared.ConvertToString(record["slug"]),
-				Published:    shared.ConvertToInt8(record["published"]),
-				ShortName:    shared.ConvertToString(record["short_name"]),
-				IsGroup:      shared.ConvertToUInt8(record["is_group"]),
-				Created:      shared.SafeConvertToDateTimeString(record["created"]),
-				Version:      1,
+				Category:      shared.ConvertToUInt32(record["category"]),
+				CategoryUUID:  shared.GenerateCategoryUUID(shared.ConvertToUInt32(record["category"]), record["name"], record["created"]),
+				Event:         shared.ConvertToUInt32(record["event"]),
+				Name:          shared.ConvertToString(record["name"]),
+				Slug:          shared.ConvertToString(record["slug"]),
+				Published:     shared.ConvertToInt8(record["published"]),
+				ShortName:     shared.ConvertToString(record["short_name"]),
+				IsGroup:       shared.ConvertToUInt8(record["is_group"]),
+				Created:       shared.SafeConvertToDateTimeString(record["created"]),
+				Version:       1,
+				LastUpdatedAt: now,
 			}
 
 			eventCategoryEventChRecords = append(eventCategoryEventChRecords, eventCategoryEventChRecord)
@@ -276,7 +279,7 @@ func insertEventCategoryEventChDataSingleWorker(clickhouseConn driver.Conn, even
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_category_ch (
-			category, category_uuid, event, name, slug, published, short_name, is_group, created, version
+			category, category_uuid, event, name, slug, published, short_name, is_group, created, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -286,16 +289,17 @@ func insertEventCategoryEventChDataSingleWorker(clickhouseConn driver.Conn, even
 
 	for _, record := range eventCategoryEventChRecords {
 		err := batch.Append(
-			record.Category,     // category: UInt32
-			record.CategoryUUID, // category_uuid: UUID
-			record.Event,        // event: UInt32
-			record.Name,         // name: LowCardinality(String)
+			record.Category,      // category: UInt32
+			record.CategoryUUID,  // category_uuid: UUID
+			record.Event,         // event: UInt32
+			record.Name,          // name: LowCardinality(String)
 			record.Slug,          // slug: String
-			record.Published,    // published: Int8
-			record.ShortName,    // short_name: String
-			record.IsGroup,      // is_group: UInt8
-			record.Created,      // created: DateTime
-			record.Version,      // version: UInt32 DEFAULT 1
+			record.Published,     // published: Int8
+			record.ShortName,     // short_name: String
+			record.IsGroup,       // is_group: UInt8
+			record.Created,       // created: DateTime
+			record.Version,       // version: UInt32 DEFAULT 1
+			record.LastUpdatedAt, // last_updated_at: DateTime
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append record to batch: %v", err)

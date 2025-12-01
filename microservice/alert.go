@@ -36,6 +36,7 @@ type AlertChRecord struct {
 	Created          string  `ch:"created"`
 	OriginLongitude  float64 `ch:"originLongitude"`
 	OriginLatitude   float64 `ch:"originLatitude"`
+	LastUpdatedAt    string  `ch:"last_updated_at"`
 }
 
 type AlertMetadata struct {
@@ -59,6 +60,7 @@ type LocationPolygonRecord struct {
 	CreatedAt        time.Time `ch:"createdAt"`
 	UpdatedAt        time.Time `ch:"updatedAt"`
 	Version          uint32    `ch:"version"`
+	LastUpdatedAt    time.Time `ch:"last_updated_at"`
 }
 
 type EventTypeChRecord struct {
@@ -79,6 +81,7 @@ type EventTypeChRecord struct {
 	AlertType      *string  `ch:"alert_type"`
 	AlertStartDate *string  `ch:"alert_start_date"`
 	AlertEndDate   *string  `ch:"alert_end_date"`
+	LastUpdatedAt  string   `ch:"last_updated_at"`
 }
 
 type PolygonErrorLogger struct {
@@ -168,7 +171,7 @@ func InsertAlertsChDataSingleWorker(clickhouseConn driver.Conn, alertRecords []A
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO testing_db.alerts_ch (
-			id, sourceId, currentEpisodeId, type, name, description, level, startDate, endDate, lastModified, created, originLongitude, originLatitude
+			id, sourceId, currentEpisodeId, type, name, description, level, startDate, endDate, lastModified, created, originLongitude, originLatitude, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -191,6 +194,7 @@ func InsertAlertsChDataSingleWorker(clickhouseConn driver.Conn, alertRecords []A
 			record.Created,          // created: DateTime
 			record.OriginLongitude,  // originLongitude: Float64
 			record.OriginLatitude,   // originLatitude: Float64
+			record.LastUpdatedAt,    // last_updated_at: DateTime
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append record to batch: %v", err)
@@ -513,6 +517,7 @@ func parseAlertFeature(feature GDACFeature, now time.Time, country string) (*Ale
 	}
 
 	created := now.Format("2006-01-02 15:04:05")
+	lastUpdatedAt := now.Format("2006-01-02 15:04:05")
 
 	alertRecord := &AlertChRecord{
 		ID:               id,
@@ -528,6 +533,7 @@ func parseAlertFeature(feature GDACFeature, now time.Time, country string) (*Ale
 		Created:          created,
 		OriginLongitude:  longitude,
 		OriginLatitude:   latitude,
+		LastUpdatedAt:    lastUpdatedAt,
 	}
 
 	metadata := &AlertMetadata{
@@ -919,7 +925,7 @@ func insertLocationPolygonsBatch(clickhouseConn driver.Conn, polygonRecords []Lo
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO testing_db.location_polygons_ch (
-			tableName, tableId, polygon, polygonSourceUrl, createdAt, updatedAt, version
+			tableName, tableId, polygon, polygonSourceUrl, createdAt, updatedAt, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -947,6 +953,7 @@ func insertLocationPolygonsBatch(clickhouseConn driver.Conn, polygonRecords []Lo
 			record.CreatedAt,        // createdAt: DateTime
 			record.UpdatedAt,        // updatedAt: DateTime
 			record.Version,          // version: UInt32
+			record.LastUpdatedAt,    // last_updated_at: DateTime
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append polygon record %d to batch: %v", i, err)
@@ -1002,6 +1009,7 @@ func fetchAndProcessPolygon(httpClient *http.Client, alertID, geometryLink strin
 		CreatedAt:        now,
 		UpdatedAt:        now,
 		Version:          1,
+		LastUpdatedAt:    now,
 	}, nil
 }
 
@@ -1407,6 +1415,7 @@ func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJS
 
 	now := time.Now()
 	createdStr := now.Format("2006-01-02 15:04:05")
+	lastUpdatedAt := now.Format("2006-01-02 15:04:05")
 
 	var allEventTypeRecords []EventTypeChRecord
 	affectedEvents := make(map[uint32]struct {
@@ -1629,6 +1638,7 @@ func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJS
 			AlertType:      &alertType,
 			AlertStartDate: &alertStartDate,
 			AlertEndDate:   &alertEndDate,
+			LastUpdatedAt:  lastUpdatedAt,
 		}
 		allEventTypeRecords = append(allEventTypeRecords, record)
 	}
@@ -1679,7 +1689,7 @@ func insertEventTypeChBatch(clickhouseConn driver.Conn, eventTypeRecords []Event
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO testing_db.event_type_ch (
 			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version,
-			alert_id, alert_level, alert_type, alert_start_date, alert_end_date
+			alert_id, alert_level, alert_type, alert_start_date, alert_end_date, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -1709,6 +1719,7 @@ func insertEventTypeChBatch(clickhouseConn driver.Conn, eventTypeRecords []Event
 			record.AlertType,      // alert_type: LowCardinality(Nullable(String))
 			record.AlertStartDate, // alert_start_date: Nullable(Date)
 			record.AlertEndDate,   // alert_end_date: Nullable(Date)
+			record.LastUpdatedAt,  // last_updated_at: DateTime
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append event_type record to batch: %v", err)

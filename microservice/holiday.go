@@ -65,6 +65,7 @@ type HolidayEventTypeRecord struct {
 	Priority       *int8    `ch:"priority"` // Nullable
 	Created        string   `ch:"created"`
 	Version        uint32   `ch:"version"`
+	LastUpdatedAt  string   `ch:"last_updated_at"`
 }
 
 type HolidayEventType struct {
@@ -1043,7 +1044,7 @@ func insertHolidayEventTypeMappingsSingleWorker(clickhouseConn driver.Conn, reco
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_type_ch (
-			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version
+			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -1064,6 +1065,7 @@ func insertHolidayEventTypeMappingsSingleWorker(clickhouseConn driver.Conn, reco
 			record.Priority,       // priority: Nullable(Int8)
 			record.Created,        // created: DateTime
 			record.Version,        // version: UInt32 DEFAULT 1
+			record.LastUpdatedAt,  // last_updated_at: DateTime
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)
@@ -1111,6 +1113,7 @@ func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache ma
 
 	currentTime := time.Now()
 	createdStr := currentTime.Format("2006-01-02 15:04:05")
+	lastUpdatedAt := currentTime.Format("2006-01-02 15:04:05")
 
 	var mappingRecords []HolidayEventTypeRecord
 	mappingCount := 0
@@ -1129,6 +1132,7 @@ func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache ma
 			Priority:       nil,
 			Created:        createdStr,
 			Version:        1,
+			LastUpdatedAt:  lastUpdatedAt,
 		}
 		mappingRecords = append(mappingRecords, baseRecord)
 		mappingCount++
@@ -1168,6 +1172,7 @@ func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache ma
 					Priority:       nil,
 					Created:        createdStr,
 					Version:        1,
+					LastUpdatedAt:  lastUpdatedAt,
 				}
 				mappingRecords = append(mappingRecords, mappingRecord)
 				mappingCount++
@@ -1209,6 +1214,7 @@ func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache ma
 					Priority:       nil,
 					Created:        createdStr,
 					Version:        1,
+					LastUpdatedAt:  lastUpdatedAt,
 				}
 				mappingRecords = append(mappingRecords, mappingRecord)
 				mappingCount++

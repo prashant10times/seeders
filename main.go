@@ -507,6 +507,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config shared.Config, 
 		}
 
 		var visitorRecords []VisitorRecord
+		now := time.Now().Format("2006-01-02 15:04:05")
 		for _, visitor := range batchData {
 			var userName, userCompany interface{}
 			if userID, ok := visitor["user"].(int64); ok && userData != nil && userID > 0 {
@@ -571,6 +572,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config shared.Config, 
 				UserStateID:     userStateID,
 				UserState:       userState,
 				Version:         1,
+				LastUpdatedAt:   now,
 			}
 
 			visitorRecords = append(visitorRecords, visitorRecord)
@@ -892,7 +894,7 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_visitors_ch (
 			user_id, event_id, edition_id, user_name, user_company,
-			user_designation, user_city, user_city_name, user_country, user_state_id, user_state, version
+			user_designation, user_city, user_city_name, user_country, user_state_id, user_state, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -916,6 +918,7 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 			record.UserStateID,     // user_state_id: UInt32
 			record.UserState,       // user_state: LowCardinality(Nullable(String))
 			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
+			record.LastUpdatedAt,   // last_updated_at: DateTime
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append visitor record %d to batch (UserID: %d, EventID: %d, EditionID: %d): %v",
@@ -1064,6 +1067,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 		}
 
 		var speakerRecords []SpeakerRecord
+		now := time.Now().Format("2006-01-02 15:04:05")
 		for _, speaker := range batchData {
 			// Get user data for this speaker
 			var userName, userCompany, userDesignation, userCity, userCountry interface{}
@@ -1126,6 +1130,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 				UserCityName:    userCityName,
 				UserCountry:     shared.ToUpperNullableString(shared.ConvertToStringPtr(userCountry)),
 				Version:         1,
+				LastUpdatedAt:   now,
 			}
 
 			speakerRecords = append(speakerRecords, speakerRecord)
@@ -1346,7 +1351,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_speaker_ch (
 			user_id, event_id, edition_id, user_name, user_company,
-			user_designation, user_state, user_state_name, user_city, user_city_name, user_country, version
+			user_designation, user_state, user_state_name, user_city, user_city_name, user_country, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -1367,6 +1372,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 			record.UserCityName,    // user_city_name: LowCardinality(Nullable(String))
 			record.UserCountry,     // user_country: LowCardinality(Nullable(FixedString(2)))
 			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
+			record.LastUpdatedAt,   // last_updated_at: DateTime
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)
@@ -1395,6 +1401,7 @@ type SpeakerRecord struct {
 	UserCityName    *string `ch:"user_city_name"`
 	UserCountry     *string `ch:"user_country"`
 	Version         uint32  `ch:"version"`
+	LastUpdatedAt   string  `ch:"last_updated_at"`
 }
 
 // VisitorRecord represents a visitor record for ClickHouse insertion
@@ -1411,6 +1418,7 @@ type VisitorRecord struct {
 	UserStateID     *uint32 `ch:"user_state_id"`
 	UserState       *string `ch:"user_state"`
 	Version         uint32  `ch:"version"`
+	LastUpdatedAt   string  `ch:"last_updated_at"`
 }
 
 func main() {

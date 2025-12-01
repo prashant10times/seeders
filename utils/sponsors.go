@@ -31,6 +31,7 @@ type SponsorRecord struct {
 	TwitterID        *string `ch:"twitter_id"`
 	Created          string  `ch:"created"`
 	Version          uint32  `ch:"version"`
+	LastUpdatedAt    string  `ch:"last_updated_at"`
 }
 
 func ProcessSponsorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
@@ -158,6 +159,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 		}
 
 		var sponsorRecords []SponsorRecord
+		now := time.Now().Format("2006-01-02 15:04:05")
 		for _, sponsor := range batchData {
 			var companyWebsite, companyDomain, facebookID, linkedinID, twitterID, companyCountry, companyCity interface{}
 			if companyID, ok := sponsor["company_id"].(int64); ok && companyData != nil {
@@ -232,6 +234,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 				TwitterID:        shared.ConvertToStringPtr(twitterID),
 				Created:          shared.SafeConvertToDateTimeString(sponsor["created"]),
 				Version:          1,
+				LastUpdatedAt:    now,
 			}
 
 			sponsorRecords = append(sponsorRecords, sponsorRecord)
@@ -450,7 +453,7 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 		INSERT INTO event_sponsors_ch (
 			company_id, company_uuid, company_id_name, edition_id, event_id, company_website,
 			company_domain, company_country, company_state, company_state_name, company_city, company_city_name, facebook_id,
-			linkedin_id, twitter_id, created, version
+			linkedin_id, twitter_id, created, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -476,6 +479,7 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 			record.TwitterID,        // twitter_id: Nullable(String)
 			record.Created,          // created: DateTime
 			record.Version,          // version: UInt32 NOT NULL DEFAULT 1
+			record.LastUpdatedAt,    // last_updated_at: DateTime
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)

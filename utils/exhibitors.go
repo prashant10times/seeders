@@ -31,6 +31,7 @@ type ExhibitorRecord struct {
 	TwitterID        *string `ch:"twitter_id"`
 	Created          string  `ch:"created"`
 	Version          uint32  `ch:"version"`
+	LastUpdatedAt    string  `ch:"last_updated_at"`
 }
 
 func ProcessExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
@@ -170,6 +171,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config s
 			}
 
 			var exhibitorRecords []ExhibitorRecord
+			now := time.Now().Format("2006-01-02 15:04:05")
 			for _, exhibitor := range batchData {
 				var companyDomain string
 				if website, ok := exhibitor["website"].(string); ok && website != "" {
@@ -241,6 +243,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config s
 					TwitterID:        shared.ConvertToStringPtr(twitterID),
 					Created:          shared.SafeConvertToDateTimeString(exhibitor["created"]),
 					Version:          1,
+					LastUpdatedAt:    now,
 				}
 
 				exhibitorRecords = append(exhibitorRecords, exhibitorRecord)
@@ -463,7 +466,7 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 		INSERT INTO event_exhibitor_ch (
 			company_id, company_uuid, company_id_name, edition_id, event_id, company_website,
 			company_domain, company_country, company_state, company_state_name, company_city, company_city_name, facebook_id,
-			linkedin_id, twitter_id, created, version
+			linkedin_id, twitter_id, created, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -489,6 +492,7 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 			record.TwitterID,        // twitter_id: Nullable(String)
 			record.Created,          // created: DateTime
 			record.Version,          // version: UInt32 NOT NULL DEFAULT 1
+			record.LastUpdatedAt,    // last_updated_at: DateTime
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)

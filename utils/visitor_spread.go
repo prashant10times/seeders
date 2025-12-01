@@ -22,6 +22,7 @@ type VisitorSpreadRecord struct {
 	UserByCntry       []interface{} `ch:"user_by_cntry"`
 	UserByDesignation []interface{} `ch:"user_by_designation"`
 	Version           uint32        `ch:"version"`
+	LastUpdatedAt     string        `ch:"last_updated_at"`
 }
 
 func ProcessVisitorSpreadOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
@@ -123,6 +124,7 @@ func getDistinctEventIDs(mysqlDB *sql.DB) ([]int64, error) {
 func convertVisitorSpreadDataToRecords(visitorSpreadData map[int64]map[string]interface{}, allEventIDs []int64) []VisitorSpreadRecord {
 	records := make([]VisitorSpreadRecord, 0, len(allEventIDs))
 	eventsWithoutVisitorData := make([]int64, 0, 10)
+	now := time.Now().Format("2006-01-02 15:04:05")
 
 	for _, eventID := range allEventIDs {
 		var data map[string]interface{}
@@ -168,6 +170,7 @@ func convertVisitorSpreadDataToRecords(visitorSpreadData map[int64]map[string]in
 			UserByCntry:       userByCntry,
 			UserByDesignation: userByDesignation,
 			Version:           1,
+			LastUpdatedAt:     now,
 		}
 		records = append(records, record)
 	}
@@ -505,7 +508,7 @@ func insertVisitorSpreadDataSingleWorker(clickhouseConn driver.Conn, records []V
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_visitorSpread_ch (
-			event_id, user_by_cntry, user_by_designation, version
+			event_id, user_by_cntry, user_by_designation, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -519,6 +522,7 @@ func insertVisitorSpreadDataSingleWorker(clickhouseConn driver.Conn, records []V
 			record.UserByCntry,
 			record.UserByDesignation,
 			record.Version,
+			record.LastUpdatedAt,
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append visitor spread record to batch: %v", err)

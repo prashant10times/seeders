@@ -15,14 +15,15 @@ import (
 
 // EventRankingChRecord represents the structure for event_ranking_ch table
 type EventRankingChRecord struct {
-	ID           uint32  `ch:"id"`
-	EventID      uint32  `ch:"event_id"`
-	Country      string  `ch:"country"` // FixedString(2)
-	Category     *uint32 `ch:"category"`
-	CategoryName string  `ch:"category_name"`
-	EventRank    uint32  `ch:"event_rank"`
-	Created      string  `ch:"created"`
-	Version      uint32  `ch:"version"`
+	ID            uint32  `ch:"id"`
+	EventID       uint32  `ch:"event_id"`
+	Country       string  `ch:"country"` // FixedString(2)
+	Category      *uint32 `ch:"category"`
+	CategoryName  string  `ch:"category_name"`
+	EventRank     uint32  `ch:"event_rank"`
+	Created       string  `ch:"created"`
+	Version       uint32  `ch:"version"`
+	LastUpdatedAt string  `ch:"last_updated_at"`
 }
 
 // FetchCategoryNameData fetches category names from category table
@@ -69,6 +70,7 @@ func FetchCategoryNameData(db *sql.DB, categoryIDs []uint32) (map[uint32]string,
 // ConvertToEventRankingChRecords converts MySQL data to ClickHouse records
 func ConvertToEventRankingChRecords(mysqlData []map[string]interface{}, db *sql.DB) []EventRankingChRecord {
 	var records []EventRankingChRecord
+	now := time.Now().Format("2006-01-02 15:04:05")
 
 	categoryIDSet := make(map[uint32]bool)
 	for _, row := range mysqlData {
@@ -98,7 +100,8 @@ func ConvertToEventRankingChRecords(mysqlData []map[string]interface{}, db *sql.
 
 	for _, row := range mysqlData {
 		record := EventRankingChRecord{
-			Version: 1,
+			Version:       1,
+			LastUpdatedAt: now,
 		}
 
 		if id, ok := row["id"]; ok && id != nil {
@@ -205,7 +208,7 @@ func InsertEventRankingChDataSingleWorker(clickhouseConn driver.Conn, eventRanki
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO testing_db.event_ranking_ch (
-			id, event_id, country, category, category_name, event_rank, created, version
+			id, event_id, country, category, category_name, event_rank, created, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -215,14 +218,15 @@ func InsertEventRankingChDataSingleWorker(clickhouseConn driver.Conn, eventRanki
 
 	for _, record := range eventRankingRecords {
 		err := batch.Append(
-			record.ID,           // id: UInt32
-			record.EventID,      // event_id: UInt32
-			record.Country,      // country: LowCardinality(String)
-			record.Category,     // category: Nullable(UInt32)
-			record.CategoryName, // category_name: LowCardinality(String)
-			record.EventRank,    // event_rank: UInt32
-			record.Created,      // created: DateTime
-			record.Version,      // version: UInt32 DEFAULT 1
+			record.ID,            // id: UInt32
+			record.EventID,       // event_id: UInt32
+			record.Country,       // country: LowCardinality(String)
+			record.Category,      // category: Nullable(UInt32)
+			record.CategoryName,  // category_name: LowCardinality(String)
+			record.EventRank,     // event_rank: UInt32
+			record.Created,       // created: DateTime
+			record.Version,       // version: UInt32 DEFAULT 1
+			record.LastUpdatedAt, // last_updated_at: DateTime
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append record to batch: %v", err)

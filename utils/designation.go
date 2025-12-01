@@ -37,6 +37,7 @@ type EventDesignationChRecord struct {
 	Role            string `ch:"role"`
 	TotalVisitors   uint32 `ch:"total_visitors"`
 	Version         uint32 `ch:"version"`
+	LastUpdatedAt   string `ch:"last_updated_at"`
 }
 
 type DesignationData struct {
@@ -146,6 +147,7 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 	log.Printf("Aggregated %d raw records into %d unique event-edition-designation combinations", len(mysqlData), len(aggregatedSlice))
 
 	var records []EventDesignationChRecord
+	now := time.Now().Format("2006-01-02 15:04:05")
 
 	designationIDSet := make(map[uint32]bool)
 	for _, row := range aggregatedSlice {
@@ -186,7 +188,8 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 
 	for _, row := range aggregatedSlice {
 		record := EventDesignationChRecord{
-			Version: 1,
+			Version:       1,
+			LastUpdatedAt: now,
 		}
 
 		if eventID, ok := row["event"]; ok && eventID != nil {
@@ -223,7 +226,7 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 					idInputString := fmt.Sprintf("%d-%s", designationIDUint, createdStr)
 					record.DesignationUUID = shared.GenerateUUIDFromString(idInputString)
 				}
-			} 
+			}
 		}
 
 		if totalVisitors, ok := row["total_visitors"]; ok && totalVisitors != nil {
@@ -301,7 +304,7 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO testing_db.event_designation_ch (
-			event_id, edition_id, designation_id, designation_uuid, display_name, department, role, total_visitors, version
+			event_id, edition_id, designation_id, designation_uuid, display_name, department, role, total_visitors, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -325,6 +328,7 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 			record.Role,            // role: LowCardinality(String)
 			record.TotalVisitors,   // total_visitors: UInt32
 			record.Version,         // version: UInt32 DEFAULT 1
+			record.LastUpdatedAt,   // last_updated_at: DateTime
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append record to batch: %v", err)
