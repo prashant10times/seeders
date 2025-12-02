@@ -1570,25 +1570,26 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 			}
 
 			if len(editionData) > 0 {
-				log.Printf("allevent chunk %d: Building location_ch lookups for cities, states, and venues", chunkNum)
+				locationTableName := "location_temp"
+				log.Printf("allevent chunk %d: Building location lookups from %s for cities, states, and venues", chunkNum, locationTableName)
 				startTime := time.Now()
-				cityIDLookup, err := buildalleventCityIDLookupFromLocationCh(clickhouseConn)
+				cityIDLookup, err := buildalleventCityIDLookupFromLocationCh(clickhouseConn, locationTableName)
 				if err != nil {
 					log.Printf("allevent chunk %d: WARNING - Failed to build city ID lookup: %v", chunkNum, err)
 					cityIDLookup = make(map[string]uint32)
 				}
-				stateIDLookup, err := buildalleventStateIDLookupFromLocationCh(clickhouseConn)
+				stateIDLookup, err := buildalleventStateIDLookupFromLocationCh(clickhouseConn, locationTableName)
 				if err != nil {
 					log.Printf("allevent chunk %d: WARNING - Failed to build state ID lookup: %v", chunkNum, err)
 					stateIDLookup = make(map[string]uint32)
 				}
-				venueIDLookup, err := buildalleventVenueIDLookupFromLocationCh(clickhouseConn)
+				venueIDLookup, err := buildalleventVenueIDLookupFromLocationCh(clickhouseConn, locationTableName)
 				if err != nil {
 					log.Printf("allevent chunk %d: WARNING - Failed to build venue ID lookup: %v", chunkNum, err)
 					venueIDLookup = make(map[string]uint32)
 				}
 				lookupTime := time.Since(startTime)
-				log.Printf("allevent chunk %d: Built location_ch lookups in %v (cities: %d, states: %d, venues: %d)", chunkNum, lookupTime, len(cityIDLookup), len(stateIDLookup), len(venueIDLookup))
+				log.Printf("allevent chunk %d: Built location lookups from %s in %v (cities: %d, states: %d, venues: %d)", chunkNum, locationTableName, lookupTime, len(cityIDLookup), len(stateIDLookup), len(venueIDLookup))
 
 				companyLookup := make(map[int64]map[string]interface{})
 				if len(companyData) > 0 {
@@ -2734,19 +2735,19 @@ func determinealleventMaturity(totalEdition interface{}) *string {
 	return &maturity
 }
 
-func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[string]uint32, error) {
+func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	query := `
+	query := fmt.Sprintf(`
 		SELECT id, name, iso
-		FROM location_ch
+		FROM %s
 		WHERE location_type = 'CITY'
-	`
+	`, locationTableName)
 
 	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query location_ch for cities: %v", err)
+		return nil, fmt.Errorf("failed to query %s for cities: %v", locationTableName, err)
 	}
 	defer rows.Close()
 
@@ -2780,23 +2781,23 @@ func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[st
 		}
 	}
 
-	log.Printf("Built city ID lookup: %d cities mapped from location_ch", len(lookup))
+	log.Printf("Built city ID lookup: %d cities mapped from %s", len(lookup), locationTableName)
 	return lookup, nil
 }
 
-func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[string]uint32, error) {
+func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	query := `
+	query := fmt.Sprintf(`
 		SELECT id, name, iso
-		FROM location_ch
+		FROM %s
 		WHERE location_type = 'STATE'
-	`
+	`, locationTableName)
 
 	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query location_ch for states: %v", err)
+		return nil, fmt.Errorf("failed to query %s for states: %v", locationTableName, err)
 	}
 	defer rows.Close()
 
@@ -2830,23 +2831,23 @@ func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[s
 		}
 	}
 
-	log.Printf("Built state ID lookup: %d states mapped from location_ch", len(lookup))
+	log.Printf("Built state ID lookup: %d states mapped from %s", len(lookup), locationTableName)
 	return lookup, nil
 }
 
-func buildalleventVenueIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[string]uint32, error) {
+func buildalleventVenueIDLookupFromLocationCh(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	query := `
+	query := fmt.Sprintf(`
 		SELECT id, name, iso
-		FROM location_ch
+		FROM %s
 		WHERE location_type = 'VENUE'
-	`
+	`, locationTableName)
 
 	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query location_ch for venues: %v", err)
+		return nil, fmt.Errorf("failed to query %s for venues: %v", locationTableName, err)
 	}
 	defer rows.Close()
 
@@ -2880,7 +2881,7 @@ func buildalleventVenueIDLookupFromLocationCh(clickhouseConn driver.Conn) (map[s
 		}
 	}
 
-	log.Printf("Built venue ID lookup: %d venues mapped from location_ch", len(lookup))
+	log.Printf("Built venue ID lookup: %d venues mapped from %s", len(lookup), locationTableName)
 	return lookup, nil
 }
 
