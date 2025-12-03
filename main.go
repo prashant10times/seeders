@@ -672,8 +672,17 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config shared.Config, 
 		if len(visitorRecords) > 0 {
 			log.Printf("Visitors chunk %d: Attempting to insert %d records into event_visitor_ch...", chunkNum, len(visitorRecords))
 
+			attemptCount := 0
 			visitorInsertErr := shared.RetryWithBackoff(
 				func() error {
+					if attemptCount > 0 {
+						now := time.Now().Format("2006-01-02 15:04:05")
+						for i := range visitorRecords {
+							visitorRecords[i].LastUpdatedAt = now
+						}
+						log.Printf("Visitors chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
+					}
+					attemptCount++
 					return insertVisitorsDataIntoClickHouse(chConn, visitorRecords, config.ClickHouseWorkers)
 				},
 				3,
@@ -1239,8 +1248,17 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 		if len(speakerRecords) > 0 {
 			log.Printf("Speakers chunk %d: Attempting to insert %d records into event_speaker_ch...", chunkNum, len(speakerRecords))
 
+			attemptCount := 0
 			speakerInsertErr := shared.RetryWithBackoff(
 				func() error {
+					if attemptCount > 0 {
+						now := time.Now().Format("2006-01-02 15:04:05")
+						for i := range batchData {
+							batchData[i]["last_updated_at"] = now
+						}
+						log.Printf("Speakers chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
+					}
+					attemptCount++
 					return insertSpeakersDataIntoClickHouse(clickhouseConn, speakerRecords, config.ClickHouseWorkers)
 				},
 				3,
@@ -1896,15 +1914,6 @@ func main() {
 			log.Fatalf("Failed to swap event_speaker_ch: %v", err)
 		}
 		log.Println("✓ event_speaker_ch swapped successfully")
-	} else if eventEditionOnly {
-		utilsConfig := shared.Config{
-			BatchSize:          config.BatchSize,
-			NumChunks:          config.NumChunks,
-			NumWorkers:         config.NumWorkers,
-			ClickHouseWorkers:  config.ClickHouseWorkers,
-			ElasticsearchIndex: config.ElasticsearchIndex,
-		}
-		utils.ProcessEventEditionOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 	} else if eventTypeEventChOnly {
 		// Ensure temp table exists
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_type_ch", config, errorLogFile); err != nil {

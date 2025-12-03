@@ -2595,8 +2595,17 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 				if len(clickHouseRecords) > 0 {
 					log.Printf("allevent chunk %d: Attempting to insert %d records into ClickHouse...", chunkNum, len(clickHouseRecords))
 
+					attemptCount := 0
 					insertErr := shared.RetryWithBackoff(
 						func() error {
+							if attemptCount > 0 {
+								now := time.Now().Format("2006-01-02 15:04:05")
+								for i := range clickHouseRecords {
+									clickHouseRecords[i]["last_updated_at"] = now
+								}
+								log.Printf("allevent chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
+							}
+							attemptCount++
 							return insertalleventDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers, config)
 						},
 						3,

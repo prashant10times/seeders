@@ -252,8 +252,17 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config s
 			// Insert exhibitor data into ClickHouse
 			if len(exhibitorRecords) > 0 {
 				log.Printf("Exhibitor chunk %d: Attempting to insert %d records into event_exhibitor_ch...", chunkNum, len(exhibitorRecords))
+				attemptCount := 0
 				exhibitorInsertErr := shared.RetryWithBackoff(
 					func() error {
+						if attemptCount > 0 {
+							now := time.Now().Format("2006-01-02 15:04:05")
+							for i := range batchData {
+								batchData[i]["last_updated_at"] = now
+							}
+							log.Printf("Exhibitor chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
+						}
+						attemptCount++
 						return insertExhibitorDataIntoClickHouse(clickhouseConn, exhibitorRecords, config.ClickHouseWorkers)
 					},
 					3,

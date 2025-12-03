@@ -209,8 +209,18 @@ func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsear
 
 	log.Printf("Visitor spread chunk %d: Inserting %d records into ClickHouse", chunkNum, recordCount)
 
+	attemptCount := 0
 	insertErr := shared.RetryWithBackoff(
 		func() error {
+			// Update last_updated_at before each retry attempt (including first attempt)
+			if attemptCount > 0 {
+				now := time.Now().Format("2006-01-02 15:04:05")
+				for i := range records {
+					records[i].LastUpdatedAt = now
+				}
+				log.Printf("Visitor spread chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
+			}
+			attemptCount++
 			chInsertWorkers := 3
 			if config.ClickHouseWorkers > 0 {
 				chInsertWorkers = config.ClickHouseWorkers

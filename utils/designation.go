@@ -442,8 +442,17 @@ func ProcessEventDesignationChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 		if len(records) > 0 {
 			log.Printf("EventDesignation chunk %d: Attempting to insert %d records into event_designation_ch...", chunkNum, len(records))
 
+			attemptCount := 0
 			insertErr := shared.RetryWithBackoff(
 				func() error {
+					if attemptCount > 0 {
+						now := time.Now().Format("2006-01-02 15:04:05")
+						for i := range records {
+							records[i].LastUpdatedAt = now
+						}
+						log.Printf("EventDesignation chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
+					}
+					attemptCount++
 					return InsertEventDesignationChDataIntoClickHouse(clickhouseConn, records, config.ClickHouseWorkers)
 				},
 				3,

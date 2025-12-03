@@ -929,8 +929,18 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 
 			if len(alleventRecords) > 0 {
 				log.Printf("Inserting %d holiday records into allevent_ch...", len(alleventRecords))
+				attemptCount := 0
 				insertErr := shared.RetryWithBackoff(
 					func() error {
+						// Update last_updated_at before each retry attempt (including first attempt)
+						if attemptCount > 0 {
+							now := time.Now().Format("2006-01-02 15:04:05")
+							for i := range alleventRecords {
+								alleventRecords[i].LastUpdatedAt = now
+							}
+							log.Printf("Updated last_updated_at for holiday insertion retry attempt %d", attemptCount+1)
+						}
+						attemptCount++
 						return insertHolidaysIntoAllevent(clickhouseConn, alleventRecords, config.ClickHouseWorkers)
 					},
 					3,
@@ -1269,8 +1279,18 @@ func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache ma
 		batch := mappingRecords[i:end]
 		log.Printf("Inserting batch of %d event type mappings (indices %d-%d)...", len(batch), i, end-1)
 
+		attemptCount := 0
 		insertErr := shared.RetryWithBackoff(
 			func() error {
+				// Update last_updated_at before each retry attempt (including first attempt)
+				if attemptCount > 0 {
+					now := time.Now().Format("2006-01-02 15:04:05")
+					for i := range batch {
+						batch[i].LastUpdatedAt = now
+					}
+					log.Printf("Updated last_updated_at for holiday event type mapping retry attempt %d", attemptCount+1)
+				}
+				attemptCount++
 				return insertHolidayEventTypeMappings(clickhouseConn, batch, config.ClickHouseWorkers)
 			},
 			3,

@@ -914,8 +914,18 @@ func InsertLocationPolygonsChDataSingleWorker(clickhouseConn driver.Conn, polygo
 	}
 	log.Printf("ClickHouse connection is alive, proceeding with batch insert")
 
+	attemptCount := 0
 	insertErr := shared.RetryWithBackoff(
 		func() error {
+			// Update last_updated_at before each retry attempt (including first attempt)
+			if attemptCount > 0 {
+				now := time.Now()
+				for i := range polygonRecords {
+					polygonRecords[i].LastUpdatedAt = now
+				}
+				log.Printf("Updated last_updated_at for location_polygons_ch retry attempt %d", attemptCount+1)
+			}
+			attemptCount++
 			return insertLocationPolygonsBatch(clickhouseConn, polygonRecords)
 		},
 		3,
@@ -1677,8 +1687,17 @@ func InsertEventTypeChDataSingleWorker(clickhouseConn driver.Conn, eventTypeReco
 	}
 	log.Printf("ClickHouse connection is alive, proceeding with event_type_ch batch insert")
 
+	attemptCount := 0
 	insertErr := shared.RetryWithBackoff(
 		func() error {
+			if attemptCount > 0 {
+				now := time.Now().Format("2006-01-02 15:04:05")
+				for i := range eventTypeRecords {
+					eventTypeRecords[i].LastUpdatedAt = now
+				}
+				log.Printf("Updated last_updated_at for event_type_ch batch retry attempt %d", attemptCount+1)
+			}
+			attemptCount++
 			return insertEventTypeChBatch(clickhouseConn, eventTypeRecords)
 		},
 		3,

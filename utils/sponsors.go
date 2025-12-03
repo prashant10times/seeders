@@ -243,8 +243,17 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 		if len(sponsorRecords) > 0 {
 			log.Printf("Sponsors chunk %d: Attempting to insert %d records into event_sponsors_ch...", chunkNum, len(sponsorRecords))
 
+			attemptCount := 0
 			sponsorInsertErr := shared.RetryWithBackoff(
 				func() error {
+					if attemptCount > 0 {
+						now := time.Now().Format("2006-01-02 15:04:05")
+						for i := range batchData {
+							batchData[i]["last_updated_at"] = now
+						}
+						log.Printf("Sponsors chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
+					}
+					attemptCount++
 					return insertSponsorsDataIntoClickHouse(clickhouseConn, sponsorRecords, config.ClickHouseWorkers)
 				},
 				3,
