@@ -257,8 +257,8 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config s
 					func() error {
 						if attemptCount > 0 {
 							now := time.Now().Format("2006-01-02 15:04:05")
-							for i := range batchData {
-								batchData[i]["last_updated_at"] = now
+							for i := range exhibitorRecords {
+								exhibitorRecords[i].LastUpdatedAt = now
 							}
 							log.Printf("Exhibitor chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
 						}

@@ -345,8 +345,8 @@ func ProcessEventRankingChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, confi
 				func() error {
 					if attemptCount > 0 {
 						now := time.Now().Format("2006-01-02 15:04:05")
-						for i := range batchData {
-							batchData[i]["last_updated_at"] = now
+						for i := range records {
+							records[i].LastUpdatedAt = now
 						}
 						log.Printf("EventRanking chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
 					}
