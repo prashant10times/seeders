@@ -121,7 +121,7 @@ func SetupConnections(config shared.Config) (*sql.DB, driver.Conn, *elasticsearc
 		EnableMetrics:     false,
 		EnableDebugLogger: false,
 		Transport: &http.Transport{
-			ResponseHeaderTimeout: 30 * time.Second,
+			ResponseHeaderTimeout: 900 * time.Second, // Match context timeout for large queries
 			DialContext: (&net.Dialer{
 				Timeout:   15 * time.Second,
 				KeepAlive: 60 * time.Second,

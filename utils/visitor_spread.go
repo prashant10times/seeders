@@ -256,7 +256,7 @@ func fetchVisitorSpreadDataFromElasticsearch(esClient *elasticsearch.Client, eve
 	}
 
 	results := make(map[int64]map[string]interface{})
-	batchSize := 200
+	batchSize := 100 // Reduced from 200 to prevent timeout issues with large queries
 
 	expectedBatches := (len(eventIDs) + batchSize - 1) / batchSize
 	resultsChan := make(chan map[int64]map[string]interface{}, expectedBatches)
