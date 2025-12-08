@@ -41,9 +41,7 @@ func ProcessVisitorSpreadOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 		return
 	}
 
-	if config.NumChunks <= 0 {
-		config.NumChunks = 100
-	}
+	config.NumChunks = 100
 
 	chunkSize := len(eventIDs) / config.NumChunks
 	if chunkSize == 0 {
