@@ -105,16 +105,21 @@ func processEventCategoryEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Con
 		var eventCategoryEventChRecords []EventCategoryEventChRecord
 		now := time.Now().Format("2006-01-02 15:04:05")
 		for _, record := range batchData {
+			categoryID := shared.ConvertToUInt32(record["category"])
+			createdStr := shared.SafeConvertToDateTimeString(record["created"])
+			idInputString := fmt.Sprintf("%d-%s", categoryID, createdStr)
+			categoryUUID := shared.GenerateUUIDFromString(idInputString)
+
 			eventCategoryEventChRecord := EventCategoryEventChRecord{
-				Category:      shared.ConvertToUInt32(record["category"]),
-				CategoryUUID:  shared.GenerateCategoryUUID(shared.ConvertToUInt32(record["category"]), record["name"], record["created"]),
+				Category:      categoryID,
+				CategoryUUID:  categoryUUID,
 				Event:         shared.ConvertToUInt32(record["event"]),
 				Name:          shared.ConvertToString(record["name"]),
 				Slug:          shared.ConvertToString(record["slug"]),
 				Published:     shared.ConvertToInt8(record["published"]),
 				ShortName:     shared.ConvertToString(record["short_name"]),
 				IsGroup:       shared.ConvertToUInt8(record["is_group"]),
-				Created:       shared.SafeConvertToDateTimeString(record["created"]),
+				Created:       createdStr,
 				Version:       1,
 				LastUpdatedAt: now,
 			}

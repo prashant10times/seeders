@@ -244,9 +244,14 @@ func processEventTypeEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 			groups := getGroups(eventTypeID)
 			eventGroupType := getEventGroupType(eventTypeID)
 
+			// Generate UUID using eventTypeID and event_type.created (not event_type_event.created)
+			eventTypeCreatedStr := shared.SafeConvertToDateTimeString(record["event_type_created"])
+			idInputString := fmt.Sprintf("%d-%s", eventTypeID, eventTypeCreatedStr)
+			eventTypeUUID := shared.GenerateUUIDFromString(idInputString)
+
 			eventTypeEventChRecord := EventTypeEventChRecord{
 				EventTypeID:    eventTypeID,
-				EventTypeUUID:  shared.GenerateUUIDFromString(fmt.Sprintf("%d", eventTypeID)),
+				EventTypeUUID:  eventTypeUUID,
 				EventID:        shared.ConvertToUInt32(record["event_id"]),
 				Published:      shared.ConvertToInt8(record["published"]),
 				Name:           shared.ConvertToString(record["name"]),
@@ -453,6 +458,7 @@ func buildEventTypeEventChMigrationData(db *sql.DB, startID, endID int, batchSiz
 			et.name,
 			et.url as slug,
 			et.event_audience,
+			et.created as event_type_created,
 			ee.created
 		FROM event_type_event ee
 		INNER JOIN event_type et ON ee.eventtype_id = et.id

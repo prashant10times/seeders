@@ -1686,7 +1686,7 @@ func main() {
 		log.Fatal("Failed to load environment variables:", err)
 	}
 
-	mysqlDSN := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=latin1",
+	mysqlDSN := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4",
 		config.DatabaseUser,
 		config.DatabasePassword,
 		config.DatabaseHost,

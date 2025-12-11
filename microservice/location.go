@@ -464,36 +464,41 @@ func parseGeometryLatLng(geometryStr string) (*float64, *float64) {
 	return lat, lng
 }
 
-func buildCountryLookup(mysqlDB *sql.DB) (map[string]string, map[string]string, error) {
+func buildCountryLookup(clickhouseConn driver.Conn) (map[string]string, map[string]string, error) {
 	isoToUUID := make(map[string]string)
 	isoToName := make(map[string]string)
 
-	query := `SELECT id, name FROM country ORDER BY id`
-	rows, err := mysqlDB.Query(query)
+	ctx := context.Background()
+	query := `SELECT id_uuid, id_10x, name FROM location_ch WHERE location_type = 'COUNTRY'`
+	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to query ClickHouse for country lookup: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var iso, name string
-		if err := rows.Scan(&iso, &name); err != nil {
+		var idUUID string
+		var id10x, name string
+		if err := rows.Scan(&idUUID, &id10x, &name); err != nil {
+			log.Printf("Error scanning country row from ClickHouse: %v", err)
 			continue
 		}
-		isoUpper := strings.ToUpper(strings.TrimSpace(iso))
-		id10x := fmt.Sprintf("country-%s", isoUpper)
-		uuid := shared.GenerateUUIDFromString(id10x)
-		isoToUUID[isoUpper] = uuid
-		isoToName[isoUpper] = name
+		// Extract country ISO from id_10x (format: "country-US")
+		if strings.HasPrefix(id10x, "country-") {
+			isoUpper := strings.ToUpper(strings.TrimPrefix(id10x, "country-"))
+			isoToUUID[isoUpper] = idUUID
+			isoToName[isoUpper] = name
+		}
 	}
 
+	log.Printf("Built country lookup from ClickHouse: %d countries", len(isoToUUID))
 	return isoToUUID, isoToName, nil
 }
 
 func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID uint32) uint32 {
 	log.Println("=== Starting location_ch (states) Processing ===")
 
-	countryUUIDLookup, countryNameLookup, err := buildCountryLookup(mysqlDB)
+	countryUUIDLookup, countryNameLookup, err := buildCountryLookup(clickhouseConn)
 	if err != nil {
 		log.Fatalf("Failed to build country lookup: %v", err)
 	}
@@ -775,49 +780,39 @@ func insertLocationStatesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 	return nil
 }
 
-func buildStateLookup(mysqlDB *sql.DB) (map[string]string, error) {
+func buildStateLookup(clickhouseConn driver.Conn) (map[string]string, error) {
 	stateToUUID := make(map[string]string)
 
-	query := `
-		SELECT 
-			av.name as state_name,
-			av.country as country_iso
-		FROM area_values av
-		WHERE av.type_value != 'subregion'
-		GROUP BY av.name, av.country
-	`
-	rows, err := mysqlDB.Query(query)
+	ctx := context.Background()
+	query := `SELECT id_uuid, id_10x FROM location_ch WHERE location_type = 'STATE'`
+	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query ClickHouse for state lookup: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var stateName, countryISO string
-		if err := rows.Scan(&stateName, &countryISO); err != nil {
+		var idUUID, id10x string
+		if err := rows.Scan(&idUUID, &id10x); err != nil {
+			log.Printf("Error scanning state row from ClickHouse: %v", err)
 			continue
 		}
-		countryISOUpper := strings.ToUpper(strings.TrimSpace(countryISO))
-		stateNameClean := removeSpecialCharacters(strings.TrimSpace(stateName))
-		key := fmt.Sprintf("%s-%s", stateNameClean, countryISOUpper)
-		idInputString := normalizeNFC(fmt.Sprintf("%s-%s", stateNameClean, countryISOUpper))
-		uuid := shared.GenerateUUIDFromString(idInputString)
-		stateToUUID[key] = uuid
+		// Extract key from id_10x (format: "state-California-US")
+		if strings.HasPrefix(id10x, "state-") {
+			key := strings.TrimPrefix(id10x, "state-")
+			stateToUUID[key] = idUUID
+		}
 	}
 
+	log.Printf("Built state lookup from ClickHouse: %d states", len(stateToUUID))
 	return stateToUUID, nil
 }
 
 func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID uint32) uint32 {
 	log.Println("=== Starting location_ch (cities) Processing ===")
-	countryUUIDLookup, countryNameLookup, err := buildCountryLookup(mysqlDB)
+	countryUUIDLookup, countryNameLookup, err := buildCountryLookup(clickhouseConn)
 	if err != nil {
 		log.Fatalf("Failed to build country lookup: %v", err)
-	}
-
-	stateUUIDLookup, err := buildStateLookup(mysqlDB)
-	if err != nil {
-		log.Fatalf("Failed to build state lookup: %v", err)
 	}
 
 	offset := 0
@@ -866,27 +861,23 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 			timezone := shared.SafeConvertToNullableString(row["timezone"])
 			published := shared.SafeConvertToInt8(row["published"])
 
+			// Regenerate State UUID using same formula as when creating state records
 			var stateUUID *string
 			if stateName != nil && *stateName != "" && countrySourceID != "" {
 				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
 				stateNameClean := removeSpecialCharacters(strings.TrimSpace(*stateName))
-				key := fmt.Sprintf("%s-%s", stateNameClean, countryISOUpper)
-				if uuid, ok := stateUUIDLookup[key]; ok {
-					stateUUID = &uuid
-				}
+				idInputString := normalizeNFC(fmt.Sprintf("%s-%s", stateNameClean, countryISOUpper))
+				uuid := shared.GenerateUUIDFromString(idInputString)
+				stateUUID = &uuid
 			}
 
 			var countryUUID *string
+			var countryName *string
 			if countrySourceID != "" {
 				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
 				if uuid, ok := countryUUIDLookup[countryISOUpper]; ok {
 					countryUUID = &uuid
 				}
-			}
-
-			var countryName *string
-			if countrySourceID != "" {
-				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
 				if name, ok := countryNameLookup[countryISOUpper]; ok {
 					caser := cases.Title(language.English)
 					nameTitle := caser.String(strings.ToLower(name))
@@ -1132,69 +1123,75 @@ func insertLocationCitiesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 	return nil
 }
 
-func buildCityLookup(mysqlDB *sql.DB) (map[string]string, error) {
+func buildCityLookup(clickhouseConn driver.Conn) (map[string]string, error) {
 	cityToUUID := make(map[string]string)
 
-	query := `SELECT id, created FROM city ORDER BY id`
-	rows, err := mysqlDB.Query(query)
+	ctx := context.Background()
+	query := `SELECT id_uuid, id_10x FROM location_ch WHERE location_type = 'CITY'`
+	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query ClickHouse for city lookup: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var cityID string
-		var created string
-		if err := rows.Scan(&cityID, &created); err != nil {
+		var idUUID, id10x string
+		if err := rows.Scan(&idUUID, &id10x); err != nil {
+			log.Printf("Error scanning city row from ClickHouse: %v", err)
 			continue
 		}
-		normalizedID := normalizeNFC(cityID)
-		idInputString := fmt.Sprintf("%s-%s", normalizedID, created)
-		uuid := shared.GenerateUUIDFromString(idInputString)
-		cityToUUID[cityID] = uuid
+		// Extract city ID from id_10x (format: "city-12345")
+		if strings.HasPrefix(id10x, "city-") {
+			cityID := strings.TrimPrefix(id10x, "city-")
+			cityToUUID[cityID] = idUUID
+		}
 	}
 
+	log.Printf("Built city lookup from ClickHouse: %d cities", len(cityToUUID))
 	return cityToUUID, nil
 }
 
-func buildVenueLookup(mysqlDB *sql.DB) (map[string]string, error) {
+func buildVenueLookup(clickhouseConn driver.Conn) (map[string]string, error) {
 	venueToUUID := make(map[string]string)
 
-	query := `SELECT id, created FROM venue ORDER BY id`
-	rows, err := mysqlDB.Query(query)
+	ctx := context.Background()
+	query := `SELECT id_uuid, id_10x FROM location_ch WHERE location_type = 'VENUE'`
+	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to query ClickHouse for venue lookup: %w", err)
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var venueID string
-		var created string
-		if err := rows.Scan(&venueID, &created); err != nil {
+		var idUUID, id10x string
+		if err := rows.Scan(&idUUID, &id10x); err != nil {
+			log.Printf("Error scanning venue row from ClickHouse: %v", err)
 			continue
 		}
-		normalizedID := normalizeNFC(venueID)
-		idInputString := fmt.Sprintf("%s-%s", normalizedID, created)
-		uuid := shared.GenerateUUIDFromString(idInputString)
-		venueToUUID[venueID] = uuid
+		// Extract venue ID from id_10x (format: "venue-500")
+		if strings.HasPrefix(id10x, "venue-") {
+			venueID := strings.TrimPrefix(id10x, "venue-")
+			venueToUUID[venueID] = idUUID
+		}
 	}
 
+	log.Printf("Built venue lookup from ClickHouse: %d venues", len(venueToUUID))
 	return venueToUUID, nil
 }
 
 func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID uint32) uint32 {
 	log.Println("=== Starting location_ch (venues) Processing ===")
-	countryUUIDLookup, countryNameLookup, err := buildCountryLookup(mysqlDB)
+	countryUUIDLookup, countryNameLookup, err := buildCountryLookup(clickhouseConn)
 	if err != nil {
 		log.Fatalf("Failed to build country lookup: %v", err)
 	}
 
-	stateUUIDLookup, err := buildStateLookup(mysqlDB)
+	stateUUIDLookup, err := buildStateLookup(clickhouseConn)
 	if err != nil {
 		log.Fatalf("Failed to build state lookup: %v", err)
 	}
 
-	cityUUIDLookup, err := buildCityLookup(mysqlDB)
+	cityUUIDLookup, err := buildCityLookup(clickhouseConn)
 	if err != nil {
 		log.Fatalf("Failed to build city lookup: %v", err)
 	}
@@ -1261,6 +1258,7 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				}
 			}
 
+			// Lookup State UUID from ClickHouse using id_10x = 'state-{state_name}-{countryId}'
 			var stateUUID *string
 			if stateName != nil && *stateName != "" && countrySourceID != "" {
 				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
@@ -1534,7 +1532,7 @@ func insertLocationVenuesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID uint32) uint32 {
 	log.Println("=== Starting location_ch (sub-venues) Processing ===")
 
-	venueUUIDLookup, err := buildVenueLookup(mysqlDB)
+	venueUUIDLookup, err := buildVenueLookup(clickhouseConn)
 	if err != nil {
 		log.Fatalf("Failed to build venue lookup: %v", err)
 	}
