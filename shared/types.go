@@ -3,7 +3,6 @@ package shared
 import (
 	"context"
 	"crypto/sha1"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
 	"fmt"
