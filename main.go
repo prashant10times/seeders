@@ -113,13 +113,8 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				log.Println("STEP 3/12: PROCESSING ALL EVENT")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				utilsConfig := shared.Config{
-					BatchSize:          config.BatchSize,
-					NumChunks:          config.NumChunks,
-					NumWorkers:         config.NumWorkers,
-					ClickHouseWorkers:  config.ClickHouseWorkers,
-					ElasticsearchIndex: config.ElasticsearchIndex,
-				}
+				utilsConfig := config
+				utilsConfig.UseTempTables = true // When running -all, read from temp tables
 				microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 				log.Println("✓ STEP 3/12 (ALL EVENT) COMPLETED SUCCESSFULLY")
 				log.Println("")
@@ -2032,13 +2027,8 @@ func main() {
 			log.Fatalf("Failed to ensure temp table exists: %v", err)
 		}
 
-		utilsConfig := shared.Config{
-			BatchSize:          config.BatchSize,
-			NumChunks:          config.NumChunks,
-			NumWorkers:         config.NumWorkers,
-			ClickHouseWorkers:  config.ClickHouseWorkers,
-			ElasticsearchIndex: config.ElasticsearchIndex,
-		}
+		utilsConfig := config
+		utilsConfig.UseTempTables = false // When running individually, read from production _ch tables
 		microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 
 		// Swap table after processing

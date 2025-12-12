@@ -26,6 +26,19 @@ func GetTableNameWithDB(tableName string, config Config) string {
 	return fmt.Sprintf("%s.%s", EscapeTableName(config.ClickhouseDB), EscapeTableName(tableName))
 }
 
+func GetClickHouseTableName(baseTableName string, config Config) string {
+	if config.UseTempTables {
+		if strings.HasSuffix(baseTableName, "_ch") {
+			return strings.Replace(baseTableName, "_ch", "_temp", 1)
+		}
+		return baseTableName + "_temp"
+	}
+	if !strings.HasSuffix(baseTableName, "_ch") {
+		return baseTableName + "_ch"
+	}
+	return baseTableName
+}
+
 func GetHumanReadableTimestamp() string {
 	return time.Now().Format("2006-01-02_15-04-05")
 }
@@ -402,7 +415,7 @@ func SwapTables(clickhouseConn driver.Conn, tableMappings []TableMapping, config
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	stage2Errors := []error{}
-	for _, mapping := range tableMappings {	
+	for _, mapping := range tableMappings {
 		exists, err := TableExists(clickhouseConn, mapping.Temp, config)
 		if err != nil {
 			err = fmt.Errorf("failed to check existence of temp table %s: %w", mapping.Temp, err)
@@ -717,7 +730,7 @@ func EnsureSingleTempTableExists(clickhouseConn driver.Conn, mainTableName strin
 
 	if exists {
 		log.Printf("⚠ Temp table %s already exists. Dropping and recreating from original...", tempTableName)
-	
+
 		if err := DropTable(clickhouseConn, tempTableName, config, errorLogFile); err != nil {
 			err = fmt.Errorf("failed to drop existing temp table %s: %w", tempTableName, err)
 			logErrorToFile("Ensure Single Temp Table", err, errorLogFile)

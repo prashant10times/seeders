@@ -47,6 +47,7 @@ type Config struct {
 	ClickHouseMaxIdleConns int
 	RetryDelay             time.Duration
 	QueryTimeout           time.Duration
+	UseTempTables          bool // If true, read from _temp tables; if false, read from _ch tables
 }
 
 // RetryWithBackoff retries an operation with exponential backoff

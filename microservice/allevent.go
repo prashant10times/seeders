@@ -1570,7 +1570,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 			}
 
 			if len(editionData) > 0 {
-				locationTableName := "location_temp"
+				locationTableName := shared.GetClickHouseTableName("location_ch", config)
 				log.Printf("allevent chunk %d: Building location lookups from %s for cities, states, and venues", chunkNum, locationTableName)
 				startTime := time.Now()
 				cityIDLookup, err := buildalleventCityIDLookupFromLocationCh(clickhouseConn, locationTableName)
