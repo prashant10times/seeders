@@ -68,17 +68,8 @@ import (
 //         },
 // }
 
-// Event type ID to UUID mapping
-var eventTypeIDs = map[uint32]string{
-	1:  "41ee28a5-918e-59bc-ada8-9f6e194869c4",
-	2:  "7050e5af-f491-5280-aa66-d6e8c55b1b3d",
-	3:  "21a41a54-43b0-5198-8306-5e8326a259ef",
-	5:  "455a1427-5459-5ae3-be3a-1c680f4bc4c7",
-	6:  "c1c8b213-0f3d-57fd-9555-5bcc7135130a",
-	7:  "504013af-dfc6-5e43-b1ca-34b0ec065c86",
-	12: "b87d299a-8688-5184-8f71-eefd53272501",
-	13: "c42d0a8e-d77e-5899-a3e4-3147803d2309",
-}
+var eventTypeIDs map[uint32]string
+var allowedEventTypeIDs = []uint32{1, 2, 3, 5, 6, 7, 12, 13}
 
 // Event type priority and group mapping
 type eventTypePriorityInfo struct {
@@ -97,13 +88,13 @@ var eventTypePriority = map[uint32]eventTypePriorityInfo{
 	13: {Priority: 8, Group: "B2C"},
 }
 
-// Allowed event types
 var allowedEventTypes = []uint32{1, 2, 3, 5, 6, 7, 12, 13}
 
-// attendance_range_tag maps event type UUID to a map of range strings to size labels
-// Example: "uuid-here" -> {"0-1000": "NANO", "1000-5000": "MICRO", "50000+": "ULTRA"}
-var attendanceRangeTag = map[string]map[string]string{
-	"41ee28a5-918e-59bc-ada8-9f6e194869c4": {
+// attendance_range_tag maps event type ID to a map of range strings to size labels
+// Example: 1 -> {"0-1000": "NANO", "1000-5000": "MICRO", "50000+": "ULTRA"}
+// Using event type IDs instead of UUIDs for better memory efficiency and simpler lookups
+var attendanceRangeTag = map[uint32]map[string]string{
+	1: {
 		"0-1000":       "NANO",
 		"1000-5000":    "MICRO",
 		"5000-10000":   "SMALL",
@@ -112,7 +103,7 @@ var attendanceRangeTag = map[string]map[string]string{
 		"50000-100000": "MEGA",
 		"100000+":      "ULTRA",
 	},
-	"7050e5af-f491-5280-aa66-d6e8c55b1b3d": {
+	2: {
 		"0-300":      "NANO",
 		"300-500":    "MICRO",
 		"500-1000":   "SMALL",
@@ -121,7 +112,7 @@ var attendanceRangeTag = map[string]map[string]string{
 		"5000-10000": "MEGA",
 		"10000+":     "ULTRA",
 	},
-	"21a41a54-43b0-5198-8306-5e8326a259ef": {
+	3: {
 		"0-300":      "NANO",
 		"300-500":    "MICRO",
 		"500-1000":   "SMALL",
@@ -130,7 +121,7 @@ var attendanceRangeTag = map[string]map[string]string{
 		"5000-10000": "MEGA",
 		"10000+":     "ULTRA",
 	},
-	"455a1427-5459-5ae3-be3a-1c680f4bc4c7": {
+	5: {
 		"0-1000":       "NANO",
 		"1000-5000":    "MICRO",
 		"5000-10000":   "SMALL",
@@ -139,7 +130,7 @@ var attendanceRangeTag = map[string]map[string]string{
 		"50000-100000": "MEGA",
 		"100000+":      "ULTRA",
 	},
-	"c1c8b213-0f3d-57fd-9555-5bcc7135130a": {
+	6: {
 		"0-1000":       "NANO",
 		"1000-5000":    "MICRO",
 		"5000-10000":   "SMALL",
@@ -148,7 +139,7 @@ var attendanceRangeTag = map[string]map[string]string{
 		"50000-100000": "MEGA",
 		"100000+":      "ULTRA",
 	},
-	"504013af-dfc6-5e43-b1ca-34b0ec065c86": {
+	7: {
 		"0-300":      "NANO",
 		"300-500":    "MICRO",
 		"500-1000":   "SMALL",
@@ -157,7 +148,7 @@ var attendanceRangeTag = map[string]map[string]string{
 		"5000-10000": "MEGA",
 		"10000+":     "ULTRA",
 	},
-	"b87d299a-8688-5184-8f71-eefd53272501": {
+	12: {
 		"0-300":      "NANO",
 		"300-500":    "MICRO",
 		"500-1000":   "SMALL",
@@ -166,7 +157,7 @@ var attendanceRangeTag = map[string]map[string]string{
 		"5000-10000": "MEGA",
 		"10000+":     "ULTRA",
 	},
-	"c42d0a8e-d77e-5899-a3e4-3147803d2309": {
+	13: {
 		"0-300":      "NANO",
 		"300-500":    "MICRO",
 		"500-1000":   "SMALL",
@@ -175,6 +166,88 @@ var attendanceRangeTag = map[string]map[string]string{
 		"5000-10000": "MEGA",
 		"10000+":     "ULTRA",
 	},
+}
+
+// eventTypeUUIDToID reverse lookup map: UUID -> ID (populated from eventTypeIDs)
+var eventTypeUUIDToID map[string]uint32
+
+func loadEventTypeIDsFromDB(clickhouseConn driver.Conn, config shared.Config) (map[uint32]string, error) {
+	baseTableName := shared.GetClickHouseTableName("event_type_ch", config)
+
+	log.Printf("Checking ClickHouse connection health before querying event type IDs from %s", baseTableName)
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		fmt.Sprintf("ClickHouse connection health check for %s", baseTableName),
+	)
+	if connectionCheckErr != nil {
+		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with event type IDs query")
+
+	idsStr := make([]string, len(allowedEventTypeIDs))
+	for i, id := range allowedEventTypeIDs {
+		idsStr[i] = fmt.Sprintf("%d", id)
+	}
+	idsList := strings.Join(idsStr, ",")
+
+	tableName := shared.GetTableNameWithDB(baseTableName, config)
+
+	query := fmt.Sprintf(
+		"SELECT eventtype_id, eventtype_uuid FROM %s WHERE eventtype_id IN (%s) GROUP BY eventtype_id, eventtype_uuid",
+		tableName, idsList,
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var rows driver.Rows
+	var err error
+	queryErr := shared.RetryWithBackoff(
+		func() error {
+			rows, err = clickhouseConn.Query(ctx, query)
+			if err != nil {
+				return fmt.Errorf("failed to query %s: %w", baseTableName, err)
+			}
+			return nil
+		},
+		3,
+		fmt.Sprintf("query event type IDs from %s", baseTableName),
+	)
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	defer rows.Close()
+
+	eventTypeMap := make(map[uint32]string, len(allowedEventTypeIDs))
+	for rows.Next() {
+		var eventTypeID uint32
+		var eventTypeUUID string
+		if err := rows.Scan(&eventTypeID, &eventTypeUUID); err != nil {
+			return nil, fmt.Errorf("failed to scan event type row: %w", err)
+		}
+		eventTypeMap[eventTypeID] = eventTypeUUID
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating event type rows: %w", err)
+	}
+
+	missing := make([]uint32, 0, len(allowedEventTypeIDs))
+	for _, id := range allowedEventTypeIDs {
+		if _, found := eventTypeMap[id]; !found {
+			missing = append(missing, id)
+		}
+	}
+
+	if len(missing) > 0 {
+		log.Printf("WARNING: Missing event type IDs in database: %v", missing)
+	}
+
+	log.Printf("Loaded %d event type UUIDs from database (expected %d)", len(eventTypeMap), len(allowedEventTypeIDs))
+	return eventTypeMap, nil
 }
 
 // converts a map to alleventRecord struct
@@ -310,7 +383,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 
 type alleventRecord struct {
 	EventID                         uint32   `ch:"event_id"`
-	EventUUID                       string   `ch:"event_uuid"` // UUID generated from event_id + event_created
+	EventUUID                       string   `ch:"event_uuid"` // UUID generated from event_id + edition_created
 	EventName                       string   `ch:"event_name"`
 	EventAbbrName                   *string  `ch:"event_abbr_name"`
 	EventDescription                *string  `ch:"event_description"`
@@ -1062,14 +1135,16 @@ func fetchalleventEventTypesForBatch(db *sql.DB, eventIDs []int64) map[int64][]u
 	return result
 }
 
-func getAttendanceRange(primaryEventType *string, estimatedVisitorMean *uint32) *string {
-	if primaryEventType == nil || estimatedVisitorMean == nil {
+// getAttendanceRange returns the attendance range string based on event type ID and estimated visitor mean
+//use event type ID instead of UUID for better memory efficiency
+func getAttendanceRange(primaryEventTypeID *uint32, estimatedVisitorMean *uint32) *string {
+	if primaryEventTypeID == nil || estimatedVisitorMean == nil {
 		return nil
 	}
 
-	ranges, ok := attendanceRangeTag[*primaryEventType]
+	ranges, ok := attendanceRangeTag[*primaryEventTypeID]
 	if !ok {
-		log.Printf("Warning: No attendance ranges found for event type UUID: %s", *primaryEventType)
+		log.Printf("Warning: No attendance ranges found for event type ID: %d", *primaryEventTypeID)
 		return nil
 	}
 
@@ -1332,6 +1407,22 @@ func formatalleventEconomicImpact(_ int64, economicImpact string) (interface{}, 
 
 func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
 	log.Println("=== Starting allevent ONLY Processing ===")
+
+	// Load event type IDs from database
+	var err error
+	eventTypeIDs, err = loadEventTypeIDsFromDB(clickhouseConn, config)
+	if err != nil {
+		log.Fatalf("Failed to load event type IDs from database: %v", err)
+	}
+	if len(eventTypeIDs) == 0 {
+		log.Fatal("No event type IDs loaded from database")
+	}
+
+	// Build reverse lookup map: UUID -> ID for efficient conversion
+	eventTypeUUIDToID = make(map[string]uint32, len(eventTypeIDs))
+	for id, uuid := range eventTypeIDs {
+		eventTypeUUIDToID[uuid] = id
+	}
 
 	totalRecords, minID, maxID, err := shared.GetTotalRecordsAndIDRange(mysqlDB, "event")
 	if err != nil {
@@ -1922,7 +2013,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 
 							record := map[string]interface{}{
 								"event_id":          eventData["id"],
-								"event_uuid":        shared.GenerateEventUUID(shared.ConvertToUInt32(eventData["id"]), eventData["created"]),
+								"event_uuid":        shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(eventData["id"]), shared.ConvertToString(edition["edition_created"]))),
 								"event_name":        eventData["event_name"],
 								"event_abbr_name":   eventData["abbr_name"],
 								"event_description": esInfoMap["event_description"],
@@ -2256,7 +2347,14 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								"estimatedSize": func() *string {
 									eventTypes := eventTypesMap[eventID]
 									eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
-									primaryEventType := getPrimaryEventType(eventTypes, eventAudience)
+									primaryEventTypeUUID := getPrimaryEventType(eventTypes, eventAudience)
+
+									var primaryEventTypeID *uint32
+									if primaryEventTypeUUID != nil {
+										if id, ok := eventTypeUUIDToID[*primaryEventTypeUUID]; ok {
+											primaryEventTypeID = &id
+										}
+									}
 
 									var estimatedVisitorMean *uint32
 									if finalEstimate := esInfoMap["finalEstimate"]; finalEstimate != nil {
@@ -2327,7 +2425,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 										}
 									}
 
-									return getAttendanceRange(primaryEventType, estimatedVisitorMean)
+									return getAttendanceRange(primaryEventTypeID, estimatedVisitorMean)
 								}(),
 								"last_updated_at": time.Now().Format("2006-01-02 15:04:05"),
 								"version":         1,
@@ -2745,8 +2843,18 @@ func determinealleventMaturity(totalEdition interface{}) *string {
 }
 
 func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	log.Printf("Checking ClickHouse connection health before querying cities from %s", locationTableName)
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		fmt.Sprintf("ClickHouse connection health check for cities query from %s", locationTableName),
+	)
+	if connectionCheckErr != nil {
+		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with cities query")
 
 	query := fmt.Sprintf(`
 		SELECT id, name, iso
@@ -2754,9 +2862,24 @@ func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn, locatio
 		WHERE location_type = 'CITY'
 	`, locationTableName)
 
-	rows, err := clickhouseConn.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query %s for cities: %v", locationTableName, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var rows driver.Rows
+	var err error
+	queryErr := shared.RetryWithBackoff(
+		func() error {
+			rows, err = clickhouseConn.Query(ctx, query)
+			if err != nil {
+				return fmt.Errorf("failed to query %s for cities: %v", locationTableName, err)
+			}
+			return nil
+		},
+		3,
+		fmt.Sprintf("query cities from %s", locationTableName),
+	)
+	if queryErr != nil {
+		return nil, queryErr
 	}
 	defer rows.Close()
 
@@ -2795,8 +2918,18 @@ func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn, locatio
 }
 
 func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	log.Printf("Checking ClickHouse connection health before querying states from %s", locationTableName)
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		fmt.Sprintf("ClickHouse connection health check for states query from %s", locationTableName),
+	)
+	if connectionCheckErr != nil {
+		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with states query")
 
 	query := fmt.Sprintf(`
 		SELECT id, name, iso
@@ -2804,9 +2937,24 @@ func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn, locati
 		WHERE location_type = 'STATE'
 	`, locationTableName)
 
-	rows, err := clickhouseConn.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query %s for states: %v", locationTableName, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var rows driver.Rows
+	var err error
+	queryErr := shared.RetryWithBackoff(
+		func() error {
+			rows, err = clickhouseConn.Query(ctx, query)
+			if err != nil {
+				return fmt.Errorf("failed to query %s for states: %v", locationTableName, err)
+			}
+			return nil
+		},
+		3,
+		fmt.Sprintf("query states from %s", locationTableName),
+	)
+	if queryErr != nil {
+		return nil, queryErr
 	}
 	defer rows.Close()
 
@@ -2845,8 +2993,18 @@ func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn, locati
 }
 
 func buildalleventVenueIDLookupFromLocationCh(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	log.Printf("Checking ClickHouse connection health before querying venues from %s", locationTableName)
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		fmt.Sprintf("ClickHouse connection health check for venues query from %s", locationTableName),
+	)
+	if connectionCheckErr != nil {
+		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Printf("ClickHouse connection is alive, proceeding with venues query")
 
 	query := fmt.Sprintf(`
 		SELECT id, name, iso
@@ -2854,9 +3012,24 @@ func buildalleventVenueIDLookupFromLocationCh(clickhouseConn driver.Conn, locati
 		WHERE location_type = 'VENUE'
 	`, locationTableName)
 
-	rows, err := clickhouseConn.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query %s for venues: %v", locationTableName, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var rows driver.Rows
+	var err error
+	queryErr := shared.RetryWithBackoff(
+		func() error {
+			rows, err = clickhouseConn.Query(ctx, query)
+			if err != nil {
+				return fmt.Errorf("failed to query %s for venues: %v", locationTableName, err)
+			}
+			return nil
+		},
+		3,
+		fmt.Sprintf("query venues from %s", locationTableName),
+	)
+	if queryErr != nil {
+		return nil, queryErr
 	}
 	defer rows.Close()
 
@@ -3010,7 +3183,7 @@ func processalleventTicketData(ticketData []map[string]interface{}) map[int64][]
 		ticketURL := shared.SafeConvertToNullableString(ticket["ticket_url"])
 
 		eventIDUint32 := shared.ConvertToUInt32(eventID)
-		ticketUUID := shared.GenerateEventUUID(eventIDUint32, ticket["created"])
+		ticketUUID := shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", eventIDUint32, shared.ConvertToString(ticket["created"])))
 
 		ticketJSON := map[string]interface{}{
 			"id":        ticketUUID,
@@ -3702,28 +3875,41 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 		)
 	`
 
-	batch, err := clickhouseConn.PrepareBatch(ctx, insertSQL)
-
+	var batch driver.Batch
+	var err error
 	maxRetries := 3
-	for retryCount := 0; err != nil && retryCount < maxRetries; retryCount++ {
-		log.Printf("WARNING: ClickHouse connection error (attempt %d/%d), rebuilding connection: %v", retryCount+1, maxRetries, err)
-		newConn, connErr := utils.SetupNativeClickHouseConnection(config)
-		if connErr != nil {
-			log.Printf("ERROR: Failed to rebuild ClickHouse connection (attempt %d/%d): %v", retryCount+1, maxRetries, connErr)
-			if retryCount < maxRetries-1 {
+	for retryCount := 0; retryCount < maxRetries; retryCount++ {
+		// Check connection health before each retry attempt
+		if retryCount > 0 {
+			log.Printf("Checking ClickHouse connection health before retry %d/%d", retryCount+1, maxRetries)
+			connectionCheckErr := shared.RetryWithBackoff(
+				func() error {
+					return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+				},
+				3,
+				fmt.Sprintf("ClickHouse connection health check for allevent_ch batch retry %d", retryCount+1),
+			)
+			if connectionCheckErr != nil {
+				log.Printf("WARNING: ClickHouse connection health check failed on retry %d: %v", retryCount+1, connectionCheckErr)
+			}
+		}
+
+		batch, err = clickhouseConn.PrepareBatch(ctx, insertSQL)
+		if err == nil {
+			break
+		}
+
+		if retryCount < maxRetries-1 {
+			log.Printf("WARNING: ClickHouse PrepareBatch error (attempt %d/%d), rebuilding connection: %v", retryCount+1, maxRetries, err)
+			newConn, connErr := utils.SetupNativeClickHouseConnection(config)
+			if connErr != nil {
+				log.Printf("ERROR: Failed to rebuild ClickHouse connection (attempt %d/%d): %v", retryCount+1, maxRetries, connErr)
 				continue
 			}
-			return fmt.Errorf("failed to prepare batch and rebuild connection after %d attempts: %v, %v", maxRetries, err, connErr)
-		}
 
-		clickhouseConn = newConn
-		batch, err = clickhouseConn.PrepareBatch(ctx, insertSQL)
-		if err != nil {
-			log.Printf("ERROR: Failed to prepare batch after rebuilding connection (attempt %d/%d): %v", retryCount+1, maxRetries, err)
-			continue
+			clickhouseConn = newConn
+			log.Printf("Successfully rebuilt ClickHouse connection, retrying PrepareBatch (attempt %d/%d)", retryCount+2, maxRetries)
 		}
-		log.Printf("Successfully rebuilt ClickHouse connection and prepared batch after %d attempt(s)", retryCount+1)
-		break
 	}
 
 	if err != nil {

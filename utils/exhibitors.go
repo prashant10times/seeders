@@ -227,7 +227,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config s
 				// Create exhibitor record with proper types
 				exhibitorRecord := ExhibitorRecord{
 					CompanyID:        companyID,
-					CompanyUUID:      shared.GenerateCompanyUUID(exhibitor["company_name"], exhibitor["created"]),
+					CompanyUUID:      shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(exhibitor["company_id"]), shared.ConvertToString(exhibitor["created"]))),
 					CompanyIDName:    shared.GetCompanyNameOrDefault(exhibitor["company_name"]),
 					EditionID:        editionID,
 					EventID:          eventID,

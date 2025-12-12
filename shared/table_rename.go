@@ -153,15 +153,40 @@ type TableSchema struct {
 }
 
 func GetTableSchema(clickhouseConn driver.Conn, tableName string, config Config) ([]TableSchema, error) {
+	fullTableName := GetTableNameWithDB(tableName, config)
+
+	log.Printf("Checking ClickHouse connection health before getting schema for %s", fullTableName)
+	connectionCheckErr := RetryWithBackoff(
+		func() error {
+			return CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		fmt.Sprintf("ClickHouse connection health check for schema query %s", fullTableName),
+	)
+	if connectionCheckErr != nil {
+		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+
+	query := fmt.Sprintf("DESCRIBE TABLE %s", fullTableName)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	fullTableName := GetTableNameWithDB(tableName, config)
-	query := fmt.Sprintf("DESCRIBE TABLE %s", fullTableName)
-
-	rows, err := clickhouseConn.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query schema for %s: %w", fullTableName, err)
+	var rows driver.Rows
+	var err error
+	queryErr := RetryWithBackoff(
+		func() error {
+			rows, err = clickhouseConn.Query(ctx, query)
+			if err != nil {
+				return fmt.Errorf("failed to query schema for %s: %w", fullTableName, err)
+			}
+			return nil
+		},
+		3,
+		fmt.Sprintf("query schema for %s", fullTableName),
+	)
+	if queryErr != nil {
+		return nil, queryErr
 	}
 	defer rows.Close()
 
@@ -220,16 +245,41 @@ func normalizeType(typeStr string) string {
 }
 
 func TableExists(clickhouseConn driver.Conn, tableName string, config Config) (bool, error) {
+	fullTableName := GetTableNameWithDB(tableName, config)
+
+	log.Printf("Checking ClickHouse connection health before checking table existence for %s", fullTableName)
+	connectionCheckErr := RetryWithBackoff(
+		func() error {
+			return CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		fmt.Sprintf("ClickHouse connection health check for table existence %s", fullTableName),
+	)
+	if connectionCheckErr != nil {
+		return false, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+
+	query := fmt.Sprintf("EXISTS TABLE %s", fullTableName)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	fullTableName := GetTableNameWithDB(tableName, config)
-	query := fmt.Sprintf("EXISTS TABLE %s", fullTableName)
-
 	var exists uint8
-	row := clickhouseConn.QueryRow(ctx, query)
-	if err := row.Scan(&exists); err != nil {
-		return false, fmt.Errorf("failed to check table existence for %s: %w", fullTableName, err)
+	var err error
+	queryErr := RetryWithBackoff(
+		func() error {
+			row := clickhouseConn.QueryRow(ctx, query)
+			err = row.Scan(&exists)
+			if err != nil {
+				return fmt.Errorf("failed to check table existence for %s: %w", fullTableName, err)
+			}
+			return nil
+		},
+		3,
+		fmt.Sprintf("check table existence for %s", fullTableName),
+	)
+	if queryErr != nil {
+		return false, queryErr
 	}
 
 	return exists == 1, nil

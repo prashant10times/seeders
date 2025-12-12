@@ -218,7 +218,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 
 			sponsorRecord := SponsorRecord{
 				CompanyID:        companyID,
-				CompanyUUID:      shared.GenerateCompanyUUID(sponsor["name"], sponsor["created"]),
+				CompanyUUID:      shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(sponsor["company_id"]), shared.ConvertToString(sponsor["created"]))),
 				CompanyIDName:    shared.GetCompanyNameOrDefault(sponsor["name"]),
 				EditionID:        editionID,
 				EventID:          eventID,
