@@ -223,16 +223,41 @@ func TableExists(clickhouseConn driver.Conn, tableName string, config Config) (b
 }
 
 func GetTableRowCount(clickhouseConn driver.Conn, tableName string, config Config) (uint64, error) {
+	fullTableName := GetTableNameWithDB(tableName, config)
+
+	log.Printf("Checking ClickHouse connection health before getting row count for %s", fullTableName)
+	connectionCheckErr := RetryWithBackoff(
+		func() error {
+			return CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		fmt.Sprintf("ClickHouse connection health check for row count %s", fullTableName),
+	)
+	if connectionCheckErr != nil {
+		return 0, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+
+	query := fmt.Sprintf("SELECT count() FROM %s", fullTableName)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	fullTableName := GetTableNameWithDB(tableName, config)
-	query := fmt.Sprintf("SELECT count() FROM %s", fullTableName)
-
 	var count uint64
-	row := clickhouseConn.QueryRow(ctx, query)
-	if err := row.Scan(&count); err != nil {
-		return 0, fmt.Errorf("failed to get row count for %s: %w", fullTableName, err)
+	var err error
+	queryErr := RetryWithBackoff(
+		func() error {
+			row := clickhouseConn.QueryRow(ctx, query)
+			err = row.Scan(&count)
+			if err != nil {
+				return fmt.Errorf("failed to get row count for %s: %w", fullTableName, err)
+			}
+			return nil
+		},
+		3,
+		fmt.Sprintf("get row count for %s", fullTableName),
+	)
+	if queryErr != nil {
+		return 0, queryErr
 	}
 
 	return count, nil
@@ -461,16 +486,42 @@ func logErrorToFile(operationName string, err error, errorLogFile string) {
 }
 
 func GetTableCreateStatement(clickhouseConn driver.Conn, tableName string, config Config) (string, error) {
+	fullTableName := GetTableNameWithDB(tableName, config)
+
+	log.Printf("Checking ClickHouse connection health before getting CREATE TABLE statement for %s", fullTableName)
+	connectionCheckErr := RetryWithBackoff(
+		func() error {
+			return CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		fmt.Sprintf("ClickHouse connection health check for CREATE TABLE statement %s", fullTableName),
+	)
+	if connectionCheckErr != nil {
+		return "", fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+
+	query := fmt.Sprintf("SHOW CREATE TABLE %s", fullTableName)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	fullTableName := GetTableNameWithDB(tableName, config)
-	query := fmt.Sprintf("SHOW CREATE TABLE %s", fullTableName)
-
 	var createStatement string
-	row := clickhouseConn.QueryRow(ctx, query)
-	if err := row.Scan(&createStatement); err != nil {
-		return "", fmt.Errorf("failed to get CREATE TABLE statement for %s: %w", fullTableName, err)
+	var err error
+	queryErr := RetryWithBackoff(
+		func() error {
+			row := clickhouseConn.QueryRow(ctx, query)
+			err = row.Scan(&createStatement)
+			if err != nil {
+				return fmt.Errorf("failed to get CREATE TABLE statement for %s: %w", fullTableName, err)
+			}
+			return nil
+		},
+		3,
+		fmt.Sprintf("get CREATE TABLE statement for %s", fullTableName),
+	)
+
+	if queryErr != nil {
+		return "", queryErr
 	}
 
 	return createStatement, nil

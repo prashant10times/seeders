@@ -37,3 +37,6 @@ seeders
 
 .DS_Store
 polygon*
+
+optimize_logs.log
+seeding_errors.log

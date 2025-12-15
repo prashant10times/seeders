@@ -330,11 +330,12 @@ func GetPartitionsWithDuplicates(clickhouseConn driver.Conn, config TableOptimiz
 
 			for rows.Next() {
 				var partitionValue interface{}
-				scanArgs := []interface{}{&partitionValue}
+				dummies := make([]interface{}, len(config.DuplicateCheckColumns))
+				scanArgs := make([]interface{}, 0, 2+len(config.DuplicateCheckColumns))
+				scanArgs = append(scanArgs, &partitionValue)
 
-				for i := 0; i < len(config.DuplicateCheckColumns); i++ {
-					var dummy interface{}
-					scanArgs = append(scanArgs, &dummy)
+				for i := range dummies {
+					scanArgs = append(scanArgs, &dummies[i])
 				}
 
 				var count interface{}
@@ -529,13 +530,14 @@ func OptimizeTablePartitions(clickhouseConn driver.Conn, optimizeConfig TableOpt
 
 	for i, partition := range partitionsToOptimize {
 		var partInfo *PartitionInfo
-		for _, part := range partitionInfos {
-			if part.Partition == partition {
-				partInfo = &part
+		for idx := range partitionInfos {
+			if partitionInfos[idx].Partition == partition {
+				partCopy := partitionInfos[idx]
+				partInfo = &partCopy
 				break
 			}
 		}
-		
+
 		isPriority := partitionsWithDuplicatesSet != nil && partitionsWithDuplicatesSet[partition]
 		priorityLabel := ""
 		if isPriority {

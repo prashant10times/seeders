@@ -57,6 +57,16 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 	log.Println("✓ STEP 0 (PREPARE DATABASE) COMPLETED SUCCESSFULLY")
 	log.Println("")
 
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Println("STEP 0.5: STOPPING CLICKHOUSE MERGES FOR PHASE 1 (OPTIMAL INSERT PERFORMANCE)")
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	if err := shared.StopClickHouseMerges(clickhouseDB); err != nil {
+		logErrorToFile("Stop ClickHouse Merges (Phase 1)", err)
+		log.Fatalf("Failed to stop ClickHouse merges: %v", err)
+	}
+	log.Println("✓ STEP 0.5 (STOP MERGES FOR PHASE 1) COMPLETED SUCCESSFULLY")
+	log.Println("")
+
 	scripts := []struct {
 		name     string
 		critical bool
@@ -360,7 +370,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 		if i == 10 {
 			log.Println("")
 			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			log.Println("VALIDATION: Validating all first batch temp tables before swap")
+			log.Println("VALIDATION: Validating all first batch temp tables before optimization")
 			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 			firstBatchTables := []string{
@@ -383,11 +393,30 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			}
 
 			if err := shared.ValidateTempTables(clickhouseDB, firstBatchMappings, config, errorLogFile); err != nil {
-				logErrorToFile("Pre-Swap Validation", err)
-				log.Fatalf("Validation failed before batch swap: %v", err)
+				logErrorToFile("Pre-Optimization Validation", err)
+				log.Fatalf("Validation failed before optimization: %v", err)
 			}
 
-			log.Println("✓ All temp tables validated successfully, proceeding with batch swap")
+			log.Println("✓ All temp tables validated successfully, proceeding with merge start and optimization")
+
+			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			log.Println("STARTING CLICKHOUSE MERGES BEFORE OPTIMIZATION (PHASE 1)")
+			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			if err := shared.StartClickHouseMerges(clickhouseDB); err != nil {
+				logErrorToFile("Start ClickHouse Merges (Before Optimization)", err)
+				log.Printf("⚠️  Warning: Failed to start ClickHouse merges before optimization: %v", err)
+				log.Printf("⚠️  You may need to manually run 'SYSTEM START MERGES' in ClickHouse")
+				log.Printf("⚠️  Continuing with optimization anyway...")
+			} else {
+				log.Println("✓ ClickHouse merges started successfully before optimization")
+			}
+			log.Println("")
+
+			if err := shared.OptimizeAllPhase1Tables(clickhouseDB, config, errorLogFile); err != nil {
+				logErrorToFile("Optimize Phase 1 Tables", err)
+				log.Printf("⚠️  Warning: Some errors occurred during Phase 1 table optimization: %v", err)
+				log.Printf("⚠️  Check %s for details, continuing with swap...", errorLogFile)
+			}
 			log.Println("")
 
 			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -404,7 +433,18 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 		}
 	}
 
-	// After all scripts complete, swap second batch (alerts and location_polygons)
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Println("PHASE 2 PREPARATION: STOPPING CLICKHOUSE MERGES FOR OPTIMAL INSERT PERFORMANCE")
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	if err := shared.StopClickHouseMerges(clickhouseDB); err != nil {
+		logErrorToFile("Stop ClickHouse Merges (Phase 2)", err)
+		log.Printf("⚠️  Warning: Failed to stop ClickHouse merges before Phase 2: %v", err)
+		log.Printf("⚠️  Continuing with Phase 2 processing...")
+	} else {
+		log.Println("✓ ClickHouse merges stopped successfully before Phase 2")
+	}
+	log.Println("")
+
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("VALIDATION: Validating second batch temp tables before swap")
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -422,6 +462,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 	if err := shared.ValidateTempTables(clickhouseDB, secondBatchMappings, config, errorLogFile); err != nil {
 		logErrorToFile("Pre-Swap Validation (Second Batch)", err)
 		log.Printf("⚠️  Validation warning for second batch (may not exist yet): %v", err)
+		log.Println("")
 	} else {
 		log.Println("✓ All second batch temp tables validated successfully, proceeding with batch swap")
 		log.Println("")
@@ -438,6 +479,22 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 		}
 		log.Println("")
 	}
+
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Println("PHASE 2 COMPLETE: STARTING CLICKHOUSE MERGES")
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	if err := shared.StartClickHouseMerges(clickhouseDB); err != nil {
+		logErrorToFile("Start ClickHouse Merges (Phase 2)", err)
+		log.Printf("⚠️  Warning: Failed to start ClickHouse merges after Phase 2: %v", err)
+		log.Printf("⚠️  You may need to manually run 'SYSTEM START MERGES' in ClickHouse")
+	} else {
+		log.Println("✓ ClickHouse merges started successfully after Phase 2")
+	}
+	log.Println("")
+
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Println("=== ALL SEEDING SCRIPTS COMPLETED ===")
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("=== ALL SEEDING SCRIPTS COMPLETED ===")
@@ -2032,7 +2089,6 @@ func main() {
 		}
 		microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 
-		// Swap table after processing
 		log.Println("Swapping allevent_ch table...")
 		if err := shared.SwapSingleTable(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
 			logErrorToFile("All Event Table Swap", err)

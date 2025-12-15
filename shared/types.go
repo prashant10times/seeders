@@ -1089,3 +1089,79 @@ func CheckClickHouseConnectionAlive(clickhouseConn driver.Conn) error {
 
 	return nil
 }
+
+func StopClickHouseMerges(clickhouseConn driver.Conn) error {
+	log.Println("Checking ClickHouse connection health before stopping merges")
+	connectionCheckErr := RetryWithBackoff(
+		func() error {
+			return CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for stopping merges",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Println("ClickHouse connection is alive, proceeding to stop merges")
+
+	log.Println("Stopping ClickHouse merges...")
+	stopErr := RetryWithBackoff(
+		func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			query := "SYSTEM STOP MERGES"
+			if err := clickhouseConn.Exec(ctx, query); err != nil {
+				return fmt.Errorf("failed to stop ClickHouse merges: %w", err)
+			}
+			return nil
+		},
+		3,
+		"stop ClickHouse merges",
+	)
+
+	if stopErr != nil {
+		return fmt.Errorf("failed to stop ClickHouse merges after retries: %w", stopErr)
+	}
+
+	log.Println("✓ ClickHouse merges stopped successfully")
+	return nil
+}
+
+func StartClickHouseMerges(clickhouseConn driver.Conn) error {
+	log.Println("Checking ClickHouse connection health before starting merges")
+	connectionCheckErr := RetryWithBackoff(
+		func() error {
+			return CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+		"ClickHouse connection health check for starting merges",
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Println("ClickHouse connection is alive, proceeding to start merges")
+
+	log.Println("Starting ClickHouse merges...")
+	startErr := RetryWithBackoff(
+		func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			query := "SYSTEM START MERGES"
+			if err := clickhouseConn.Exec(ctx, query); err != nil {
+				return fmt.Errorf("failed to start ClickHouse merges: %w", err)
+			}
+			return nil
+		},
+		3,
+		"start ClickHouse merges",
+	)
+
+	if startErr != nil {
+		return fmt.Errorf("failed to start ClickHouse merges after retries: %w", startErr)
+	}
+
+	log.Println("✓ ClickHouse merges started successfully")
+	return nil
+}
