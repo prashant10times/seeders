@@ -62,9 +62,12 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	if err := shared.StopClickHouseMerges(clickhouseDB); err != nil {
 		logErrorToFile("Stop ClickHouse Merges (Phase 1)", err)
-		log.Fatalf("Failed to stop ClickHouse merges: %v", err)
+		log.Printf("⚠️  Warning: Failed to stop ClickHouse merges before Phase 1: %v", err)
+		log.Printf("⚠️  Continuing with Phase 1 processing...")
+	} else {
+		log.Println("✓ ClickHouse merges stopped successfully before Phase 1")
 	}
-	log.Println("✓ STEP 0.5 (STOP MERGES FOR PHASE 1) COMPLETED SUCCESSFULLY")
+	log.Println("✓ STEP 0.5 (STOP MERGES FOR PHASE 1) COMPLETED")
 	log.Println("")
 
 	scripts := []struct {

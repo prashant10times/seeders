@@ -532,8 +532,7 @@ func OptimizeTablePartitions(clickhouseConn driver.Conn, optimizeConfig TableOpt
 		var partInfo *PartitionInfo
 		for idx := range partitionInfos {
 			if partitionInfos[idx].Partition == partition {
-				partCopy := partitionInfos[idx]
-				partInfo = &partCopy
+				partInfo = &partitionInfos[idx]
 				break
 			}
 		}
