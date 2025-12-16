@@ -299,18 +299,15 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 		return nil
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d event_designation_ch records", len(eventDesignationRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for event_designation_ch",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
 	}
-	log.Printf("ClickHouse connection is alive, proceeding with event_designation_ch batch insert")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -447,7 +444,6 @@ func ProcessEventDesignationChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 					return InsertEventDesignationChDataIntoClickHouse(clickhouseConn, records, config.ClickHouseWorkers)
 				},
 				3,
-				fmt.Sprintf("event_designation_ch insertion for chunk %d", chunkNum),
 			)
 
 			if insertErr != nil {

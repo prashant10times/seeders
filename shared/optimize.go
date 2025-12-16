@@ -210,7 +210,6 @@ func GetAllPartitionsFromSystemParts(clickhouseConn driver.Conn, tableName strin
 			return CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check for system.parts query %s", tableName),
 	)
 	if connectionCheckErr != nil {
 		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -257,7 +256,6 @@ func GetAllPartitionsFromSystemParts(clickhouseConn driver.Conn, tableName strin
 			return nil
 		},
 		3,
-		fmt.Sprintf("get all partitions from system.parts for %s", tableName),
 	)
 
 	if queryErr != nil {
@@ -310,7 +308,6 @@ func GetPartitionsWithDuplicates(clickhouseConn driver.Conn, config TableOptimiz
 			return CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check for duplicate detection %s", config.TempTableName),
 	)
 	if connectionCheckErr != nil {
 		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -359,7 +356,6 @@ func GetPartitionsWithDuplicates(clickhouseConn driver.Conn, config TableOptimiz
 			return nil
 		},
 		3,
-		fmt.Sprintf("get duplicate partitions for %s", config.TempTableName),
 	)
 
 	if queryErr != nil {
@@ -391,7 +387,6 @@ func OptimizeTablePartition(clickhouseConn driver.Conn, tableName, partitionValu
 			return CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check before OPTIMIZE %s PARTITION %s", tableName, partitionValue),
 	)
 	if connectionCheckErr != nil {
 		err := fmt.Errorf("ClickHouse connection is not alive before OPTIMIZE: %w", connectionCheckErr)
@@ -557,7 +552,6 @@ func OptimizeTablePartitions(clickhouseConn driver.Conn, optimizeConfig TableOpt
 				return OptimizeTablePartition(clickhouseConn, optimizeConfig.TempTableName, partition, dbConfig, errorLogFile)
 			},
 			3,
-			fmt.Sprintf("optimize partition %s for %s", partition, optimizeConfig.TableName),
 		)
 
 		if optimizeErr != nil {

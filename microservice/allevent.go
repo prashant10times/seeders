@@ -2600,7 +2600,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							return insertalleventDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers, config)
 						},
 						3,
-						fmt.Sprintf("ClickHouse insertion for chunk %d", chunkNum),
 					)
 
 					if insertErr != nil {
@@ -3658,18 +3657,15 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 		return nil
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d allevent_ch records", len(records))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for allevent_ch",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
 	}
-	log.Printf("ClickHouse connection is alive, proceeding with allevent_ch batch insert")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second)
 	defer cancel()

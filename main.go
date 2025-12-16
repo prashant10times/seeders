@@ -737,7 +737,6 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config shared.Config, 
 					return insertVisitorsDataIntoClickHouse(chConn, visitorRecords, config.ClickHouseWorkers)
 				},
 				3,
-				fmt.Sprintf("visitors insertion for chunk %d", chunkNum),
 			)
 
 			if visitorInsertErr != nil {
@@ -1014,13 +1013,11 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 		return nil
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d event_visitors_ch records", len(visitorRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for event_visitors_ch",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -1304,7 +1301,6 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 					return insertSpeakersDataIntoClickHouse(clickhouseConn, speakerRecords, config.ClickHouseWorkers)
 				},
 				3,
-				fmt.Sprintf("speakers insertion for chunk %d", chunkNum),
 			)
 
 			if speakerInsertErr != nil {
@@ -1504,13 +1500,11 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 		return nil
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d event_speaker_ch records", len(speakerRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for event_speaker_ch",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)

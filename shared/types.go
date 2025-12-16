@@ -50,21 +50,21 @@ type Config struct {
 }
 
 // RetryWithBackoff retries an operation with exponential backoff
-func RetryWithBackoff(operation func() error, maxRetries int, operationName string) error {
+func RetryWithBackoff(operation func() error, maxRetries int) error {
 	var lastError error
 	for i := 0; i < maxRetries; i++ {
 		if err := operation(); err != nil {
 			lastError = err
 			if i < maxRetries-1 {
 				backoffDuration := time.Duration(i+1) * time.Second
-				log.Printf("Retrying %s in %v (attempt %d/%d): %v", operationName, backoffDuration, i+1, maxRetries, err)
+				log.Printf("Retrying in %v (attempt %d/%d): %v", backoffDuration, i+1, maxRetries, err)
 				time.Sleep(backoffDuration)
 			}
 		} else {
 			return nil
 		}
 	}
-	return fmt.Errorf("operation %s failed after %d retries: %v", operationName, maxRetries, lastError)
+	return fmt.Errorf("operation failed after %d retries: %v", maxRetries, lastError)
 }
 
 func GetTotalRecordsAndIDRange(db *sql.DB, table string) (int, int, int, error) {
@@ -1097,7 +1097,6 @@ func StopClickHouseMerges(clickhouseConn driver.Conn) error {
 			return CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for stopping merges",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -1117,7 +1116,6 @@ func StopClickHouseMerges(clickhouseConn driver.Conn) error {
 			return nil
 		},
 		3,
-		"stop ClickHouse merges",
 	)
 
 	if stopErr != nil {
@@ -1135,7 +1133,6 @@ func StartClickHouseMerges(clickhouseConn driver.Conn) error {
 			return CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for starting merges",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -1155,7 +1152,6 @@ func StartClickHouseMerges(clickhouseConn driver.Conn) error {
 			return nil
 		},
 		3,
-		"start ClickHouse merges",
 	)
 
 	if startErr != nil {

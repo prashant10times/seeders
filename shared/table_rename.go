@@ -231,7 +231,6 @@ func GetTableRowCount(clickhouseConn driver.Conn, tableName string, config Confi
 			return CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check for row count %s", fullTableName),
 	)
 	if connectionCheckErr != nil {
 		return 0, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -254,7 +253,6 @@ func GetTableRowCount(clickhouseConn driver.Conn, tableName string, config Confi
 			return nil
 		},
 		3,
-		fmt.Sprintf("get row count for %s", fullTableName),
 	)
 	if queryErr != nil {
 		return 0, queryErr
@@ -338,7 +336,6 @@ func RenameTable(clickhouseConn driver.Conn, oldName, newName string, config Con
 			return CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check for rename %s to %s", oldName, newName),
 	)
 	if connectionCheckErr != nil {
 		err := fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -363,7 +360,6 @@ func RenameTable(clickhouseConn driver.Conn, oldName, newName string, config Con
 			return nil
 		},
 		3,
-		fmt.Sprintf("rename table %s to %s", oldName, newName),
 	)
 
 	if renameErr != nil {
@@ -494,7 +490,6 @@ func GetTableCreateStatement(clickhouseConn driver.Conn, tableName string, confi
 			return CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check for CREATE TABLE statement %s", fullTableName),
 	)
 	if connectionCheckErr != nil {
 		return "", fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -517,7 +512,6 @@ func GetTableCreateStatement(clickhouseConn driver.Conn, tableName string, confi
 			return nil
 		},
 		3,
-		fmt.Sprintf("get CREATE TABLE statement for %s", fullTableName),
 	)
 
 	if queryErr != nil {
@@ -565,7 +559,6 @@ func DropTable(clickhouseConn driver.Conn, tableName string, config Config, erro
 			return CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check for drop table %s", tableName),
 	)
 	if connectionCheckErr != nil {
 		err := fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -589,7 +582,6 @@ func DropTable(clickhouseConn driver.Conn, tableName string, config Config, erro
 			return nil
 		},
 		3,
-		fmt.Sprintf("drop table %s", tableName),
 	)
 
 	if dropErr != nil {
@@ -640,7 +632,6 @@ func CreateTempTableFromOriginal(clickhouseConn driver.Conn, originalTable, temp
 			return CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check for create temp table %s", tempTable),
 	)
 	if connectionCheckErr != nil {
 		err := fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -664,7 +655,6 @@ func CreateTempTableFromOriginal(clickhouseConn driver.Conn, originalTable, temp
 			return nil
 		},
 		3,
-		fmt.Sprintf("create temp table %s", tempTable),
 	)
 
 	if createErr != nil {
