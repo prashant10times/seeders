@@ -62,7 +62,7 @@ func GetTableOptimizeConfigs() map[string]TableOptimizeConfig {
 			TableName:             "event_exhibitor_ch",
 			TempTableName:         "event_exhibitor_temp",
 			PartitionExpression:   "",
-			DuplicateCheckColumns: []string{"event_id", "edition_id", "user_id"},
+			DuplicateCheckColumns: []string{"event_id", "edition_id", "company_uuid"},
 		},
 		"event_speaker_ch": {
 			TableName:             "event_speaker_ch",
@@ -281,9 +281,9 @@ func GetPartitionsWithDuplicates(clickhouseConn driver.Conn, config TableOptimiz
 	groupByColumns = append(groupByColumns, config.DuplicateCheckColumns...)
 	groupByClause := strings.Join(groupByColumns, ", ")
 
-	selectClause := fmt.Sprintf("(%s) AS partition", config.PartitionExpression)
+	selectClause := fmt.Sprintf("toString(%s) AS partition", config.PartitionExpression)
 	for _, col := range config.DuplicateCheckColumns {
-		selectClause += fmt.Sprintf(", %s", col)
+		selectClause += fmt.Sprintf(", toString(%s)", col)
 	}
 	selectClause += ", count(*) AS cnt"
 
@@ -326,26 +326,25 @@ func GetPartitionsWithDuplicates(clickhouseConn driver.Conn, config TableOptimiz
 			seenPartitions := make(map[string]bool)
 
 			for rows.Next() {
-				var partitionValue interface{}
-				dummies := make([]interface{}, len(config.DuplicateCheckColumns))
+				var partitionValue string
+				dummyStrings := make([]string, len(config.DuplicateCheckColumns))
 				scanArgs := make([]interface{}, 0, 2+len(config.DuplicateCheckColumns))
 				scanArgs = append(scanArgs, &partitionValue)
 
-				for i := range dummies {
-					scanArgs = append(scanArgs, &dummies[i])
+				for i := range dummyStrings {
+					scanArgs = append(scanArgs, &dummyStrings[i])
 				}
 
-				var count interface{}
+				var count uint64
 				scanArgs = append(scanArgs, &count)
 
 				if err := rows.Scan(scanArgs...); err != nil {
 					return fmt.Errorf("failed to scan duplicate row: %w", err)
 				}
 
-				partitionStr := fmt.Sprintf("%v", partitionValue)
-				if !seenPartitions[partitionStr] {
-					partitions = append(partitions, partitionStr)
-					seenPartitions[partitionStr] = true
+				if !seenPartitions[partitionValue] {
+					partitions = append(partitions, partitionValue)
+					seenPartitions[partitionValue] = true
 				}
 			}
 
@@ -376,7 +375,7 @@ func formatPartitionValue(partitionValue string) string {
 func OptimizeTablePartition(clickhouseConn driver.Conn, tableName, partitionValue string, dbConfig Config, errorLogFile string) error {
 	fullTableName := GetTableNameWithDB(tableName, dbConfig)
 	formattedPartition := formatPartitionValue(partitionValue)
-	query := fmt.Sprintf("OPTIMIZE TABLE %s PARTITION %s FINAL", fullTableName, formattedPartition)
+	query := fmt.Sprintf("OPTIMIZE TABLE %s PARTITION %s SETTINGS mutations_sync = 0", fullTableName, formattedPartition)
 
 	log.Printf("Starting OPTIMIZE for %s PARTITION %s", tableName, partitionValue)
 	log.Printf("Query: %s", query)
@@ -398,44 +397,84 @@ func OptimizeTablePartition(clickhouseConn driver.Conn, tableName, partitionValu
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	done := make(chan error, 1)
-	go func() {
-		err := clickhouseConn.Exec(ctx, query)
-		done <- err
-	}()
+	execCtx, execCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	err := clickhouseConn.Exec(execCtx, query)
+	execCancel()
 
-	keepAliveTicker := time.NewTicker(30 * time.Second)
-	defer keepAliveTicker.Stop()
+	if err != nil {
+		errMsg := fmt.Errorf("OPTIMIZE failed to start for %s PARTITION %s: %w", tableName, partitionValue, err)
+		logErrorToFile("Optimize Partition", errMsg, errorLogFile)
+		logOptimizeToFile("ERROR", "Optimize Partition", fmt.Sprintf("OPTIMIZE failed to start for %s PARTITION %s: %v", tableName, partitionValue, err))
+		return errMsg
+	}
+
+	log.Printf("OPTIMIZE started (async mode), monitoring completion via system.mutations...")
+	logOptimizeToFile("INFO", "Optimize Partition", fmt.Sprintf("OPTIMIZE started in async mode for %s PARTITION %s, monitoring completion", tableName, partitionValue))
 
 	startTime := time.Now()
+	err = waitForOptimizeCompletion(clickhouseConn, dbConfig, fullTableName, formattedPartition, ctx)
+	duration := time.Since(startTime)
+
+	if err != nil {
+		errMsg := fmt.Errorf("OPTIMIZE failed for %s PARTITION %s after %v: %w", tableName, partitionValue, duration, err)
+		logErrorToFile("Optimize Partition", errMsg, errorLogFile)
+		logOptimizeToFile("ERROR", "Optimize Partition", fmt.Sprintf("OPTIMIZE failed for %s PARTITION %s after %v: %v", tableName, partitionValue, duration, err))
+		return errMsg
+	}
+
+	successMsg := fmt.Sprintf("OPTIMIZE completed for %s PARTITION %s in %v", tableName, partitionValue, duration)
+	log.Printf("✓ %s", successMsg)
+	logOptimizeToFile("SUCCESS", "Optimize Partition", successMsg)
+	return nil
+}
+
+func waitForOptimizeCompletion(clickhouseConn driver.Conn, dbConfig Config, fullTableName, formattedPartition string, ctx context.Context) error {
+	tableParts := strings.Split(fullTableName, ".")
+	tableNameOnly := tableParts[len(tableParts)-1]
+	tableNameOnly = strings.Trim(tableNameOnly, "`")
+
+	escapedPartition := strings.ReplaceAll(formattedPartition, "'", "''")
+	escapedPartition = strings.ReplaceAll(escapedPartition, "\\", "\\\\")
+	escapedPartition = strings.ReplaceAll(escapedPartition, "%", "\\%")
+	escapedPartition = strings.ReplaceAll(escapedPartition, "_", "\\_")
+
+	checkQuery := fmt.Sprintf(`
+		SELECT count() 
+		FROM system.mutations 
+		WHERE database = '%s' 
+			AND table = '%s' 
+			AND is_done = 0
+			AND command LIKE '%%OPTIMIZE%%PARTITION%%%s%%'
+	`, dbConfig.ClickhouseDB, tableNameOnly, escapedPartition)
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	timeout := time.NewTimer(30 * time.Minute)
+	defer timeout.Stop()
+
 	for {
 		select {
-		case err := <-done:
-			duration := time.Since(startTime)
-			if err != nil {
-				errMsg := fmt.Errorf("OPTIMIZE failed for %s PARTITION %s after %v: %w", tableName, partitionValue, duration, err)
-				logErrorToFile("Optimize Partition", errMsg, errorLogFile)
-				logOptimizeToFile("ERROR", "Optimize Partition", fmt.Sprintf("OPTIMIZE failed for %s PARTITION %s after %v: %v", tableName, partitionValue, duration, err))
-				return errMsg
-			}
-			successMsg := fmt.Sprintf("OPTIMIZE completed for %s PARTITION %s in %v", tableName, partitionValue, duration)
-			log.Printf("✓ %s", successMsg)
-			logOptimizeToFile("SUCCESS", "Optimize Partition", successMsg)
-			return nil
-
-		case <-keepAliveTicker.C:
-			keepAliveCtx, keepAliveCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			_ = clickhouseConn.QueryRow(keepAliveCtx, "SELECT 1")
-			keepAliveCancel()
-			elapsed := time.Since(startTime)
-			log.Printf("OPTIMIZE in progress for %s PARTITION %s (elapsed: %v)...", tableName, partitionValue, elapsed)
-
 		case <-ctx.Done():
-			duration := time.Since(startTime)
-			err := fmt.Errorf("OPTIMIZE timeout for %s PARTITION %s after %v: %w", tableName, partitionValue, duration, ctx.Err())
-			logErrorToFile("Optimize Partition", err, errorLogFile)
-			logOptimizeToFile("ERROR", "Optimize Partition", fmt.Sprintf("OPTIMIZE timeout for %s PARTITION %s after %v: %v", tableName, partitionValue, duration, ctx.Err()))
-			return err
+			return ctx.Err()
+		case <-timeout.C:
+			return fmt.Errorf("timeout waiting for OPTIMIZE to complete")
+		case <-ticker.C:
+			var count uint64
+			checkCtx, checkCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			row := clickhouseConn.QueryRow(checkCtx, checkQuery)
+			err := row.Scan(&count)
+			checkCancel()
+
+			if err != nil {
+				log.Printf("Warning: Failed to check mutation status: %v", err)
+				continue
+			}
+
+			if count == 0 {
+				return nil
+			}
+
+			log.Printf("OPTIMIZE still in progress (%d pending mutations)...", count)
 		}
 	}
 }
@@ -571,6 +610,31 @@ func OptimizeTablePartitions(clickhouseConn driver.Conn, optimizeConfig TableOpt
 	completionMsg := fmt.Sprintf("Completed optimization for %s (%d partitions processed)", optimizeConfig.TableName, len(partitionsToOptimize))
 	log.Printf("✓ %s", completionMsg)
 	logOptimizeToFile("SUCCESS", "Optimize Table", completionMsg)
+	return nil
+}
+
+func OptimizeSingleTable(clickhouseConn driver.Conn, tableName string, config Config, errorLogFile string) error {
+	optimizeConfigs := GetTableOptimizeConfigs()
+	optimizeConfig, exists := optimizeConfigs[tableName]
+	if !exists {
+		log.Printf("⚠️  No optimization config found for %s, skipping optimization", tableName)
+		return nil
+	}
+
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Printf("OPTIMIZING TABLE: %s (after insertion)", optimizeConfig.TableName)
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	if err := OptimizeTablePartitions(clickhouseConn, optimizeConfig, config, errorLogFile); err != nil {
+		logOptimizeToFile("ERROR", "Optimize Single Table", fmt.Sprintf("Error optimizing %s: %v", tableName, err))
+		log.Printf("⚠️  Error optimizing %s: %v", tableName, err)
+		return err
+	}
+
+	logOptimizeToFile("SUCCESS", "Optimize Single Table", fmt.Sprintf("Successfully completed optimization for %s", tableName))
+	log.Printf("✓ Completed optimization for %s", tableName)
+	log.Println("")
+
 	return nil
 }
 

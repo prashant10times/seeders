@@ -2735,7 +2735,7 @@ func determinealleventMaturity(totalEdition interface{}) *string {
 }
 
 func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	query := fmt.Sprintf(`
@@ -2785,7 +2785,7 @@ func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn, locatio
 }
 
 func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	query := fmt.Sprintf(`
@@ -2835,7 +2835,7 @@ func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn, locati
 }
 
 func buildalleventVenueIDLookupFromLocationCh(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	query := fmt.Sprintf(`

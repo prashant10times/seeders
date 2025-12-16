@@ -156,7 +156,9 @@ func SetupNativeClickHouseConnection(config shared.Config) (driver.Conn, error) 
 		},
 		Protocol: clickhouse.HTTP,
 		Settings: clickhouse.Settings{
-			"max_execution_time": 900, // 15 minutes
+			"max_execution_time": 900,     // 15 minutes
+			"max_block_size":     1000000, // 1 million rows
+			"mutations_sync":     0,       // Run mutations asynchronously to avoid large response size errors
 		},
 		Compression: &clickhouse.Compression{
 			Method: clickhouse.CompressionLZ4,
@@ -164,6 +166,7 @@ func SetupNativeClickHouseConnection(config shared.Config) (driver.Conn, error) 
 		MaxOpenConns:     50,
 		MaxIdleConns:     25,
 		DialTimeout:      900 * time.Second, // 15 minutes
+		ReadTimeout:      900 * time.Second, // 15 minutes
 		ConnOpenStrategy: clickhouse.ConnOpenInOrder,
 		Debug:            false,
 	})
