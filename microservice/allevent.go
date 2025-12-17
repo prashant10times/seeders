@@ -1134,7 +1134,7 @@ func fetchalleventEventTypesForBatch(db *sql.DB, eventIDs []int64) map[int64][]u
 }
 
 // getAttendanceRange returns the attendance range string based on event type ID and estimated visitor mean
-//use event type ID instead of UUID for better memory efficiency
+// use event type ID instead of UUID for better memory efficiency
 func getAttendanceRange(primaryEventTypeID *uint32, estimatedVisitorMean *uint32) *string {
 	if primaryEventTypeID == nil || estimatedVisitorMean == nil {
 		return nil
@@ -3807,7 +3807,7 @@ func insertalleventDataSingleWorker(clickhouseConn driver.Conn, records []map[st
 		return nil
 	}
 
-	const maxBatchSize = 5000
+	const maxBatchSize = 10000
 	if len(records) > maxBatchSize {
 		for i := 0; i < len(records); i += maxBatchSize {
 			end := i + maxBatchSize
