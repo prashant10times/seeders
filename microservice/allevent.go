@@ -180,7 +180,6 @@ func loadEventTypeIDsFromDB(clickhouseConn driver.Conn, config shared.Config) (m
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check for %s", baseTableName),
 	)
 	if connectionCheckErr != nil {
 		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -214,7 +213,6 @@ func loadEventTypeIDsFromDB(clickhouseConn driver.Conn, config shared.Config) (m
 			return nil
 		},
 		3,
-		fmt.Sprintf("query event type IDs from %s", baseTableName),
 	)
 	if queryErr != nil {
 		return nil, queryErr
@@ -2707,7 +2705,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							return insertalleventDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers, config)
 						},
 						3,
-						fmt.Sprintf("ClickHouse insertion for chunk %d", chunkNum),
 					)
 
 					if insertErr != nil {
@@ -2849,7 +2846,6 @@ func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn, locatio
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check for cities query from %s", locationTableName),
 	)
 	if connectionCheckErr != nil {
 		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -2876,7 +2872,6 @@ func buildalleventCityIDLookupFromLocationCh(clickhouseConn driver.Conn, locatio
 			return nil
 		},
 		3,
-		fmt.Sprintf("query cities from %s", locationTableName),
 	)
 	if queryErr != nil {
 		return nil, queryErr
@@ -2924,7 +2919,6 @@ func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn, locati
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check for states query from %s", locationTableName),
 	)
 	if connectionCheckErr != nil {
 		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -2951,7 +2945,6 @@ func buildalleventStateIDLookupFromLocationCh(clickhouseConn driver.Conn, locati
 			return nil
 		},
 		3,
-		fmt.Sprintf("query states from %s", locationTableName),
 	)
 	if queryErr != nil {
 		return nil, queryErr
@@ -2999,7 +2992,6 @@ func buildalleventVenueIDLookupFromLocationCh(clickhouseConn driver.Conn, locati
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		fmt.Sprintf("ClickHouse connection health check for venues query from %s", locationTableName),
 	)
 	if connectionCheckErr != nil {
 		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -3026,7 +3018,6 @@ func buildalleventVenueIDLookupFromLocationCh(clickhouseConn driver.Conn, locati
 			return nil
 		},
 		3,
-		fmt.Sprintf("query venues from %s", locationTableName),
 	)
 	if queryErr != nil {
 		return nil, queryErr
@@ -3840,18 +3831,15 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 		return nil
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d allevent_ch records", len(records))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for allevent_ch",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
 	}
-	log.Printf("ClickHouse connection is alive, proceeding with allevent_ch batch insert")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second)
 	defer cancel()
@@ -3887,7 +3875,6 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 					return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 				},
 				3,
-				fmt.Sprintf("ClickHouse connection health check for allevent_ch batch retry %d", retryCount+1),
 			)
 			if connectionCheckErr != nil {
 				log.Printf("WARNING: ClickHouse connection health check failed on retry %d: %v", retryCount+1, connectionCheckErr)

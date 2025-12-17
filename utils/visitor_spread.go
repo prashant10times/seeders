@@ -226,7 +226,6 @@ func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsear
 			return insertVisitorSpreadDataIntoClickHouse(clickhouseConn, records, chInsertWorkers)
 		},
 		3,
-		fmt.Sprintf("ClickHouse insertion for visitor spread chunk %d", chunkNum),
 	)
 
 	if insertErr != nil {
@@ -511,18 +510,15 @@ func insertVisitorSpreadDataSingleWorker(clickhouseConn driver.Conn, records []V
 		return nil
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d event_visitorSpread_ch records", len(records))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for event_visitorSpread_ch",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
 	}
-	log.Printf("ClickHouse connection is alive, proceeding with event_visitorSpread_ch batch insert")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second)
 	defer cancel()

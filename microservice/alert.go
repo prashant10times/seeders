@@ -166,13 +166,11 @@ func InsertAlertsChDataSingleWorker(clickhouseConn driver.Conn, alertRecords []A
 		return nil
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d alerts_ch records", len(alertRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for alerts_ch",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
@@ -901,18 +899,15 @@ func InsertLocationPolygonsChDataSingleWorker(clickhouseConn driver.Conn, polygo
 		}
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d location_polygons_ch records", len(polygonRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
 	}
-	log.Printf("ClickHouse connection is alive, proceeding with batch insert")
 
 	attemptCount := 0
 	insertErr := shared.RetryWithBackoff(
@@ -929,7 +924,6 @@ func InsertLocationPolygonsChDataSingleWorker(clickhouseConn driver.Conn, polygo
 			return insertLocationPolygonsBatch(clickhouseConn, polygonRecords)
 		},
 		3,
-		"location_polygons_ch batch insert",
 	)
 
 	if insertErr != nil {
@@ -1674,18 +1668,15 @@ func InsertEventTypeChDataSingleWorker(clickhouseConn driver.Conn, eventTypeReco
 		return nil
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d event_type_ch records", len(eventTypeRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for event_type_ch",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
 	}
-	log.Printf("ClickHouse connection is alive, proceeding with event_type_ch batch insert")
 
 	attemptCount := 0
 	insertErr := shared.RetryWithBackoff(
@@ -1701,7 +1692,6 @@ func InsertEventTypeChDataSingleWorker(clickhouseConn driver.Conn, eventTypeReco
 			return insertEventTypeChBatch(clickhouseConn, eventTypeRecords)
 		},
 		3,
-		"event_type_ch batch insert",
 	)
 
 	if insertErr != nil {

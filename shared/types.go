@@ -50,21 +50,21 @@ type Config struct {
 }
 
 // RetryWithBackoff retries an operation with exponential backoff
-func RetryWithBackoff(operation func() error, maxRetries int, operationName string) error {
+func RetryWithBackoff(operation func() error, maxRetries int) error {
 	var lastError error
 	for i := 0; i < maxRetries; i++ {
 		if err := operation(); err != nil {
 			lastError = err
 			if i < maxRetries-1 {
 				backoffDuration := time.Duration(i+1) * time.Second
-				log.Printf("Retrying %s in %v (attempt %d/%d): %v", operationName, backoffDuration, i+1, maxRetries, err)
+				log.Printf("Retrying in %v (attempt %d/%d): %v", backoffDuration, i+1, maxRetries, err)
 				time.Sleep(backoffDuration)
 			}
 		} else {
 			return nil
 		}
 	}
-	return fmt.Errorf("operation %s failed after %d retries: %v", operationName, maxRetries, lastError)
+	return fmt.Errorf("operation failed after %d retries: %v", maxRetries, lastError)
 }
 
 func GetTotalRecordsAndIDRange(db *sql.DB, table string) (int, int, int, error) {
@@ -1012,5 +1012,77 @@ func CheckClickHouseConnectionAlive(clickhouseConn driver.Conn) error {
 		return fmt.Errorf("ClickHouse connection check returned unexpected result: %d", result)
 	}
 
+	return nil
+}
+
+func StopClickHouseMerges(clickhouseConn driver.Conn) error {
+	log.Println("Checking ClickHouse connection health before stopping merges")
+	connectionCheckErr := RetryWithBackoff(
+		func() error {
+			return CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Println("ClickHouse connection is alive, proceeding to stop merges")
+
+	log.Println("Stopping ClickHouse merges...")
+	stopErr := RetryWithBackoff(
+		func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			query := "SYSTEM STOP MERGES"
+			if err := clickhouseConn.Exec(ctx, query); err != nil {
+				return fmt.Errorf("failed to stop ClickHouse merges: %w", err)
+			}
+			return nil
+		},
+		3,
+	)
+
+	if stopErr != nil {
+		return fmt.Errorf("failed to stop ClickHouse merges after retries: %w", stopErr)
+	}
+
+	log.Println("✓ ClickHouse merges stopped successfully")
+	return nil
+}
+
+func StartClickHouseMerges(clickhouseConn driver.Conn) error {
+	log.Println("Checking ClickHouse connection health before starting merges")
+	connectionCheckErr := RetryWithBackoff(
+		func() error {
+			return CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	log.Println("ClickHouse connection is alive, proceeding to start merges")
+
+	log.Println("Starting ClickHouse merges...")
+	startErr := RetryWithBackoff(
+		func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			query := "SYSTEM START MERGES"
+			if err := clickhouseConn.Exec(ctx, query); err != nil {
+				return fmt.Errorf("failed to start ClickHouse merges: %w", err)
+			}
+			return nil
+		},
+		3,
+	)
+
+	if startErr != nil {
+		return fmt.Errorf("failed to start ClickHouse merges after retries: %w", startErr)
+	}
+
+	log.Println("✓ ClickHouse merges started successfully")
 	return nil
 }

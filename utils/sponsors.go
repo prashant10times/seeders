@@ -257,7 +257,6 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 					return insertSponsorsDataIntoClickHouse(clickhouseConn, sponsorRecords, config.ClickHouseWorkers)
 				},
 				3,
-				fmt.Sprintf("sponsors insertion for chunk %d", chunkNum),
 			)
 
 			if sponsorInsertErr != nil {
@@ -455,18 +454,15 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 		return nil
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d event_sponsors_ch records", len(sponsorRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for event_sponsors_ch",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
 	}
-	log.Printf("ClickHouse connection is alive, proceeding with event_sponsors_ch batch insert")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

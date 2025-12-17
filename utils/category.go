@@ -145,7 +145,6 @@ func processEventCategoryEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Con
 					return insertEventCategoryEventChDataIntoClickHouse(clickhouseConn, eventCategoryEventChRecords, config.ClickHouseWorkers)
 				},
 				3,
-				fmt.Sprintf("event_category_ch insertion for chunk %d", chunkNum),
 			)
 
 			if insertErr != nil {
@@ -157,9 +156,7 @@ func processEventCategoryEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Con
 			}
 		}
 
-		// Update startID for next batch within this chunk (following the same pattern as other working tables)
 		if len(batchData) > 0 {
-			// Get the last record's ID from the batch and increment it for the next batch
 			lastRecord := batchData[len(batchData)-1]
 			if lastID, ok := lastRecord["id"].(int64); ok {
 				startID = int(lastID) + 1
@@ -288,18 +285,15 @@ func insertEventCategoryEventChDataSingleWorker(clickhouseConn driver.Conn, even
 		return nil
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d event_category_ch records", len(eventCategoryEventChRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for event_category_ch",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
 	}
-	log.Printf("ClickHouse connection is alive, proceeding with event_category_ch batch insert")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

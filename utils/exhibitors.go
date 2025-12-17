@@ -266,7 +266,6 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config s
 						return insertExhibitorDataIntoClickHouse(clickhouseConn, exhibitorRecords, config.ClickHouseWorkers)
 					},
 					3,
-					fmt.Sprintf("exhibitor insertion for chunk %d", chunkNum),
 				)
 
 				if exhibitorInsertErr != nil {
@@ -468,18 +467,15 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 		return nil
 	}
 
-	log.Printf("Checking ClickHouse connection health before inserting %d event_exhibitor_ch records", len(exhibitorRecords))
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
 		},
 		3,
-		"ClickHouse connection health check for event_exhibitor_ch",
 	)
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
 	}
-	log.Printf("ClickHouse connection is alive, proceeding with event_exhibitor_ch batch insert")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
