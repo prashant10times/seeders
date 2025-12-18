@@ -28,16 +28,16 @@ func safeConvertToString(value interface{}) string {
 }
 
 type EventDesignationChRecord struct {
-	EventID         uint32 `ch:"event_id"`
-	EditionID       uint32 `ch:"edition_id"`
-	DesignationID   uint32 `ch:"designation_id"`
-	DesignationUUID string `ch:"designation_uuid"`
-	DisplayName     string `ch:"display_name"`
-	Department      string `ch:"department"`
-	Role            string `ch:"role"`
-	TotalVisitors   uint32 `ch:"total_visitors"`
-	Version         uint32 `ch:"version"`
-	LastUpdatedAt   string `ch:"last_updated_at"`
+	EventID         uint32  `ch:"event_id"`
+	EditionID       uint32  `ch:"edition_id"`
+	DesignationID   uint32  `ch:"designation_id"`
+	DesignationUUID *string `ch:"designation_uuid"`
+	DisplayName     string  `ch:"display_name"`
+	Department      string  `ch:"department"`
+	Role            string  `ch:"role"`
+	TotalVisitors   uint32  `ch:"total_visitors"`
+	Version         uint32  `ch:"version"`
+	LastUpdatedAt   string  `ch:"last_updated_at"`
 }
 
 type DesignationData struct {
@@ -216,15 +216,10 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 					designationIDFromTable := designationInfo.ID
 					createdStr := shared.SafeConvertToString(designationInfo.Created)
 					idInputString := fmt.Sprintf("%d-%s", designationIDFromTable, createdStr)
-					record.DesignationUUID = shared.GenerateUUIDFromString(idInputString)
+					uuid := shared.GenerateUUIDFromString(idInputString)
+					record.DesignationUUID = &uuid
 				} else {
-					record.DisplayName = ""
-					record.Department = ""
-					record.Role = ""
-					createdFromEventVisitor := row["created"]
-					createdStr := shared.SafeConvertToString(createdFromEventVisitor)
-					idInputString := fmt.Sprintf("%d-%s", designationIDUint, createdStr)
-					record.DesignationUUID = shared.GenerateUUIDFromString(idInputString)
+					record.DesignationUUID = nil
 				}
 			}
 		}
@@ -323,16 +318,16 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 	}
 
 	for _, record := range eventDesignationRecords {
-		if record.DesignationUUID == "" {
-			log.Printf("ERROR: Empty UUID detected before append - EventID=%d, EditionID=%d, DesignationID=%d",
-				record.EventID, record.EditionID, record.DesignationID)
+		uuidStr := "nil"
+		if record.DesignationUUID != nil {
+			uuidStr = *record.DesignationUUID
 		}
 
 		err := batch.Append(
 			record.EventID,         // event_id: UInt32
 			record.EditionID,       // edition_id: UInt32
 			record.DesignationID,   // designation_id: UInt32
-			record.DesignationUUID, // designation_uuid: UUID
+			record.DesignationUUID, // designation_uuid: Nullable(UUID)
 			record.DisplayName,     // display_name: LowCardinality(String)
 			record.Department,      // department: LowCardinality(String)
 			record.Role,            // role: LowCardinality(String)
@@ -342,8 +337,8 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append record to batch: %v", err)
-			log.Printf("ERROR Record data: EventID=%d, EditionID=%d, DesignationID=%d, DesignationUUID=%s (len=%d), DisplayName=%s, Department=%s, Role=%s, TotalVisitors=%d, Version=%d",
-				record.EventID, record.EditionID, record.DesignationID, record.DesignationUUID, len(record.DesignationUUID), record.DisplayName, record.Department, record.Role, record.TotalVisitors, record.Version)
+			log.Printf("ERROR Record data: EventID=%d, EditionID=%d, DesignationID=%d, DesignationUUID=%s, DisplayName=%s, Department=%s, Role=%s, TotalVisitors=%d, Version=%d",
+				record.EventID, record.EditionID, record.DesignationID, uuidStr, record.DisplayName, record.Department, record.Role, record.TotalVisitors, record.Version)
 			return fmt.Errorf("failed to append record to batch: %v", err)
 		}
 	}
