@@ -84,6 +84,7 @@ type LocationChRecord struct {
 	LocationType  string    `ch:"location_type"`
 	Name          *string   `ch:"name"`
 	Alias         *string   `ch:"alias"`
+	Slug          *string   `ch:"slug"`
 	Phonecode     *string   `ch:"phonecode"`
 	Currency      *string   `ch:"currency"`
 	Continent     *string   `ch:"continent"`
@@ -193,10 +194,9 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 			normalizedISO := normalizeNFC(strings.TrimSpace(iso))
 			isoUpper := strings.ToUpper(normalizedISO)
 
-			idInputString := fmt.Sprintf("%s-%s", isoUpper, created)
-			idUUID := shared.GenerateUUIDFromString(idInputString)
-
 			id10x := fmt.Sprintf("country-%s", isoUpper)
+			idInputString := fmt.Sprintf("%s-%s", strings.ToUpper(id10x), created)
+			idUUID := shared.GenerateUUIDFromString(idInputString)
 
 			name := shared.SafeConvertToNullableString(row["name"])
 			alias := shared.SafeConvertToNullableString(row["alias"])
@@ -204,6 +204,7 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 			currency := shared.SafeConvertToNullableString(row["currency"])
 			continent := shared.SafeConvertToNullableString(row["continent"])
 			published := shared.SafeConvertToInt8(row["published"])
+			slug := shared.SafeConvertToNullableString(row["slug"])
 
 			var regions []string
 			if r := shared.SafeConvertToString(row["regions"]); r != "" {
@@ -237,6 +238,7 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 				LocationType:  "COUNTRY",
 				Name:          name,
 				Alias:         alias,
+				Slug:          slug,
 				Phonecode:     phonecode,
 				Currency:      currency,
 				Continent:     continent,
@@ -281,7 +283,8 @@ func fetchCountryBatch(db *sql.DB, offset, limit int) ([]map[string]interface{},
             c.continent,
             c.zone as regions,
             c.created,
-            c.published
+            c.published,
+            c.url as slug
         FROM country c
         ORDER BY c.id
         LIMIT %d OFFSET %d`, limit, offset)
@@ -388,7 +391,7 @@ func insertLocationCountriesChSingleWorker(clickhouseConn driver.Conn, records [
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
         INSERT INTO location_temp (
-            id_uuid, id, id_10x, location_type, name, alias, phonecode, currency, continent,
+            id_uuid, id, id_10x, location_type, name, alias, slug, phonecode, currency, continent,
             regions, latitude, longitude, published, iso, last_updated_at, version
         )
     `)
@@ -404,6 +407,7 @@ func insertLocationCountriesChSingleWorker(clickhouseConn driver.Conn, records [
 			r.LocationType,
 			r.Name,
 			r.Alias,
+			r.Slug,
 			r.Phonecode,
 			r.Currency,
 			r.Continent,
@@ -531,20 +535,19 @@ func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 			}
 
 			countryISOUpper := strings.ToUpper(strings.TrimSpace(countryISO))
-			stateNameClean := removeSpecialCharacters(strings.TrimSpace(stateName))
-
-			id10x := fmt.Sprintf("state-%s-%s", stateNameClean, countryISOUpper)
+			stateId := shared.SafeConvertToUInt32(row["id"])
+			id10x := fmt.Sprintf("state-%d-%s", stateId, countryISOUpper)
 
 			if seenStates[id10x] {
 				continue
 			}
 			seenStates[id10x] = true
 
-			idInputString := normalizeNFC(fmt.Sprintf("%s-%s", stateNameClean, countryISOUpper))
-			idUUID := shared.GenerateUUIDFromString(idInputString)
+			idUUID := shared.GenerateUUIDFromString(normalizeNFC(id10x))
 
 			name := shared.SafeConvertToNullableString(row["name"])
 			alias := shared.SafeConvertToNullableString(row["alias"])
+			slug := shared.SafeConvertToNullableString(row["slug"])
 			geometry := shared.SafeConvertToNullableString(row["geometry"])
 			published := shared.SafeConvertToInt8(row["published"])
 
@@ -576,6 +579,7 @@ func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				LocationType:  "STATE",
 				Name:          name,
 				Alias:         alias,
+				Slug:          slug,
 				Geometry:      geometry,
 				Latitude:      latPtr,
 				Longitude:     lonPtr,
@@ -624,6 +628,7 @@ func fetchStateBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, e
         SELECT 
             area_values.id,
             area_values.name as id_10x,
+            area_values.url as slug,
             area_values.name as name,
             area_values.abbr_name as alias,
             area_values.country as countryId,
@@ -737,7 +742,7 @@ func insertLocationStatesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
         INSERT INTO location_temp (
-            id_uuid, id, id_10x, location_type, name, alias, geometry,
+            id_uuid, id, id_10x, location_type, name, alias, slug, geometry,
             latitude, longitude, published, iso, country_uuid, country_name,
             last_updated_at, version
         )
@@ -754,6 +759,7 @@ func insertLocationStatesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 			r.LocationType,
 			r.Name,
 			r.Alias,
+			r.Slug,
 			r.Geometry,
 			r.Latitude,
 			r.Longitude,
@@ -847,6 +853,7 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 
 			name := shared.SafeConvertToNullableString(row["name"])
 			alias := shared.SafeConvertToNullableString(row["alias"])
+			slug := shared.SafeConvertToNullableString(row["slug"])
 			stateName := shared.SafeConvertToNullableString(row["state_name"])
 			countrySourceID := shared.SafeConvertToString(row["countryId"])
 			latitude := shared.SafeConvertToNullableFloat64(row["latitude"])
@@ -855,14 +862,16 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 			timezone := shared.SafeConvertToNullableString(row["timezone"])
 			published := shared.SafeConvertToInt8(row["published"])
 
-			// Regenerate State UUID using same formula as when creating state records
+			// Generate State UUID using same formula as when creating state records: "state-{stateId}-{COUNTRY_ISO}"
 			var stateUUID *string
 			if stateName != nil && *stateName != "" && countrySourceID != "" {
-				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
-				stateNameClean := removeSpecialCharacters(strings.TrimSpace(*stateName))
-				idInputString := normalizeNFC(fmt.Sprintf("%s-%s", stateNameClean, countryISOUpper))
-				uuid := shared.GenerateUUIDFromString(idInputString)
-				stateUUID = &uuid
+				stateId := shared.SafeConvertToUInt32(row["state_id"])
+				if stateId > 0 {
+					countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
+					id10x := fmt.Sprintf("state-%d-%s", stateId, countryISOUpper)
+					uuid := shared.GenerateUUIDFromString(normalizeNFC(id10x))
+					stateUUID = &uuid
+				}
 			}
 
 			var countryUUID *string
@@ -894,6 +903,7 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				LocationType:  "CITY",
 				Name:          name,
 				Alias:         alias,
+				Slug:          slug,
 				Latitude:      latitude,
 				Longitude:     longitude,
 				UTCOffset:     utcOffset,
@@ -952,6 +962,7 @@ func fetchCityBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, er
             city.id as id_10x,
             city.name,
             states.name as state_name,
+            states.id as state_id,
             city.country as countryId,
             country.created as country_created,
             city.geo_lat as latitude,
@@ -960,10 +971,11 @@ func fetchCityBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, er
             city.timezone,
             city.created,
             city.published,
-            city.alias
+            city.alias,
+            city.url as slug
         FROM city
         LEFT JOIN (
-            SELECT name, country 
+            SELECT id, name, country 
             FROM area_values 
             GROUP BY name, country
         ) as states ON city.state = states.name AND city.country = states.country
@@ -1074,7 +1086,7 @@ func insertLocationCitiesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
         INSERT INTO location_temp (
-            id_uuid, id, id_10x, location_type, name, alias, latitude, longitude,
+            id_uuid, id, id_10x, location_type, name, alias, slug, latitude, longitude,
             utc_offset, timezone, published, iso, state_uuid, state_name,
             country_uuid, country_name, last_updated_at, version
         )
@@ -1091,6 +1103,7 @@ func insertLocationCitiesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 			r.LocationType,
 			r.Name,
 			r.Alias,
+			r.Slug,
 			r.Latitude,
 			r.Longitude,
 			r.UTCOffset,
@@ -1225,6 +1238,7 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 
 			name := shared.SafeConvertToNullableString(row["name"])
 			address := shared.SafeConvertToNullableString(row["address"])
+			slug := shared.SafeConvertToNullableString(row["slug"])
 			website := shared.SafeConvertToNullableString(row["website"])
 			postalcode := shared.SafeConvertToNullableString(row["postalcode"])
 			latitude := shared.SafeConvertToNullableFloat64(row["latitude"])
@@ -1289,6 +1303,7 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				LocationType:  "VENUE",
 				Name:          name,
 				Address:       address,
+				Slug:          slug,
 				Latitude:      latitude,
 				Longitude:     longitude,
 				Website:       website,
@@ -1362,7 +1377,8 @@ func fetchVenueBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, e
             v.postal_code as postalcode,
             v.created,
             v.published,
-            s.name as stateName
+            s.name as stateName,
+            v.url as slug
         FROM venue v
         LEFT JOIN city c ON v.city = c.id
         LEFT JOIN area_values s ON c.state_id = s.id
@@ -1472,7 +1488,7 @@ func insertLocationVenuesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
         INSERT INTO location_temp (
-            id_uuid, id, id_10x, location_type, name, address, latitude, longitude,
+            id_uuid, id, id_10x, location_type, name, address, slug, latitude, longitude,
             website, postalcode, published, iso, state_uuid, state_name,
             country_uuid, country_name, city_uuid, city_name, city_latitude,
             city_longitude, last_updated_at, version
@@ -1490,6 +1506,7 @@ func insertLocationVenuesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 			r.LocationType,
 			r.Name,
 			r.Address,
+			r.Slug,
 			r.Latitude,
 			r.Longitude,
 			r.Website,

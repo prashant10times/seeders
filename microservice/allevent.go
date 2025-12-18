@@ -484,7 +484,7 @@ type alleventRecord struct {
 }
 
 func buildalleventMigrationData(db *sql.DB, table string, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
-	query := fmt.Sprintf("SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, country, published, status, event_audience, functionality, brand_id, created FROM %s WHERE id >= %d AND id <= %d ORDER BY id LIMIT %d", table, startID, endID, batchSize)
+	query := fmt.Sprintf("SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, country, published, status, event_audience, functionality, brand_id, created FROM %s WHERE id >= %d AND id <= %d ORDER BY id, created LIMIT %d", table, startID, endID, batchSize)
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -844,7 +844,8 @@ func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]int
 			id as event_id, 
 			event_edition as current_edition_id
 		FROM event 
-		WHERE id IN (%s)`, strings.Join(placeholders, ","))
+		WHERE id IN (%s)
+		ORDER BY created`, strings.Join(placeholders, ","))
 
 	currentEditionRows, err := db.Query(currentEditionQuery, args...)
 	if err != nil {
@@ -872,7 +873,8 @@ func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]int
 			created as edition_created, start_date as edition_start_date,
 			exhibitors_total, online_event as is_online
 		FROM event_edition 
-		WHERE event IN (%s)`, strings.Join(placeholders, ","))
+		WHERE event IN (%s)
+		ORDER BY created`, strings.Join(placeholders, ","))
 
 	// log.Printf("Fetching editions for %d events: %v", len(eventIDs), eventIDs)
 
@@ -947,7 +949,8 @@ func fetchalleventEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]i
 		       eb.id as brand_id_from_table, eb.created as brand_created
 		FROM event e
 		LEFT JOIN event_brands eb ON e.brand_id = eb.id
-		WHERE e.id IN (%s)`, strings.Join(placeholders, ","))
+		WHERE e.id IN (%s)
+		ORDER BY e.created`, strings.Join(placeholders, ","))
 
 	rows, err := db.Query(query, args...)
 	if err != nil {

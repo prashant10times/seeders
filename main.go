@@ -84,7 +84,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 		10: "event_visitorSpread_ch",
 	}
 
-	mergesStarted := false 
+	mergesStarted := false
 
 	scripts := []struct {
 		name     string
@@ -2112,6 +2112,15 @@ func main() {
 		utilsConfig.UseTempTables = false // When running individually, read from production _ch tables
 		microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 
+		log.Println("Optimizing allevent_ch table...")
+		if err := shared.OptimizeSingleTable(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
+			logErrorToFile("All Event Optimization", err)
+			log.Printf("⚠️  Error optimizing allevent_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ allevent_ch optimized successfully")
+		}
+
 		log.Println("Swapping allevent_ch table...")
 		if err := shared.SwapSingleTable(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
 			logErrorToFile("All Event Table Swap", err)
@@ -2119,12 +2128,7 @@ func main() {
 		}
 		log.Println("✓ allevent_ch swapped successfully")
 	} else if locationCountriesOnly || locationStatesOnly || locationCitiesOnly || locationVenuesOnly || locationSubVenuesOnly {
-		// Ensure temp table exists (all location types use location_ch)
-		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "location_ch", config, errorLogFile); err != nil {
-			logErrorToFile("Ensure Temp Table (Location)", err)
-			log.Fatalf("Failed to ensure temp table exists: %v", err)
-		}
-
+		// Individual location types - no temp table creation/dropping, just process directly
 		locConfig := shared.Config{
 			BatchSize:         config.BatchSize,
 			NumChunks:         config.NumChunks,
@@ -2143,14 +2147,6 @@ func main() {
 		} else if locationSubVenuesOnly {
 			microservice.ProcessLocationSubVenuesCh(mysqlDB, clickhouseDB, locConfig, 1)
 		}
-
-		// Swap location_ch after processing (all location types use the same table)
-		log.Println("Swapping location_ch table...")
-		if err := shared.SwapSingleTable(clickhouseDB, "location_ch", config, errorLogFile); err != nil {
-			logErrorToFile("Location Table Swap", err)
-			log.Fatalf("Failed to swap location_ch: %v", err)
-		}
-		log.Println("✓ location_ch swapped successfully")
 	} else if locationAll {
 		// Ensure temp table exists
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "location_ch", config, errorLogFile); err != nil {

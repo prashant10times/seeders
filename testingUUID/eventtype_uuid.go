@@ -1,17 +1,18 @@
 package main
 
 import (
-	"fmt"
-
-	"seeders/shared"
+	// "fmt"
+	// "log"
+	// "seeders/shared"
 )
 
-func BuildEventTypeUUID(eventTypeID uint32, created string) string {
-	createdString := shared.SafeConvertToDateTimeString(created)
-	UUIDSeed := fmt.Sprintf("%d-%s", eventTypeID, createdString)
-	UUID := shared.GenerateUUIDFromString(UUIDSeed)
-	return UUID
-}
+// func BuildEventTypeUUID(eventTypeID uint32, created string) string {
+// func BuildEventTypeUUID() string {
+	// createdString := shared.SafeConvertToDateTimeString(created)
+	// UUIDSeed := fmt.Sprintf("%d-%s", eventTypeID, createdString)
+	// UUID := shared.GenerateUUIDFromString()
+	// return UUID
+// }
 
 func main() {
 	// add the UUID input here
