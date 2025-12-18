@@ -103,6 +103,7 @@ type LocationChRecord struct {
 	Address       *string   `ch:"address"`
 	Postalcode    *string   `ch:"postalcode"`
 	Website       *string   `ch:"website"`
+	CityID        *uint32   `ch:"city_id"`
 	CityUUID      *string   `ch:"city_uuid"`
 	CityName      *string   `ch:"city_name"`
 	CityLatitude  *float64  `ch:"city_latitude"`
@@ -1131,7 +1132,7 @@ func buildCityLookup(clickhouseConn driver.Conn) (map[string]string, error) {
 	cityToUUID := make(map[string]string)
 
 	ctx := context.Background()
-	query := `SELECT id_uuid, id_10x FROM location_ch WHERE location_type = 'CITY'`
+	query := `SELECT id_uuid, id_10x FROM location_temp WHERE location_type = 'CITY'`
 	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query ClickHouse for city lookup: %w", err)
@@ -1188,11 +1189,6 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 	countryUUIDLookup, countryNameLookup, err := buildCountryLookup(clickhouseConn)
 	if err != nil {
 		log.Fatalf("Failed to build country lookup: %v", err)
-	}
-
-	stateUUIDLookup, err := buildStateLookup(clickhouseConn)
-	if err != nil {
-		log.Fatalf("Failed to build state lookup: %v", err)
 	}
 
 	cityUUIDLookup, err := buildCityLookup(clickhouseConn)
@@ -1257,19 +1253,25 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 			}
 
 			var cityUUID *string
+			var cityID *uint32
 			if cityIDStr != "" {
+				if cityIDVal, err := strconv.ParseUint(cityIDStr, 10, 32); err == nil {
+					cityIDUint32 := uint32(cityIDVal)
+					cityID = &cityIDUint32
+				}
 				if uuid, ok := cityUUIDLookup[cityIDStr]; ok {
 					cityUUID = &uuid
 				}
 			}
 
-			// Lookup State UUID from ClickHouse using id_10x = 'state-{state_name}-{countryId}'
+			// Generate State UUID using same formula as when creating state records: "state-{stateId}-{COUNTRY_ISO}"
 			var stateUUID *string
 			if stateName != nil && *stateName != "" && countrySourceID != "" {
-				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
-				stateNameClean := removeSpecialCharacters(strings.TrimSpace(*stateName))
-				key := fmt.Sprintf("%s-%s", stateNameClean, countryISOUpper)
-				if uuid, ok := stateUUIDLookup[key]; ok {
+				stateId := shared.SafeConvertToUInt32(row["state_id"])
+				if stateId > 0 {
+					countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
+					id10x := fmt.Sprintf("state-%d-%s", stateId, countryISOUpper)
+					uuid := shared.GenerateUUIDFromString(normalizeNFC(id10x))
 					stateUUID = &uuid
 				}
 			}
@@ -1314,6 +1316,7 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				StateName:     stateName,
 				CountryUUID:   countryUUID,
 				CountryName:   countryName,
+				CityID:        cityID,
 				CityUUID:      cityUUID,
 				CityName:      cityName,
 				CityLatitude:  cityLat,
@@ -1378,6 +1381,7 @@ func fetchVenueBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, e
             v.created,
             v.published,
             s.name as stateName,
+            s.id as state_id,
             v.url as slug
         FROM venue v
         LEFT JOIN city c ON v.city = c.id
@@ -1490,7 +1494,7 @@ func insertLocationVenuesChSingleWorker(clickhouseConn driver.Conn, records []Lo
         INSERT INTO location_temp (
             id_uuid, id, id_10x, location_type, name, address, slug, latitude, longitude,
             website, postalcode, published, iso, state_uuid, state_name,
-            country_uuid, country_name, city_uuid, city_name, city_latitude,
+            country_uuid, country_name, city_id, city_uuid, city_name, city_latitude,
             city_longitude, last_updated_at, version
         )
     `)
@@ -1517,6 +1521,7 @@ func insertLocationVenuesChSingleWorker(clickhouseConn driver.Conn, records []Lo
 			r.StateName,
 			r.CountryUUID,
 			r.CountryName,
+			r.CityID,
 			r.CityUUID,
 			r.CityName,
 			r.CityLatitude,
