@@ -159,6 +159,8 @@ func SetupNativeClickHouseConnection(config shared.Config) (driver.Conn, error) 
 			"max_execution_time": 900,     // 15 minutes
 			"max_block_size":     1000000, // 1 million rows
 			"mutations_sync":     0,       // Run mutations asynchronously to avoid large response size errors
+			"receive_timeout":    900,     // 15 minutes - Server-side timeout for receiving data
+			"send_timeout":       900,     // 15 minutes - Server-side timeout for sending data
 		},
 		Compression: &clickhouse.Compression{
 			Method: clickhouse.CompressionLZ4,
