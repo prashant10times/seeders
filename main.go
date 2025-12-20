@@ -145,6 +145,16 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				utilsConfig := config
 				utilsConfig.UseTempTables = true // When running -all, read from temp tables
 				microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
+
+				if microservice.HasRemainingFailedBatches() {
+					log.Println("")
+					log.Println("⚠️  WARNING: Failed batches still remain after retry")
+					log.Println("⚠️  Please rerun the script to retry failed batches")
+					log.Println("⚠️  Optimization will be skipped until all batches succeed")
+					log.Println("")
+					return fmt.Errorf("failed batches still remain - rerun script to retry")
+				}
+
 				log.Println("✓ STEP 3/12 (ALL EVENT) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
@@ -2111,6 +2121,19 @@ func main() {
 		utilsConfig := config
 		utilsConfig.UseTempTables = false // When running individually, read from production _ch tables
 		microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
+
+		// Check if there are remaining failed batches before optimization
+		if microservice.HasRemainingFailedBatches() {
+			log.Println("")
+			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			log.Println("⚠️  WARNING: Failed batches still remain - skipping optimization")
+			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			log.Println("Some batches failed to insert due to memory errors.")
+			log.Println("Please rerun the script to retry failed batches.")
+			log.Println("Optimization and table swap will be performed after all batches succeed.")
+			log.Println("")
+			return // Exit early, don't proceed with optimization
+		}
 
 		log.Println("Optimizing allevent_ch table...")
 		if err := shared.OptimizeSingleTable(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {

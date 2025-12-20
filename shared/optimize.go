@@ -324,8 +324,10 @@ func GetPartitionsWithDuplicates(clickhouseConn driver.Conn, config TableOptimiz
 
 			partitions = []string{}
 			seenPartitions := make(map[string]bool)
+			rowCount := 0
 
 			for rows.Next() {
+				rowCount++
 				var partitionValue string
 				dummyStrings := make([]string, len(config.DuplicateCheckColumns))
 				scanArgs := make([]interface{}, 0, 2+len(config.DuplicateCheckColumns))
@@ -352,6 +354,7 @@ func GetPartitionsWithDuplicates(clickhouseConn driver.Conn, config TableOptimiz
 				return fmt.Errorf("error iterating duplicate rows: %w", err)
 			}
 
+			log.Printf("Query returned %d duplicate rows, extracted %d unique partitions", rowCount, len(partitions))
 			return nil
 		},
 		3,

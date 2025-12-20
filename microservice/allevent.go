@@ -3,10 +3,13 @@ package microservice
 import (
 	"context"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math"
+	"os"
+	"path/filepath"
 	"regexp"
 	"seeders/shared"
 	"strconv"
@@ -827,6 +830,144 @@ func fetchallalleventDataParallel(db *sql.DB, eventIDs []int64) []map[string]int
 	return allEditionData
 }
 
+func fetchEditionsByEditionIDs(db *sql.DB, editionIDs []int64) []map[string]interface{} {
+	if len(editionIDs) == 0 {
+		return nil
+	}
+
+	batchSize := 1000
+	var allEditionData []map[string]interface{}
+
+	for i := 0; i < len(editionIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(editionIDs) {
+			end = len(editionIDs)
+		}
+
+		batch := editionIDs[i:end]
+		editionData := fetchEditionsByEditionIDsBatch(db, batch)
+		allEditionData = append(allEditionData, editionData...)
+	}
+
+	return allEditionData
+}
+
+func fetchEditionsByEditionIDsBatch(db *sql.DB, editionIDs []int64) []map[string]interface{} {
+	if len(editionIDs) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(editionIDs))
+	args := make([]interface{}, len(editionIDs))
+	for i, id := range editionIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	editionQuery := fmt.Sprintf(`
+		SELECT 
+			event, id as edition_id, city as edition_city, 
+			company_id, venue as venue_id, website as edition_website, 
+			created as edition_created, start_date as edition_start_date,
+			exhibitors_total, online_event as is_online
+		FROM event_edition 
+		WHERE id IN (%s)
+		ORDER BY created`, strings.Join(placeholders, ","))
+
+	editionRows, err := db.Query(editionQuery, args...)
+	if err != nil {
+		log.Printf("Error fetching edition data by edition_id: %v", err)
+		return nil
+	}
+	defer editionRows.Close()
+
+	columns, err := editionRows.Columns()
+	if err != nil {
+		return nil
+	}
+
+	eventIDSet := make(map[int64]bool)
+	var results []map[string]interface{}
+
+	for editionRows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := editionRows.Scan(valuePtrs...); err != nil {
+			continue
+		}
+
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			val := values[i]
+			if val == nil {
+				row[col] = nil
+			} else {
+				row[col] = val
+			}
+		}
+
+		if eventID, ok := row["event"].(int64); ok {
+			eventIDSet[eventID] = true
+		}
+
+		results = append(results, row)
+	}
+
+	if len(eventIDSet) > 0 {
+		eventIDs := make([]int64, 0, len(eventIDSet))
+		for id := range eventIDSet {
+			eventIDs = append(eventIDs, id)
+		}
+
+		placeholders := make([]string, len(eventIDs))
+		args := make([]interface{}, len(eventIDs))
+		for i, id := range eventIDs {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+
+		currentEditionQuery := fmt.Sprintf(`
+			SELECT 
+				id as event_id, 
+				event_edition as current_edition_id
+			FROM event 
+			WHERE id IN (%s)`, strings.Join(placeholders, ","))
+
+		currentEditionRows, err := db.Query(currentEditionQuery, args...)
+		if err == nil {
+			defer currentEditionRows.Close()
+			currentEditionMap := make(map[int64]int64)
+			for currentEditionRows.Next() {
+				var eventID int64
+				var currentEditionID sql.NullInt64
+				if err := currentEditionRows.Scan(&eventID, &currentEditionID); err == nil {
+					if currentEditionID.Valid {
+						currentEditionMap[eventID] = currentEditionID.Int64
+					}
+				}
+			}
+
+			for _, row := range results {
+				if eventID, ok := row["event"].(int64); ok {
+					if currentEditionID, exists := currentEditionMap[eventID]; exists {
+						row["current_edition_id"] = currentEditionID
+
+						if editionID, ok := row["edition_id"].(int64); ok && editionID == currentEditionID {
+							row["current_edition_exhibitors_total"] = row["exhibitors_total"]
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return results
+}
+
 func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
@@ -876,8 +1017,6 @@ func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]int
 		WHERE event IN (%s)
 		ORDER BY created`, strings.Join(placeholders, ","))
 
-	// log.Printf("Fetching editions for %d events: %v", len(eventIDs), eventIDs)
-
 	editionRows, err := db.Query(editionQuery, args...)
 	if err != nil {
 		log.Printf("Error fetching edition data: %v", err)
@@ -912,12 +1051,10 @@ func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]int
 			}
 		}
 
-		// Add current_edition_id and exhibitors_total for current editions only
 		if eventID, ok := row["event"].(int64); ok {
 			if currentEditionID, exists := currentEditionMap[eventID]; exists {
 				row["current_edition_id"] = currentEditionID
 
-				// Only add exhibitors_total if this is the current edition
 				if editionID, ok := row["edition_id"].(int64); ok && editionID == currentEditionID {
 					row["current_edition_exhibitors_total"] = row["exhibitors_total"]
 				}
@@ -927,7 +1064,6 @@ func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]int
 		results = append(results, row)
 	}
 
-	// log.Printf("Fetched %d editions for %d events", len(results), len(eventIDs))
 	return results
 }
 
@@ -1406,10 +1542,41 @@ func formatalleventEconomicImpact(_ int64, economicImpact string) (interface{}, 
 	return total, totalBreakdown, dayWiseFormatted
 }
 
+func cleanupOldLogFiles() {
+	logFiles := []string{
+		"optimize_logs.log",
+		"polygon_coordinate_cases.log",
+	}
+
+	for _, logFile := range logFiles {
+		if err := os.Remove(logFile); err != nil && !os.IsNotExist(err) {
+			log.Printf("WARNING: Failed to remove log file %s: %v", logFile, err)
+		} else if err == nil {
+			log.Printf("Removed old log file: %s", logFile)
+		}
+	}
+
+	logDir := "failed_batches"
+	retryLogPattern := filepath.Join(logDir, "retry_log_*.txt")
+	retryLogFiles, err := filepath.Glob(retryLogPattern)
+	if err != nil {
+		log.Printf("WARNING: Failed to glob retry log files: %v", err)
+	} else {
+		for _, logFile := range retryLogFiles {
+			if err := os.Remove(logFile); err != nil && !os.IsNotExist(err) {
+				log.Printf("WARNING: Failed to remove retry log file %s: %v", logFile, err)
+			} else if err == nil {
+				log.Printf("Removed old retry log file: %s", logFile)
+			}
+		}
+	}
+}
+
 func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
 	log.Println("=== Starting allevent ONLY Processing ===")
 
-	// Load event type IDs from database
+	cleanupOldLogFiles()
+
 	var err error
 	eventTypeIDs, err = loadEventTypeIDsFromDB(clickhouseConn, config)
 	if err != nil {
@@ -1419,7 +1586,6 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 		log.Fatal("No event type IDs loaded from database")
 	}
 
-	// Build reverse lookup map: UUID -> ID for efficient conversion
 	eventTypeUUIDToID = make(map[string]uint32, len(eventTypeIDs))
 	for id, uuid := range eventTypeIDs {
 		eventTypeUUIDToID[uuid] = id
@@ -1534,6 +1700,27 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 	globalCountMutex.Unlock()
 
 	log.Println("allevent processing completed!")
+
+	log.Println("=== Checking for failed batches to retry ===")
+	log.Println("⏳ Waiting 30 seconds before starting retry phase (to allow memory to clear)...")
+	time.Sleep(30 * time.Second)
+	log.Println("✓ Wait complete, starting retry phase")
+	retryErr := retryFailedBatchesAfterCompletion(mysqlDB, clickhouseConn, esClient, config)
+	if retryErr != nil {
+		log.Printf("ERROR: Failed to retry failed batches: %v", retryErr)
+		log.Printf("⚠️  WARNING: Some batches still failed - optimization will be skipped")
+		log.Printf("⚠️  Please rerun the script to retry failed batches before optimization")
+	}
+}
+
+func HasRemainingFailedBatches() bool {
+	dir := "failed_batches"
+	files, err := filepath.Glob(filepath.Join(dir, "failed_batches_chunk_*.csv"))
+	if err != nil {
+		log.Printf("WARNING: Failed to check for remaining failed batch files: %v", err)
+		return false
+	}
+	return len(files) > 0
 }
 
 func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config, startID, endID int, chunkNum int, results chan<- string, globalUniqueRecords map[uint64]bool, globalMutex *sync.RWMutex, totalRecordsProcessed *int64, totalRecordsSkipped *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
@@ -1541,6 +1728,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 
 	totalRecords := endID - startID + 1
 	processed := 0
+	batchNumber := 0
 
 	offset := 0
 	for {
@@ -1556,8 +1744,9 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 		}
 
 		processed += len(batchData)
+		batchNumber++
 		progress := float64(processed) / float64(totalRecords) * 100
-		log.Printf("allevent chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
+		log.Printf("allevent chunk %d: Retrieved %d records in batch %d (%.1f%% complete)", chunkNum, len(batchData), batchNumber, progress)
 
 		eventIDs := extractalleventIDs(batchData)
 		if len(eventIDs) > 0 {
@@ -1825,62 +2014,16 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 
 					if eventData != nil {
 						for _, edition := range editions {
-							companyID := edition["company_id"]
-							venueID := edition["venue_id"]
-							cityID := edition["edition_city"]
-							editionWebsite := edition["edition_website"]
-
-							var company map[string]interface{}
-							if companyID != nil {
-								if c, exists := companyLookup[companyID.(int64)]; exists {
-									company = c
-								}
-							}
-
-							var venue map[string]interface{}
-							if venueID != nil {
-								if v, exists := venueLookup[venueID.(int64)]; exists {
-									venue = v
-								}
-
-							}
-
-							var city map[string]interface{}
-							if cityID != nil {
-								if c, exists := cityLookup[cityID.(int64)]; exists {
-									city = c // If not found->city remains nil
-								}
-							}
-
-							var companyCity map[string]interface{}
-							if company != nil && company["company_city"] != nil {
-								if companyCityID, ok := company["company_city"].(int64); ok {
-									if c, exists := cityLookup[companyCityID]; exists {
-										companyCity = c
-									}
-								}
-							}
-
-							var venueCity map[string]interface{}
-							if venue != nil && venue["venue_city"] != nil {
-								if venueCityID, ok := venue["venue_city"].(int64); ok {
-									if c, exists := cityLookup[venueCityID]; exists {
-										venueCity = c
-									}
-								}
-							}
+							company, venue, city, companyCity, venueCity := resolveRelatedDataForEdition(
+								edition,
+								companyLookup,
+								venueLookup,
+								cityLookup,
+							)
 
 							esInfoMap := esData[eventID]
 
-							var editionDomain string
-							if editionWebsite != nil {
-								editionDomain = shared.ExtractDomainFromWebsite(editionWebsite)
-							}
-
-							var companyDomain string
-							if company != nil && company["company_website"] != nil {
-								companyDomain = shared.ExtractDomainFromWebsite(company["company_website"])
-							}
+							editionDomain, companyDomain := extractDomainsForEdition(edition, company)
 
 							editionType := determinealleventType(
 								edition["edition_start_date"],
@@ -1908,754 +2051,50 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							globalUniqueRecords[uniqueKey] = true
 							globalMutex.Unlock()
 
-							var editionCityLocationChID *uint32
 							editionCountryISO := strings.ToUpper(shared.ConvertToString(eventData["country"]))
-							if city != nil && city["name"] != nil {
-								cityName := shared.ConvertToString(city["name"])
-								if cityName != "" {
-									cityNameStr := strings.TrimSpace(cityName)
-									if editionCountryISO != "" && editionCountryISO != "NAN" {
-										cityKeyWithISO := fmt.Sprintf("%s|%s", cityNameStr, editionCountryISO)
-										if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
-											editionCityLocationChID = &locationChID
-										}
-									}
-									if editionCityLocationChID == nil {
-										cityKeyWithoutISO := cityNameStr
-										if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
-											editionCityLocationChID = &locationChID
-										}
-									}
-								}
-							}
 
-							var companyCityLocationChID *uint32
-							if companyCity != nil && companyCity["name"] != nil {
-								companyCityName := shared.ConvertToString(companyCity["name"])
-								companyCountryISO := strings.ToUpper(shared.ConvertToString(company["company_country"]))
-								if companyCityName != "" {
-									companyCityNameStr := strings.TrimSpace(companyCityName)
-									if companyCountryISO != "" && companyCountryISO != "NAN" {
-										cityKeyWithISO := fmt.Sprintf("%s|%s", companyCityNameStr, companyCountryISO)
-										if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
-											companyCityLocationChID = &locationChID
-										}
-									}
-									if companyCityLocationChID == nil {
-										cityKeyWithoutISO := companyCityNameStr
-										if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
-											companyCityLocationChID = &locationChID
-										}
-									}
-								}
-							}
+							editionCityLocationChID, companyCityLocationChID, venueCityLocationChID,
+								editionCityStateLocationChID, venueLocationChID := computeAllLocationIDs(
+								city,
+								company,
+								companyCity,
+								venue,
+								venueCity,
+								editionCountryISO,
+								cityIDLookup,
+								stateIDLookup,
+								venueIDLookup,
+							)
 
-							var venueCityLocationChID *uint32
-							if venueCity != nil && venueCity["name"] != nil {
-								venueCityName := shared.ConvertToString(venueCity["name"])
-								venueCountryISO := strings.ToUpper(shared.ConvertToString(venue["venue_country"]))
-								if venueCityName != "" {
-									venueCityNameStr := strings.TrimSpace(venueCityName)
-									if venueCountryISO != "" && venueCountryISO != "NAN" {
-										cityKeyWithISO := fmt.Sprintf("%s|%s", venueCityNameStr, venueCountryISO)
-										if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
-											venueCityLocationChID = &locationChID
-										}
-									}
-									if venueCityLocationChID == nil {
-										cityKeyWithoutISO := venueCityNameStr
-										if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
-											venueCityLocationChID = &locationChID
-										}
-									}
-								}
-							}
-
-							var editionCityStateLocationChID *uint32
-							if city != nil && city["state"] != nil {
-								stateName := shared.ConvertToString(city["state"])
-								if stateName != "" {
-									stateNameStr := strings.TrimSpace(stateName)
-									if editionCountryISO != "" && editionCountryISO != "NAN" {
-										stateKeyWithISO := fmt.Sprintf("%s|%s", stateNameStr, editionCountryISO)
-										if locationChID, exists := stateIDLookup[stateKeyWithISO]; exists {
-											editionCityStateLocationChID = &locationChID
-										}
-									}
-									if editionCityStateLocationChID == nil {
-										stateKeyWithoutISO := stateNameStr
-										if locationChID, exists := stateIDLookup[stateKeyWithoutISO]; exists {
-											editionCityStateLocationChID = &locationChID
-										}
-									}
-								}
-							}
-
-							var venueLocationChID *uint32
-							if venue != nil && venue["venue_name"] != nil {
-								venueName := shared.ConvertToString(venue["venue_name"])
-								venueCountryISO := strings.ToUpper(shared.ConvertToString(venue["venue_country"]))
-								if venueName != "" {
-									venueNameStr := strings.TrimSpace(venueName)
-									if venueCountryISO != "" && venueCountryISO != "NAN" {
-										venueKeyWithISO := fmt.Sprintf("%s|%s", venueNameStr, venueCountryISO)
-										if locationChID, exists := venueIDLookup[venueKeyWithISO]; exists {
-											venueLocationChID = &locationChID
-										}
-									}
-									if venueLocationChID == nil {
-										venueKeyWithoutISO := venueNameStr
-										if locationChID, exists := venueIDLookup[venueKeyWithoutISO]; exists {
-											venueLocationChID = &locationChID
-										}
-									}
-								}
-							}
-
-							record := map[string]interface{}{
-								"event_id":          eventData["id"],
-								"event_uuid":        shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(eventData["id"]), shared.ConvertToString(edition["edition_created"]))),
-								"event_name":        eventData["event_name"],
-								"event_abbr_name":   eventData["abbr_name"],
-								"event_description": esInfoMap["event_description"],
-								"event_punchline":   esInfoMap["event_punchline"],
-								"start_date":        eventData["start_date"],
-								"end_date":          eventData["end_date"],
-								"edition_id":        edition["edition_id"],
-								"edition_country":   editionCountryISO,
-								"edition_city": func() interface{} {
-									if editionCityLocationChID != nil {
-										return uint32(*editionCityLocationChID)
-									}
-									return nil
-								}(),
-								"edition_city_name": shared.ConvertToString(city["name"]),
-								"edition_city_state": func() string {
-									if city != nil && city["state"] != nil {
-										stateStr := shared.ConvertToString(city["state"])
-										if strings.TrimSpace(stateStr) == "" {
-											return "any"
-										}
-										return stateStr
-									}
-									return "any"
-								}(),
-								"edition_city_state_id": func() interface{} {
-									if editionCityStateLocationChID != nil {
-										return uint32(*editionCityStateLocationChID)
-									}
-									return nil
-								}(),
-								"edition_city_lat":  city["event_city_lat"],
-								"edition_city_long": city["event_city_long"],
-								"company_id":        company["id_10x"],
-								"company_uuid": func() string {
-									if company != nil {
-										if companyID, ok := company["id_10x"].(int64); ok && companyID > 0 {
-											created := company["created"]
-											createdStr := shared.ConvertToString(created)
-											if createdStr != "" {
-												idInputString := fmt.Sprintf("%d-%s", companyID, createdStr)
-												return shared.GenerateUUIDFromString(idInputString)
-											}
-										}
-									}
-									if companyID := edition["company_id"]; companyID != nil {
-										var id int64
-										var ok bool
-										if id, ok = companyID.(int64); !ok {
-											if idVal, ok2 := companyID.(int); ok2 {
-												id = int64(idVal)
-												ok = true
-											} else if idVal, ok2 := companyID.(uint32); ok2 {
-												id = int64(idVal)
-												ok = true
-											}
-										}
-										if ok && id > 0 {
-											createdStr := shared.ConvertToString(edition["edition_created"])
-											if createdStr == "" {
-												createdStr = shared.ConvertToString(edition["start_date"])
-											}
-											if createdStr == "" {
-												createdStr = "1970-01-01 00:00:00"
-											}
-											idInputString := fmt.Sprintf("%d-%s", id, createdStr)
-											return shared.GenerateUUIDFromString(idInputString)
-										}
-									}
-									eventIDStr := shared.ConvertToString(eventData["id"])
-									editionIDStr := shared.ConvertToString(edition["edition_id"])
-									idInputString := fmt.Sprintf("company-%s-%s", eventIDStr, editionIDStr)
-									return shared.GenerateUUIDFromString(idInputString)
-								}(),
-								"company_name":    company["company_name"],
-								"company_domain":  companyDomain,
-								"company_website": company["company_website"],
-								"companyLogoUrl":  company["company_logo_url"],
-								"company_country": strings.ToUpper(shared.ConvertToString(company["company_country"])),
-								"company_state": func() *string {
-									if companyCity != nil && companyCity["state"] != nil {
-										stateStr := shared.ConvertToString(companyCity["state"])
-										if strings.TrimSpace(stateStr) == "" {
-											return nil
-										}
-										return &stateStr
-									}
-									return nil
-								}(),
-								"company_city": func() interface{} {
-									if companyCityLocationChID != nil {
-										return uint32(*companyCityLocationChID)
-									}
-									return nil
-								}(),
-								"company_city_name": func() *string {
-									if companyCity != nil && companyCity["name"] != nil {
-										nameStr := shared.ConvertToString(companyCity["name"])
-										return &nameStr
-									}
-									return nil
-								}(),
-								"company_address": func() *string {
-									if company != nil && company["address"] != nil {
-										addressStr := shared.ConvertToString(company["address"])
-										if strings.TrimSpace(addressStr) == "" {
-											return nil
-										}
-										return &addressStr
-									}
-									return nil
-								}(),
-								"venue_id": func() interface{} {
-									if venueLocationChID != nil {
-										return uint32(*venueLocationChID)
-									}
-									return nil
-								}(),
-								"venue_name":    venue["venue_name"],
-								"venue_country": strings.ToUpper(shared.ConvertToString(venue["venue_country"])),
-								"venue_city": func() interface{} {
-									if venueCityLocationChID != nil {
-										return uint32(*venueCityLocationChID)
-									}
-									return nil
-								}(),
-								"venue_city_name": func() *string {
-									if venueCity != nil && venueCity["name"] != nil {
-										nameStr := shared.ConvertToString(venueCity["name"])
-										return &nameStr
-									}
-									return nil
-								}(),
-								"venue_lat":              venue["venue_lat"],
-								"venue_long":             venue["venue_long"],
-								"published":              eventData["published"],
-								"status":                 eventData["status"],
-								"editions_audiance_type": eventData["event_audience"],
-								"edition_functionality":  eventData["functionality"],
-								"edition_website":        edition["edition_website"],
-								"edition_domain":         editionDomain,
-								"event_followers":        esInfoMap["event_following"],
-								"edition_followers":      esInfoMap["event_following"],
-								"event_exhibitor":        esInfoMap["event_exhibitors"],
-								"edition_exhibitor":      esInfoMap["edition_exhibitor"],
-								"exhibitors_upper_bound": nil,
-								"exhibitors_lower_bound": nil,
-								"exhibitors_mean":        nil,
-								"event_sponsor":          esInfoMap["event_totalSponsor"],
-								"edition_sponsor":        esInfoMap["edition_sponsor"],
-								"event_speaker":          esInfoMap["event_speakers"],
-								"edition_speaker":        esInfoMap["edition_speaker"],
-								"event_created":          eventData["created"],
-								"event_updated":          eventData["modified"],
-								"edition_created":        edition["edition_created"],
-								"event_hybrid":           esInfoMap["event_hybrid"],
-								"isBranded": func() *uint32 {
-									if eventData["brand_id"] != nil {
-										// If brand_id exists, set isBranded to 1 (true)
-										val := uint32(1)
-										return &val
-									}
-									// If brand_id is null, set isBranded to 0 (false)
-									val := uint32(0)
-									return &val
-								}(),
-								"eventBrandId": func() *string {
-									// Generate UUID from brand_id + brand_created
-									brandId := eventData["brand_id_from_table"]
-									brandCreated := eventData["brand_created"]
-									if brandId != nil && brandCreated != nil {
-										brandIdStr := shared.ConvertToString(brandId)
-										brandCreatedStr := shared.ConvertToString(brandCreated)
-										if brandIdStr != "" && brandCreatedStr != "" {
-											uuidInput := fmt.Sprintf("%s-%s", brandIdStr, brandCreatedStr)
-											uuid := shared.GenerateUUIDFromString(uuidInput)
-											return &uuid
-										}
-									}
-									return nil
-								}(),
-								"eventSeriesId": func() *string {
-									isSeries := eventData["multi_city"]
-									eventName := eventData["event_name"]
-
-									var isSeriesInt int
-									if isSeries != nil {
-										if val, ok := isSeries.(int64); ok {
-											isSeriesInt = int(val)
-										} else if val, ok := isSeries.(int); ok {
-											isSeriesInt = val
-										} else if val, ok := isSeries.(uint32); ok {
-											isSeriesInt = int(val)
-										}
-									}
-
-									if isSeriesInt == 1 && eventName != nil {
-										eventNameStr := shared.ConvertToString(eventName)
-										if eventNameStr != "" {
-											uuid := shared.GenerateUUIDFromString(eventNameStr)
-											return &uuid
-										}
-									}
-									return nil
-								}(),
-								"maturity": determinealleventMaturity(esInfoMap["total_edition"]),
-								"event_pricing": func() *string {
-									if ticketType, exists := ticketTypeMap[eventID]; exists && ticketType != "" {
-										return &ticketType
-									}
-									return nil
-								}(),
-								"tickets": func() []string {
-									if tickets, exists := ticketDataMap[eventID]; exists {
-										return tickets
-									}
-									return []string{}
-								}(),
-								"timings": func() []string {
-									editionIDUint32 := shared.ConvertToUInt32(edition["edition_id"])
-									eventIDUint32 := shared.ConvertToUInt32(eventID)
-									key := uint64(eventIDUint32)<<32 | uint64(editionIDUint32)
-									if timings, exists := timingDataMap[key]; exists {
-										return timings
-									}
-									return []string{}
-								}(),
-								"event_logo":                      esInfoMap["event_logo"],
-								"event_estimatedVisitors":         esInfoMap["eventEstimatedTag"],
-								"event_frequency":                 esInfoMap["event_frequency"],
-								"impactScore":                     esInfoMap["impactScore"],
-								"inboundScore":                    esInfoMap["inboundScore"],
-								"internationalScore":              esInfoMap["internationalScore"],
-								"repeatSentimentChangePercentage": esInfoMap["repeatSentimentChangePercentage"],
-								"repeatSentiment":                 esInfoMap["repeatSentiment"],
-								"reputationChangePercentage":      esInfoMap["reputationChangePercentage"],
-								"audienceZone":                    esInfoMap["audienceZone"],
-								"event_avgRating":                 esInfoMap["avg_rating"],
-								"10timesEventPageUrl":             eventData["url"],
-								"keywords":                        []string{},
-								"event_score":                     eventData["score"],
-								"yoyGrowth":                       esInfoMap["yoyGrowth"],
-								"futureExpexctedStartDate":        esInfoMap["futureExpexctedStartDate"],
-								"futureExpexctedEndDate":          esInfoMap["futureExpexctedEndDate"],
-								"PrimaryEventType": func() *string {
-									eventTypes := eventTypesMap[eventID]
-									eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
-									result := getPrimaryEventType(eventTypes, eventAudience)
-									return result
-								}(),
-								"verifiedOn": func() *string {
-									verified := eventData["verified"]
-									if verified != nil {
-										verifiedStr := shared.ConvertToString(verified)
-										if len(verifiedStr) >= 10 {
-											datePart := verifiedStr[:10]
-											return &datePart
-										}
-									}
-									return nil
-								}(),
-								"estimatedVisitorsMean": func() *uint32 {
-									if finalEstimate := esInfoMap["finalEstimate"]; finalEstimate != nil {
-										if finalEstimateStr, ok := finalEstimate.(string); ok && finalEstimateStr != "" {
-											if finalEstimateFloat, err := strconv.ParseFloat(finalEstimateStr, 64); err == nil {
-												result := uint32(finalEstimateFloat)
-												return &result
-											}
-										} else if finalEstimateFloat, ok := finalEstimate.(float64); ok {
-											result := uint32(finalEstimateFloat)
-											return &result
-										} else if finalEstimateInt, ok := finalEstimate.(int64); ok {
-											result := uint32(finalEstimateInt)
-											return &result
-										} else if finalEstimateInt, ok := finalEstimate.(int); ok {
-											result := uint32(finalEstimateInt)
-											return &result
-										}
-									}
-
-									highEstimate := esInfoMap["highEstimate"]
-									lowEstimate := esInfoMap["lowEstimate"]
-
-									var highVal, lowVal float64
-									highValid := false
-									lowValid := false
-
-									if highEstimate != nil {
-										if highStr, ok := highEstimate.(string); ok && highStr != "" {
-											if val, err := strconv.ParseFloat(highStr, 64); err == nil {
-												highVal = val
-												highValid = true
-											}
-										} else if val, ok := highEstimate.(float64); ok {
-											highVal = val
-											highValid = true
-										} else if val, ok := highEstimate.(int64); ok {
-											highVal = float64(val)
-											highValid = true
-										} else if val, ok := highEstimate.(int); ok {
-											highVal = float64(val)
-											highValid = true
-										}
-									}
-
-									if lowEstimate != nil {
-										if lowStr, ok := lowEstimate.(string); ok && lowStr != "" {
-											if val, err := strconv.ParseFloat(lowStr, 64); err == nil {
-												lowVal = val
-												lowValid = true
-											}
-										} else if val, ok := lowEstimate.(float64); ok {
-											lowVal = val
-											lowValid = true
-										} else if val, ok := lowEstimate.(int64); ok {
-											lowVal = float64(val)
-											lowValid = true
-										} else if val, ok := lowEstimate.(int); ok {
-											lowVal = float64(val)
-											lowValid = true
-										}
-									}
-
-									if highValid && lowValid {
-										mean := uint32((highVal + lowVal) / 2)
-										return &mean
-									}
-
-									return nil
-								}(),
-								"estimatedSize": func() *string {
-									eventTypes := eventTypesMap[eventID]
-									eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
-									primaryEventTypeUUID := getPrimaryEventType(eventTypes, eventAudience)
-
-									var primaryEventTypeID *uint32
-									if primaryEventTypeUUID != nil {
-										if id, ok := eventTypeUUIDToID[*primaryEventTypeUUID]; ok {
-											primaryEventTypeID = &id
-										}
-									}
-
-									var estimatedVisitorMean *uint32
-									if finalEstimate := esInfoMap["finalEstimate"]; finalEstimate != nil {
-										if finalEstimateStr, ok := finalEstimate.(string); ok && finalEstimateStr != "" {
-											if finalEstimateFloat, err := strconv.ParseFloat(finalEstimateStr, 64); err == nil {
-												result := uint32(finalEstimateFloat)
-												estimatedVisitorMean = &result
-											}
-										} else if finalEstimateFloat, ok := finalEstimate.(float64); ok {
-											result := uint32(finalEstimateFloat)
-											estimatedVisitorMean = &result
-										} else if finalEstimateInt, ok := finalEstimate.(int64); ok {
-											result := uint32(finalEstimateInt)
-											estimatedVisitorMean = &result
-										} else if finalEstimateInt, ok := finalEstimate.(int); ok {
-											result := uint32(finalEstimateInt)
-											estimatedVisitorMean = &result
-										}
-									}
-
-									if estimatedVisitorMean == nil {
-										highEstimate := esInfoMap["highEstimate"]
-										lowEstimate := esInfoMap["lowEstimate"]
-
-										var highVal, lowVal float64
-										highValid := false
-										lowValid := false
-
-										if highEstimate != nil {
-											if highStr, ok := highEstimate.(string); ok && highStr != "" {
-												if val, err := strconv.ParseFloat(highStr, 64); err == nil {
-													highVal = val
-													highValid = true
-												}
-											} else if val, ok := highEstimate.(float64); ok {
-												highVal = val
-												highValid = true
-											} else if val, ok := highEstimate.(int64); ok {
-												highVal = float64(val)
-												highValid = true
-											} else if val, ok := highEstimate.(int); ok {
-												highVal = float64(val)
-												highValid = true
-											}
-										}
-
-										if lowEstimate != nil {
-											if lowStr, ok := lowEstimate.(string); ok && lowStr != "" {
-												if val, err := strconv.ParseFloat(lowStr, 64); err == nil {
-													lowVal = val
-													lowValid = true
-												}
-											} else if val, ok := lowEstimate.(float64); ok {
-												lowVal = val
-												lowValid = true
-											} else if val, ok := lowEstimate.(int64); ok {
-												lowVal = float64(val)
-												lowValid = true
-											} else if val, ok := lowEstimate.(int); ok {
-												lowVal = float64(val)
-												lowValid = true
-											}
-										}
-
-										if highValid && lowValid {
-											mean := uint32((highVal + lowVal) / 2)
-											estimatedVisitorMean = &mean
-										}
-									}
-
-									return getAttendanceRange(primaryEventTypeID, estimatedVisitorMean)
-								}(),
-								"last_updated_at": time.Now().Format("2006-01-02 15:04:05"),
-								"version":         1,
-							}
-
-							var currentEditionEventType interface{}
-
-							if currentEditionIDs[eventID] == edition["edition_id"].(int64) {
-								currentEditionEventType = eventData["event_type"]
-								eventName := shared.ConvertToString(eventData["event_name"])
-								eventAbbrName := shared.SafeConvertToNullableString(eventData["abbr_name"])
-								eventDescription := shared.SafeConvertToNullableString(esInfoMap["event_description"])
-								eventPunchline := shared.SafeConvertToNullableString(esInfoMap["event_punchline"])
-								categoryNames := categoryNamesMap[eventID]
-
-								keywords := extractalleventKeywords(eventName, eventAbbrName, eventDescription, eventPunchline, categoryNames)
-								record["keywords"] = keywords
-
-								exhibitorsCountByOrganizer := edition["current_edition_exhibitors_total"]
-								visitorLeads := esInfoMap["event_following"]
-								eventTypeSourceID := currentEditionEventType
-
-								var exhibitorsCount *int64
-								if exhibitorsCountByOrganizer != nil {
-									if val, ok := exhibitorsCountByOrganizer.(int64); ok {
-										exhibitorsCount = &val
-									}
-								}
-
-								var visitorLeadsInt int64 = 0
-								if visitorLeads != nil {
-									if val, ok := visitorLeads.(uint32); ok {
-										visitorLeadsInt = int64(val)
-									}
-								}
-
-								var eventTypeID *int64
-								if eventTypeSourceID != nil {
-									if val, ok := eventTypeSourceID.(int64); ok {
-										eventTypeID = &val
-									}
-								}
-
-								var upperBound, lowerBound, mean *int64
-
-								if exhibitorsCount != nil && *exhibitorsCount >= 0 {
-									upperBound = exhibitorsCount
-									lowerBound = exhibitorsCount
-								} else {
-									if eventTypeID != nil && *eventTypeID == 1 {
-										if visitorLeadsInt == 0 {
-											upper := int64(100)
-											lower := int64(20)
-											upperBound = &upper
-											lowerBound = &lower
-										} else if visitorLeadsInt >= 1 && visitorLeadsInt <= 100 {
-											upper := int64(500)
-											lower := int64(100)
-											upperBound = &upper
-											lowerBound = &lower
-										} else {
-											upper := int64(1000)
-											lower := int64(500)
-											upperBound = &upper
-											lowerBound = &lower
-										}
-									} else {
-										upperBound = nil
-										lowerBound = nil
-									}
-								}
-
-								if upperBound != nil && lowerBound != nil {
-									meanVal := (*upperBound + *lowerBound) / 2
-									mean = &meanVal
-								} else {
-									mean = nil
-								}
-
-								if upperBound != nil {
-									record["exhibitors_upper_bound"] = uint32(*upperBound)
-								}
-								if lowerBound != nil {
-									record["exhibitors_lower_bound"] = uint32(*lowerBound)
-								}
-								if mean != nil {
-									record["exhibitors_mean"] = uint32(*mean)
-								}
-
-							}
-
-							if editionType != nil {
-								record["edition_type"] = *editionType
-							} else {
-								record["edition_type"] = "NA"
-							}
-
-							if editionType != nil && *editionType == "current_edition" {
-								if editions, exists := allevents[eventID]; exists {
-									eventEditionsCount := uint32(len(editions))
-									record["event_editions"] = eventEditionsCount
-								} else {
-									record["event_editions"] = nil
-								}
-							} else {
-								record["event_editions"] = nil
-							}
-
-							var eventFormat string
-							fieldHybrid := esInfoMap["event_hybrid"]
-							fieldCity := esInfoMap["event_city"]
-							var isOnline interface{}
-							if edition["is_online"] != nil {
-								isOnline = edition["is_online"]
-							}
-
-							if fieldHybrid != nil {
-								if h, ok := fieldHybrid.(uint8); ok && h == 1 {
-									eventFormat = "HYBRID"
-								} else if h, ok := fieldHybrid.(*uint8); ok && h != nil && *h == 1 {
-									eventFormat = "HYBRID"
-								}
-							}
-
-							if eventFormat == "" {
-								var cityStr string
-								var isOnlineStr string
-
-								if fieldCity != nil {
-									cityStr = shared.ConvertToString(fieldCity)
-								}
-								if isOnline != nil {
-									isOnlineStr = shared.ConvertToString(isOnline)
-								}
-
-								if cityStr == "1" || isOnlineStr == "1" {
-									eventFormat = "ONLINE"
-								} else {
-									eventFormat = "OFFLINE"
-								}
-							}
-
-							record["event_format"] = &eventFormat
-
-							if economicData != nil {
-								if totalVal, ok := economicData["total"].(float64); ok {
-									record["event_economic_value"] = &totalVal
-								}
-								if flights, ok := economicData["flights"].(float64); ok {
-									record["event_economic_flights"] = &flights
-								}
-								if foodBeverages, ok := economicData["foodBeverages"].(float64); ok {
-									record["event_economic_FoodAndBevarage"] = &foodBeverages
-								}
-								if transportation, ok := economicData["transportation"].(float64); ok {
-									record["event_economic_Transportation"] = &transportation
-								}
-								if utilities, ok := economicData["utilities"].(float64); ok {
-									record["event_economic_Utilities"] = &utilities
-								}
-								if accommodation, ok := economicData["accommodation"].(float64); ok {
-									record["event_economic_Accomodation"] = &accommodation
-								}
-
-								if breakdownJSON, ok := economicData["breakdownJSON"].(string); ok {
-									record["event_economic_breakdown"] = breakdownJSON
-								} else {
-									record["event_economic_breakdown"] = "{}"
-								}
-
-								if dayWiseJSON, ok := economicData["dayWiseJSON"].(string); ok {
-									record["event_economic_dayWiseEconomicImpact"] = dayWiseJSON
-								} else {
-									record["event_economic_dayWiseEconomicImpact"] = "{}"
-								}
-
-								if rawJSON, ok := economicData["rawJSON"].(string); ok {
-									record["event_economic_impact"] = rawJSON
-								} else {
-									record["event_economic_impact"] = "{}"
-								}
-							} else {
-								record["event_economic_breakdown"] = "{}"
-								record["event_economic_dayWiseEconomicImpact"] = "{}"
-								record["event_economic_impact"] = "{}"
-							}
-
-							var inboundPerVal, inboundAttVal, internationalPerVal, internationalAttVal uint32
-
-							if economicData != nil {
-								if inboundPer, ok := economicData["inboundPercentage"].(*uint32); ok && inboundPer != nil {
-									inboundPerVal = *inboundPer
-								} else if inboundPer, ok := economicData["inboundPercentage"].(uint32); ok {
-									inboundPerVal = inboundPer
-								}
-								if inboundAtt, ok := economicData["inboundAttendance"].(*uint32); ok && inboundAtt != nil {
-									inboundAttVal = *inboundAtt
-								} else if inboundAtt, ok := economicData["inboundAttendance"].(uint32); ok {
-									inboundAttVal = inboundAtt
-								}
-								if internationalPer, ok := economicData["internationalPercentage"].(*uint32); ok && internationalPer != nil {
-									internationalPerVal = *internationalPer
-								} else if internationalPer, ok := economicData["internationalPercentage"].(uint32); ok {
-									internationalPerVal = internationalPer
-								}
-								if internationalAtt, ok := economicData["internationalAttendance"].(*uint32); ok && internationalAtt != nil {
-									internationalAttVal = *internationalAtt
-								} else if internationalAtt, ok := economicData["internationalAttendance"].(uint32); ok {
-									internationalAttVal = internationalAtt
-								}
-							} else if estimate, exists := estimateDataMap[eventID]; exists {
-								if estimate.InboundPercentage != nil {
-									inboundPerVal = *estimate.InboundPercentage
-								}
-								if estimate.InboundAttendance != nil {
-									inboundAttVal = *estimate.InboundAttendance
-								}
-								if estimate.InternationalPercentage != nil {
-									internationalPerVal = *estimate.InternationalPercentage
-								}
-								if estimate.InternationalAttendance != nil {
-									internationalAttVal = *estimate.InternationalAttendance
-								}
-							}
-
-							record["inboundPercentage"] = inboundPerVal
-							record["inboundAttendance"] = inboundAttVal
-							record["internationalPercentage"] = internationalPerVal
-							record["internationalAttendance"] = internationalAttVal
+							record := buildAlleventRecord(
+								eventData,
+								edition,
+								company,
+								venue,
+								city,
+								companyCity,
+								venueCity,
+								esInfoMap,
+								economicData,
+								estimateDataMap[eventID],
+								eventTypesMap,
+								categoryNamesMap,
+								ticketDataMap,
+								ticketTypeMap,
+								timingDataMap,
+								eventID,
+								editionType,
+								currentEditionIDs[eventID],
+								editions,
+								editionCountryISO,
+								editionDomain,
+								companyDomain,
+								editionCityLocationChID,
+								companyCityLocationChID,
+								venueCityLocationChID,
+								editionCityStateLocationChID,
+								venueLocationChID,
+							)
 
 							clickHouseRecords = append(clickHouseRecords, record)
 
@@ -2664,7 +2103,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							*totalRecordsInserted++
 							globalCountMutex.Unlock()
 
-							if companyID != nil && venueID != nil && cityID != nil {
+							if company != nil && venue != nil && city != nil {
 								completeCount++
 							} else {
 								partialCount++
@@ -2694,25 +2133,15 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 				if len(clickHouseRecords) > 0 {
 					log.Printf("allevent chunk %d: Attempting to insert %d records into ClickHouse...", chunkNum, len(clickHouseRecords))
 
-					attemptCount := 0
-					insertErr := shared.RetryWithBackoff(
-						func() error {
-							if attemptCount > 0 {
-								now := time.Now().Format("2006-01-02 15:04:05")
-								for i := range clickHouseRecords {
-									clickHouseRecords[i]["last_updated_at"] = now
-								}
-								log.Printf("allevent chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
-							}
-							attemptCount++
-							return insertalleventDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers, config)
-						},
-						3,
-					)
+					insertErr := insertalleventDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers, config)
 
 					if insertErr != nil {
-						log.Printf("allevent chunk %d: ClickHouse insertion failed after retries: %v", chunkNum, insertErr)
-						log.Printf("allevent chunk %d: %d records failed to insert - consider manual retry", chunkNum, len(clickHouseRecords))
+						log.Printf("allevent chunk %d: ClickHouse insertion failed for batch %d, writing %d records to CSV for retry: %v", chunkNum, batchNumber, len(clickHouseRecords), insertErr)
+						if err := writeFailedBatchToCSV(clickHouseRecords, batchNumber, chunkNum); err != nil {
+							log.Printf("ERROR: Failed to write failed batch to CSV: %v", err)
+						} else {
+							log.Printf("allevent chunk %d: Successfully wrote batch %d to CSV for retry", chunkNum, batchNumber)
+						}
 					} else {
 						log.Printf("allevent chunk %d: Successfully inserted %d records into ClickHouse", chunkNum, len(clickHouseRecords))
 					}
@@ -3776,7 +3205,9 @@ func insertalleventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[
 	batchSize := (len(records) + numWorkers - 1) / numWorkers
 	results := make(chan error, numWorkers)
 	semaphore := make(chan struct{}, numWorkers)
+	var wg sync.WaitGroup
 
+	workersLaunched := 0
 	for i := 0; i < numWorkers; i++ {
 		start := i * batchSize
 		end := start + batchSize
@@ -3787,20 +3218,28 @@ func insertalleventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[
 			break
 		}
 
+		workersLaunched++
 		semaphore <- struct{}{}
+		wg.Add(1)
 		go func(start, end int) {
-			defer func() { <-semaphore }()
+			defer func() {
+				<-semaphore
+				wg.Done()
+			}()
 			batch := records[start:end]
 			err := insertalleventDataSingleWorker(clickhouseConn, batch, config)
 			results <- err
 		}(start, end)
 	}
 
-	for i := 0; i < numWorkers && i*batchSize < len(records); i++ {
+	for i := 0; i < workersLaunched; i++ {
 		if err := <-results; err != nil {
+			wg.Wait()
 			return err
 		}
 	}
+
+	wg.Wait()
 
 	return nil
 }
@@ -3870,7 +3309,6 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 	var err error
 	maxRetries := 3
 	for retryCount := 0; retryCount < maxRetries; retryCount++ {
-		// Check connection health before each retry attempt
 		if retryCount > 0 {
 			log.Printf("Checking ClickHouse connection health before retry %d/%d", retryCount+1, maxRetries)
 			connectionCheckErr := shared.RetryWithBackoff(
@@ -4026,5 +3464,1887 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 	}
 
 	log.Printf("OK: Successfully inserted %d allevent records", len(records))
+	return nil
+}
+
+type EventEditionPair struct {
+	EventID   uint32
+	EditionID uint32
+	BatchNum  int
+}
+
+func isMemoryLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "MEMORY_LIMIT_EXCEEDED") ||
+		strings.Contains(errStr, "memory limit exceeded")
+}
+
+func extractChunkNumFromFilename(filename string) int {
+	base := filepath.Base(filename)
+	parts := strings.Split(base, "_")
+	if len(parts) >= 4 && parts[0] == "failed" && parts[1] == "batches" && parts[2] == "chunk" {
+		if chunkNum, err := strconv.Atoi(strings.TrimSuffix(parts[3], ".csv")); err == nil {
+			return chunkNum
+		}
+	}
+	return -1
+}
+
+func writeFailedBatchToCSV(records []map[string]interface{}, batchNum int, chunkNum int) error {
+	dir := "failed_batches"
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	}
+
+	filepath := filepath.Join(dir, fmt.Sprintf("failed_batches_chunk_%d.csv", chunkNum))
+
+	file, err := os.OpenFile(filepath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open file %s: %w", filepath, err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	fileInfo, err := file.Stat()
+	if err == nil && fileInfo.Size() == 0 {
+		if err := writer.Write([]string{"event_id", "edition_id", "batch_num"}); err != nil {
+			return fmt.Errorf("failed to write CSV header: %w", err)
+		}
+	}
+
+	for _, record := range records {
+		eventID := shared.SafeConvertToUInt32(record["event_id"])
+		editionID := shared.SafeConvertToUInt32(record["edition_id"])
+
+		row := []string{
+			strconv.FormatUint(uint64(eventID), 10),
+			strconv.FormatUint(uint64(editionID), 10),
+			strconv.Itoa(batchNum),
+		}
+
+		if err := writer.Write(row); err != nil {
+			return fmt.Errorf("failed to write CSV row: %w", err)
+		}
+	}
+
+	log.Printf("Written %d failed pairs to %s (batch %d)", len(records), filepath, batchNum)
+	return nil
+}
+
+func readCSVGroupedByBatch(filename string) (map[int][]EventEditionPair, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open file %s: %w", filename, err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CSV: %w", err)
+	}
+
+	if len(records) == 0 {
+		return make(map[int][]EventEditionPair), nil
+	}
+
+	startIdx := 0
+	if len(records) > 0 && len(records[0]) > 0 && records[0][0] == "event_id" {
+		startIdx = 1
+	}
+
+	pairsByBatch := make(map[int][]EventEditionPair)
+
+	for i := startIdx; i < len(records); i++ {
+		if len(records[i]) < 3 {
+			continue
+		}
+
+		eventID, err1 := strconv.ParseUint(records[i][0], 10, 32)
+		editionID, err2 := strconv.ParseUint(records[i][1], 10, 32)
+		batchNum, err3 := strconv.Atoi(records[i][2])
+
+		if err1 != nil || err2 != nil || err3 != nil {
+			log.Printf("WARNING: Skipping invalid row in %s: %v", filename, records[i])
+			continue
+		}
+
+		pair := EventEditionPair{
+			EventID:   uint32(eventID),
+			EditionID: uint32(editionID),
+			BatchNum:  batchNum,
+		}
+
+		pairsByBatch[batchNum] = append(pairsByBatch[batchNum], pair)
+	}
+
+	return pairsByBatch, nil
+}
+
+func checkExistenceInClickHouse(clickhouseConn driver.Conn, pairs []EventEditionPair, config shared.Config) (map[uint64]bool, error) {
+	if len(pairs) == 0 {
+		return make(map[uint64]bool), nil
+	}
+
+	tableName := shared.GetTableNameWithDB("allevent_temp", config)
+
+	batchSize := 10000
+	existingPairs := make(map[uint64]bool)
+
+	for i := 0; i < len(pairs); i += batchSize {
+		end := i + batchSize
+		if end > len(pairs) {
+			end = len(pairs)
+		}
+
+		batch := pairs[i:end]
+		tuples := make([]string, len(batch))
+		for j, pair := range batch {
+			tuples[j] = fmt.Sprintf("(%d, %d)", pair.EventID, pair.EditionID)
+		}
+
+		query := fmt.Sprintf(
+			"SELECT event_id, edition_id FROM %s WHERE (event_id, edition_id) IN (%s)",
+			tableName,
+			strings.Join(tuples, ","),
+		)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		rows, err := clickhouseConn.Query(ctx, query)
+		cancel()
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to query existence: %w", err)
+		}
+
+		for rows.Next() {
+			var eventID uint32
+			var editionID uint32
+			if err := rows.Scan(&eventID, &editionID); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("failed to scan row: %w", err)
+			}
+			key := uint64(eventID)<<32 | uint64(editionID)
+			existingPairs[key] = true
+		}
+		rows.Close()
+	}
+
+	return existingPairs, nil
+}
+
+func checkExistenceByDuplicateColumns(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) (map[string]bool, error) {
+	if len(records) == 0 {
+		return make(map[string]bool), nil
+	}
+
+	tableName := shared.GetTableNameWithDB("allevent_temp", config)
+	existingRecords := make(map[string]bool)
+	batchSize := 1000
+
+	for i := 0; i < len(records); i += batchSize {
+		end := i + batchSize
+		if end > len(records) {
+			end = len(records)
+		}
+
+		batch := records[i:end]
+		tuples := make([]string, 0, len(batch))
+
+		for _, record := range batch {
+			eventID := shared.ConvertToUInt32(record["event_id"])
+			editionID := shared.ConvertToUInt32(record["edition_id"])
+			published := shared.ConvertToUInt32(record["published"])
+			status := shared.ConvertToUInt32(record["status"])
+			editionType := shared.ConvertToUInt32(record["edition_type"])
+
+			tuple := fmt.Sprintf("(%d, %d, %d, %d, %d)", published, status, editionType, eventID, editionID)
+			tuples = append(tuples, tuple)
+		}
+
+		if len(tuples) == 0 {
+			continue
+		}
+
+		query := fmt.Sprintf(
+			"SELECT toString(published), toString(status), toString(edition_type), toString(event_id), toString(edition_id) FROM %s WHERE (published, status, edition_type, event_id, edition_id) IN (%s)",
+			tableName,
+			strings.Join(tuples, ","),
+		)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		rows, err := clickhouseConn.Query(ctx, query)
+		cancel()
+
+		if err != nil {
+			return nil, fmt.Errorf("failed to query existence by duplicate columns: %w", err)
+		}
+
+		for rows.Next() {
+			var publishedStr, statusStr, editionTypeStr, eventIDStr, editionIDStr string
+			if err := rows.Scan(&publishedStr, &statusStr, &editionTypeStr, &eventIDStr, &editionIDStr); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("failed to scan row: %w", err)
+			}
+			key := fmt.Sprintf("%s|%s|%s|%s|%s", publishedStr, statusStr, editionTypeStr, eventIDStr, editionIDStr)
+			existingRecords[key] = true
+		}
+		rows.Close()
+	}
+
+	return existingRecords, nil
+}
+
+func rebuildRecordsForFailedBatch(
+	mysqlDB *sql.DB,
+	clickhouseConn driver.Conn,
+	esClient *elasticsearch.Client,
+	pairs []EventEditionPair,
+	config shared.Config,
+) ([]map[string]interface{}, error) {
+	if len(pairs) == 0 {
+		return nil, nil
+	}
+
+	eventIDSet := make(map[int64]bool)
+	editionIDSet := make(map[int64]bool)
+	pairMap := make(map[uint64]EventEditionPair)
+
+	for _, pair := range pairs {
+		eventIDSet[int64(pair.EventID)] = true
+		editionIDSet[int64(pair.EditionID)] = true
+		key := uint64(pair.EventID)<<32 | uint64(pair.EditionID)
+		pairMap[key] = pair
+	}
+
+	eventIDs := make([]int64, 0, len(eventIDSet))
+	for id := range eventIDSet {
+		eventIDs = append(eventIDs, id)
+	}
+
+	editionIDs := make([]int64, 0, len(editionIDSet))
+	for id := range editionIDSet {
+		editionIDs = append(editionIDs, id)
+	}
+
+	log.Printf("Rebuilding records for %d event-edition pairs (%d unique events, %d unique editions)", len(pairs), len(eventIDs), len(editionIDs))
+
+	expectedPairsMap := make(map[uint64]bool)
+	for _, pair := range pairs {
+		key := uint64(pair.EventID)<<32 | uint64(pair.EditionID)
+		expectedPairsMap[key] = true
+	}
+
+	sampleSize := 10
+	if len(editionIDs) < sampleSize {
+		sampleSize = len(editionIDs)
+	}
+	log.Printf("Fetching editions by edition_id for %d edition IDs (sample: %v)", len(editionIDs), editionIDs[:sampleSize])
+	editionData := fetchEditionsByEditionIDs(mysqlDB, editionIDs)
+	log.Printf("Fetched %d editions from MySQL for %d edition IDs", len(editionData), len(editionIDs))
+
+	if len(editionData) > 0 {
+		sampleSize2 := 10
+		if len(editionData) < sampleSize2 {
+			sampleSize2 = len(editionData)
+		}
+		fetchedEditionIDs := make([]int64, 0, sampleSize2)
+		for _, ed := range editionData[:sampleSize2] {
+			edID := int64(shared.ConvertToUInt32(ed["edition_id"]))
+			fetchedEditionIDs = append(fetchedEditionIDs, edID)
+		}
+		log.Printf("Sample fetched edition IDs: %v", fetchedEditionIDs)
+	} else {
+		log.Printf("WARNING: No editions fetched! Check if edition IDs exist in MySQL")
+	}
+
+	filteredEditionData := editionData
+
+	actualEventIDs := make([]int64, 0)
+	actualEventIDSet := make(map[int64]bool)
+	for _, edition := range filteredEditionData {
+		if eventIDVal, ok := edition["event"]; ok {
+			eventID := int64(shared.ConvertToUInt32(eventIDVal))
+			if eventID > 0 && !actualEventIDSet[eventID] {
+				actualEventIDs = append(actualEventIDs, eventID)
+				actualEventIDSet[eventID] = true
+			}
+		}
+	}
+	log.Printf("Extracted %d unique event IDs from fetched editions", len(actualEventIDs))
+
+	companyIDs := extractalleventCompanyIDs(filteredEditionData)
+	venueIDs := extractalleventVenueIDs(filteredEditionData)
+	editionCityIDs := extractalleventCityIDs(filteredEditionData)
+
+	companyData := fetchalleventCompanyDataParallel(mysqlDB, companyIDs)
+	venueData := fetchalleventVenueDataParallel(mysqlDB, venueIDs)
+
+	var companyCityIDs []int64
+	seenCompanyCityIDs := make(map[int64]bool)
+	for _, company := range companyData {
+		if cityID, ok := company["company_city"].(int64); ok && cityID > 0 {
+			if !seenCompanyCityIDs[cityID] {
+				companyCityIDs = append(companyCityIDs, cityID)
+				seenCompanyCityIDs[cityID] = true
+			}
+		}
+	}
+
+	var venueCityIDs []int64
+	seenVenueCityIDs := make(map[int64]bool)
+	for _, venue := range venueData {
+		if cityID, ok := venue["venue_city"].(int64); ok && cityID > 0 {
+			if !seenVenueCityIDs[cityID] {
+				venueCityIDs = append(venueCityIDs, cityID)
+				seenVenueCityIDs[cityID] = true
+			}
+		}
+	}
+
+	allCityIDs := make([]int64, 0, len(editionCityIDs)+len(companyCityIDs)+len(venueCityIDs))
+	seenAllCityIDs := make(map[int64]bool)
+
+	for _, cityID := range editionCityIDs {
+		if !seenAllCityIDs[cityID] {
+			allCityIDs = append(allCityIDs, cityID)
+			seenAllCityIDs[cityID] = true
+		}
+	}
+
+	for _, cityID := range companyCityIDs {
+		if !seenAllCityIDs[cityID] {
+			allCityIDs = append(allCityIDs, cityID)
+			seenAllCityIDs[cityID] = true
+		}
+	}
+
+	for _, cityID := range venueCityIDs {
+		if !seenAllCityIDs[cityID] {
+			allCityIDs = append(allCityIDs, cityID)
+			seenAllCityIDs[cityID] = true
+		}
+	}
+
+	cityData := shared.FetchCityDataParallel(mysqlDB, allCityIDs, config.NumWorkers)
+
+	esData := fetchalleventElasticsearchDataForEvents(esClient, config.ElasticsearchIndex, actualEventIDs)
+
+	locationTableName := shared.GetClickHouseTableName("location_ch", config)
+	cityIDLookup, err := buildalleventCityIDLookupFromLocationCh(clickhouseConn, locationTableName)
+	if err != nil {
+		log.Printf("WARNING - Failed to build city ID lookup: %v", err)
+		cityIDLookup = make(map[string]uint32)
+	}
+	stateIDLookup, err := buildalleventStateIDLookupFromLocationCh(clickhouseConn, locationTableName)
+	if err != nil {
+		log.Printf("WARNING - Failed to build state ID lookup: %v", err)
+		stateIDLookup = make(map[string]uint32)
+	}
+	venueIDLookup, err := buildalleventVenueIDLookupFromLocationCh(clickhouseConn, locationTableName)
+	if err != nil {
+		log.Printf("WARNING - Failed to build venue ID lookup: %v", err)
+		venueIDLookup = make(map[string]uint32)
+	}
+
+	companyLookup := make(map[int64]map[string]interface{})
+	for _, company := range companyData {
+		if companyID, ok := company["id_10x"].(int64); ok {
+			companyLookup[companyID] = company
+		}
+	}
+
+	venueLookup := make(map[int64]map[string]interface{})
+	for _, venue := range venueData {
+		if venueID, ok := venue["id"].(int64); ok {
+			venueLookup[venueID] = venue
+		}
+	}
+
+	cityLookup := make(map[int64]map[string]interface{})
+	for _, city := range cityData {
+		if cityID, ok := city["id"].(int64); ok {
+			cityLookup[cityID] = city
+		}
+	}
+
+	eventDataLookup := make(map[int64]map[string]interface{})
+	eventDataForEditions := fetchalleventEventDataForBatch(mysqlDB, actualEventIDs)
+	for _, eventData := range eventDataForEditions {
+		if eventID, ok := eventData["id"].(int64); ok {
+			eventDataLookup[eventID] = eventData
+		}
+	}
+
+	estimateDataMap := fetchalleventEstimateDataForBatch(mysqlDB, actualEventIDs)
+	eventTypesMap := fetchalleventEventTypesForBatch(mysqlDB, actualEventIDs)
+	categoryNamesMap := fetchalleventCategoryNamesForEvents(mysqlDB, actualEventIDs)
+	rawTicketData := fetchalleventTicketDataForBatch(mysqlDB, actualEventIDs)
+	ticketDataMap := processalleventTicketData(rawTicketData)
+	ticketTypeMap := make(map[int64]string)
+	for _, ticket := range rawTicketData {
+		if eventID, ok := ticket["event"].(int64); ok {
+			if _, exists := ticketTypeMap[eventID]; !exists {
+				ticketType := shared.SafeConvertToString(ticket["type"])
+				if ticketType != "" {
+					ticketTypeMap[eventID] = ticketType
+				}
+			}
+		}
+	}
+	timingDataMap := fetchalleventTimingDataForBatch(mysqlDB, filteredEditionData)
+	processedEconomicData := processalleventEconomicImpactDataParallel(estimateDataMap)
+
+	allevents := make(map[int64][]map[string]interface{})
+	currentEditionStartDates := make(map[int64]interface{})
+	currentEditionIDs := make(map[int64]int64)
+
+	for _, edition := range filteredEditionData {
+		eventID := int64(shared.ConvertToUInt32(edition["event"]))
+		if eventID > 0 {
+			allevents[eventID] = append(allevents[eventID], edition)
+			if currentEditionID, exists := edition["current_edition_id"]; exists {
+				editionID := int64(shared.ConvertToUInt32(edition["edition_id"]))
+				currentEditionIDInt64 := int64(shared.ConvertToUInt32(currentEditionID))
+				if currentEditionIDInt64 == editionID {
+					currentEditionStartDates[eventID] = edition["edition_start_date"]
+					currentEditionIDs[eventID] = editionID
+				}
+			}
+		}
+	}
+
+	log.Printf("Grouped %d editions into %d events", len(filteredEditionData), len(allevents))
+
+	records := make([]map[string]interface{}, 0, len(pairs))
+
+	for _, pair := range pairs {
+		expectedEventID := int64(pair.EventID)
+		editionID := int64(pair.EditionID)
+
+		var targetEdition map[string]interface{}
+		var actualEventID int64
+
+		for _, edition := range filteredEditionData {
+			editionIDUint32 := shared.ConvertToUInt32(edition["edition_id"])
+			edID := int64(editionIDUint32)
+
+			if edID == editionID {
+				targetEdition = edition
+				if eventIDVal, ok := edition["event"]; ok {
+					actualEventID = int64(shared.ConvertToUInt32(eventIDVal))
+				}
+				break
+			}
+		}
+
+		if targetEdition == nil {
+			log.Printf("WARNING: Could not find edition %d (expected event %d) in %d fetched editions, skipping", editionID, expectedEventID, len(filteredEditionData))
+			foundInRequest := false
+			for _, reqID := range editionIDs {
+				if reqID == editionID {
+					foundInRequest = true
+					break
+				}
+			}
+			if !foundInRequest {
+				log.Printf("  ERROR: Edition %d was not even in the fetch request!", editionID)
+			} else {
+				log.Printf("  Edition %d was in fetch request but not returned by MySQL query", editionID)
+			}
+			continue
+		}
+
+		eventData := eventDataLookup[actualEventID]
+		if eventData == nil {
+			log.Printf("WARNING: Could not find event data for event %d (edition %d belongs to this event), skipping", actualEventID, editionID)
+			continue
+		}
+
+		company, venue, city, companyCity, venueCity := resolveRelatedDataForEdition(
+			targetEdition,
+			companyLookup,
+			venueLookup,
+			cityLookup,
+		)
+
+		esInfoMap := esData[actualEventID]
+		if esInfoMap == nil {
+			esInfoMap = make(map[string]interface{})
+		}
+
+		editionDomain, companyDomain := extractDomainsForEdition(targetEdition, company)
+
+		editionType := determinealleventType(
+			targetEdition["edition_start_date"],
+			currentEditionStartDates[actualEventID],
+			editionID,
+			currentEditionIDs[actualEventID],
+		)
+
+		editionCountryISO := strings.ToUpper(shared.ConvertToString(eventData["country"]))
+
+		editionCityLocationChID, companyCityLocationChID, venueCityLocationChID,
+			editionCityStateLocationChID, venueLocationChID := computeAllLocationIDs(
+			city,
+			company,
+			companyCity,
+			venue,
+			venueCity,
+			editionCountryISO,
+			cityIDLookup,
+			stateIDLookup,
+			venueIDLookup,
+		)
+
+		record := buildAlleventRecord(
+			eventData,
+			targetEdition,
+			company,
+			venue,
+			city,
+			companyCity,
+			venueCity,
+			esInfoMap,
+			processedEconomicData[actualEventID],
+			estimateDataMap[actualEventID],
+			eventTypesMap,
+			categoryNamesMap,
+			ticketDataMap,
+			ticketTypeMap,
+			timingDataMap,
+			actualEventID,
+			editionType,
+			currentEditionIDs[actualEventID],
+			allevents[actualEventID],
+			editionCountryISO,
+			editionDomain,
+			companyDomain,
+			editionCityLocationChID,
+			companyCityLocationChID,
+			venueCityLocationChID,
+			editionCityStateLocationChID,
+			venueLocationChID,
+		)
+
+		records = append(records, record)
+	}
+
+	log.Printf("Rebuilt %d records from %d pairs", len(records), len(pairs))
+	return records, nil
+}
+
+func resolveRelatedDataForEdition(
+	edition map[string]interface{},
+	companyLookup map[int64]map[string]interface{},
+	venueLookup map[int64]map[string]interface{},
+	cityLookup map[int64]map[string]interface{},
+) (
+	company map[string]interface{},
+	venue map[string]interface{},
+	city map[string]interface{},
+	companyCity map[string]interface{},
+	venueCity map[string]interface{},
+) {
+	companyID := edition["company_id"]
+	venueID := edition["venue_id"]
+	cityID := edition["edition_city"]
+
+	if companyID != nil {
+		if c, exists := companyLookup[companyID.(int64)]; exists {
+			company = c
+		}
+	}
+
+	if venueID != nil {
+		if v, exists := venueLookup[venueID.(int64)]; exists {
+			venue = v
+		}
+	}
+
+	if cityID != nil {
+		if c, exists := cityLookup[cityID.(int64)]; exists {
+			city = c
+		}
+	}
+
+	if company != nil && company["company_city"] != nil {
+		if companyCityID, ok := company["company_city"].(int64); ok {
+			if c, exists := cityLookup[companyCityID]; exists {
+				companyCity = c
+			}
+		}
+	}
+
+	if venue != nil && venue["venue_city"] != nil {
+		if venueCityID, ok := venue["venue_city"].(int64); ok {
+			if c, exists := cityLookup[venueCityID]; exists {
+				venueCity = c
+			}
+		}
+	}
+
+	return company, venue, city, companyCity, venueCity
+}
+
+func computeAllLocationIDs(
+	city map[string]interface{},
+	company map[string]interface{},
+	companyCity map[string]interface{},
+	venue map[string]interface{},
+	venueCity map[string]interface{},
+	editionCountryISO string,
+	cityIDLookup map[string]uint32,
+	stateIDLookup map[string]uint32,
+	venueIDLookup map[string]uint32,
+) (
+	editionCityLocationChID *uint32,
+	companyCityLocationChID *uint32,
+	venueCityLocationChID *uint32,
+	editionCityStateLocationChID *uint32,
+	venueLocationChID *uint32,
+) {
+	if city != nil && city["name"] != nil {
+		cityName := shared.ConvertToString(city["name"])
+		if cityName != "" {
+			cityNameStr := strings.TrimSpace(cityName)
+			if editionCountryISO != "" && editionCountryISO != "NAN" {
+				cityKeyWithISO := fmt.Sprintf("%s|%s", cityNameStr, editionCountryISO)
+				if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
+					editionCityLocationChID = &locationChID
+				}
+			}
+			if editionCityLocationChID == nil {
+				cityKeyWithoutISO := cityNameStr
+				if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
+					editionCityLocationChID = &locationChID
+				}
+			}
+		}
+	}
+
+	// Company city location ID
+	if companyCity != nil && companyCity["name"] != nil {
+		companyCityName := shared.ConvertToString(companyCity["name"])
+		companyCountryISO := strings.ToUpper(shared.ConvertToString(company["company_country"]))
+		if companyCityName != "" {
+			companyCityNameStr := strings.TrimSpace(companyCityName)
+			if companyCountryISO != "" && companyCountryISO != "NAN" {
+				cityKeyWithISO := fmt.Sprintf("%s|%s", companyCityNameStr, companyCountryISO)
+				if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
+					companyCityLocationChID = &locationChID
+				}
+			}
+			if companyCityLocationChID == nil {
+				cityKeyWithoutISO := companyCityNameStr
+				if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
+					companyCityLocationChID = &locationChID
+				}
+			}
+		}
+	}
+
+	// Venue city location ID
+	if venueCity != nil && venueCity["name"] != nil {
+		venueCityName := shared.ConvertToString(venueCity["name"])
+		venueCountryISO := strings.ToUpper(shared.ConvertToString(venue["venue_country"]))
+		if venueCityName != "" {
+			venueCityNameStr := strings.TrimSpace(venueCityName)
+			if venueCountryISO != "" && venueCountryISO != "NAN" {
+				cityKeyWithISO := fmt.Sprintf("%s|%s", venueCityNameStr, venueCountryISO)
+				if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
+					venueCityLocationChID = &locationChID
+				}
+			}
+			if venueCityLocationChID == nil {
+				cityKeyWithoutISO := venueCityNameStr
+				if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
+					venueCityLocationChID = &locationChID
+				}
+			}
+		}
+	}
+
+	// Edition city state location ID
+	if city != nil && city["state"] != nil {
+		stateName := shared.ConvertToString(city["state"])
+		if stateName != "" {
+			stateNameStr := strings.TrimSpace(stateName)
+			if editionCountryISO != "" && editionCountryISO != "NAN" {
+				stateKeyWithISO := fmt.Sprintf("%s|%s", stateNameStr, editionCountryISO)
+				if locationChID, exists := stateIDLookup[stateKeyWithISO]; exists {
+					editionCityStateLocationChID = &locationChID
+				}
+			}
+			if editionCityStateLocationChID == nil {
+				stateKeyWithoutISO := stateNameStr
+				if locationChID, exists := stateIDLookup[stateKeyWithoutISO]; exists {
+					editionCityStateLocationChID = &locationChID
+				}
+			}
+		}
+	}
+
+	// Venue location ID
+	if venue != nil && venue["venue_name"] != nil {
+		venueName := shared.ConvertToString(venue["venue_name"])
+		venueCountryISO := strings.ToUpper(shared.ConvertToString(venue["venue_country"]))
+		if venueName != "" {
+			venueNameStr := strings.TrimSpace(venueName)
+			if venueCountryISO != "" && venueCountryISO != "NAN" {
+				venueKeyWithISO := fmt.Sprintf("%s|%s", venueNameStr, venueCountryISO)
+				if locationChID, exists := venueIDLookup[venueKeyWithISO]; exists {
+					venueLocationChID = &locationChID
+				}
+			}
+			if venueLocationChID == nil {
+				venueKeyWithoutISO := venueNameStr
+				if locationChID, exists := venueIDLookup[venueKeyWithoutISO]; exists {
+					venueLocationChID = &locationChID
+				}
+			}
+		}
+	}
+
+	return editionCityLocationChID, companyCityLocationChID, venueCityLocationChID, editionCityStateLocationChID, venueLocationChID
+}
+
+// extractDomainsForEdition extracts edition and company domains
+// This centralizes the domain extraction logic
+func extractDomainsForEdition(
+	edition map[string]interface{},
+	company map[string]interface{},
+) (editionDomain string, companyDomain string) {
+	editionWebsite := edition["edition_website"]
+	if editionWebsite != nil {
+		editionDomain = shared.ExtractDomainFromWebsite(editionWebsite)
+	}
+
+	if company != nil && company["company_website"] != nil {
+		companyDomain = shared.ExtractDomainFromWebsite(company["company_website"])
+	}
+
+	return editionDomain, companyDomain
+}
+
+// buildAlleventRecord builds a complete allevent record from all the necessary data
+// This is a reusable function that can be called from both processalleventChunk and rebuildRecordsForFailedBatch
+func buildAlleventRecord(
+	eventData map[string]interface{},
+	edition map[string]interface{},
+	company map[string]interface{},
+	venue map[string]interface{},
+	city map[string]interface{},
+	companyCity map[string]interface{},
+	venueCity map[string]interface{},
+	esInfoMap map[string]interface{},
+	economicData map[string]interface{},
+	estimate estimateData,
+	eventTypesMap map[int64][]uint32,
+	categoryNamesMap map[int64][]string,
+	ticketDataMap map[int64][]string,
+	ticketTypeMap map[int64]string,
+	timingDataMap map[uint64][]string,
+	eventID int64,
+	editionType *string,
+	currentEditionID int64,
+	allEditions []map[string]interface{},
+	editionCountryISO string,
+	editionDomain string,
+	companyDomain string,
+	editionCityLocationChID *uint32,
+	companyCityLocationChID *uint32,
+	venueCityLocationChID *uint32,
+	editionCityStateLocationChID *uint32,
+	venueLocationChID *uint32,
+) map[string]interface{} {
+	record := map[string]interface{}{
+		"event_id":          eventData["id"],
+		"event_uuid":        shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(eventData["id"]), shared.ConvertToString(edition["edition_created"]))),
+		"event_name":        eventData["event_name"],
+		"event_abbr_name":   eventData["abbr_name"],
+		"event_description": esInfoMap["event_description"],
+		"event_punchline":   esInfoMap["event_punchline"],
+		"start_date":        eventData["start_date"],
+		"end_date":          eventData["end_date"],
+		"edition_id":        edition["edition_id"],
+		"edition_country":   editionCountryISO,
+		"edition_city": func() interface{} {
+			if editionCityLocationChID != nil {
+				return uint32(*editionCityLocationChID)
+			}
+			return nil
+		}(),
+		"edition_city_name": shared.ConvertToString(city["name"]),
+		"edition_city_state": func() string {
+			if city != nil && city["state"] != nil {
+				stateStr := shared.ConvertToString(city["state"])
+				if strings.TrimSpace(stateStr) == "" {
+					return "any"
+				}
+				return stateStr
+			}
+			return "any"
+		}(),
+		"edition_city_state_id": func() interface{} {
+			if editionCityStateLocationChID != nil {
+				return uint32(*editionCityStateLocationChID)
+			}
+			return nil
+		}(),
+		"edition_city_lat":  city["event_city_lat"],
+		"edition_city_long": city["event_city_long"],
+		"company_id":        company["id_10x"],
+		"company_uuid": func() string {
+			if company != nil {
+				if companyID, ok := company["id_10x"].(int64); ok && companyID > 0 {
+					created := company["created"]
+					createdStr := shared.ConvertToString(created)
+					if createdStr != "" {
+						idInputString := fmt.Sprintf("%d-%s", companyID, createdStr)
+						return shared.GenerateUUIDFromString(idInputString)
+					}
+				}
+			}
+			if companyID := edition["company_id"]; companyID != nil {
+				var id int64
+				var ok bool
+				if id, ok = companyID.(int64); !ok {
+					if idVal, ok2 := companyID.(int); ok2 {
+						id = int64(idVal)
+						ok = true
+					} else if idVal, ok2 := companyID.(uint32); ok2 {
+						id = int64(idVal)
+						ok = true
+					}
+				}
+				if ok && id > 0 {
+					createdStr := shared.ConvertToString(edition["edition_created"])
+					if createdStr == "" {
+						createdStr = shared.ConvertToString(edition["start_date"])
+					}
+					if createdStr == "" {
+						createdStr = "1970-01-01 00:00:00"
+					}
+					idInputString := fmt.Sprintf("%d-%s", id, createdStr)
+					return shared.GenerateUUIDFromString(idInputString)
+				}
+			}
+			eventIDStr := shared.ConvertToString(eventData["id"])
+			editionIDStr := shared.ConvertToString(edition["edition_id"])
+			idInputString := fmt.Sprintf("company-%s-%s", eventIDStr, editionIDStr)
+			return shared.GenerateUUIDFromString(idInputString)
+		}(),
+		"company_name":    company["company_name"],
+		"company_domain":  companyDomain,
+		"company_website": company["company_website"],
+		"companyLogoUrl":  company["company_logo_url"],
+		"company_country": strings.ToUpper(shared.ConvertToString(company["company_country"])),
+		"company_state": func() *string {
+			if companyCity != nil && companyCity["state"] != nil {
+				stateStr := shared.ConvertToString(companyCity["state"])
+				if strings.TrimSpace(stateStr) == "" {
+					return nil
+				}
+				return &stateStr
+			}
+			return nil
+		}(),
+		"company_city": func() interface{} {
+			if companyCityLocationChID != nil {
+				return uint32(*companyCityLocationChID)
+			}
+			return nil
+		}(),
+		"company_city_name": func() *string {
+			if companyCity != nil && companyCity["name"] != nil {
+				nameStr := shared.ConvertToString(companyCity["name"])
+				return &nameStr
+			}
+			return nil
+		}(),
+		"company_address": func() *string {
+			if company != nil && company["address"] != nil {
+				addressStr := shared.ConvertToString(company["address"])
+				if strings.TrimSpace(addressStr) == "" {
+					return nil
+				}
+				return &addressStr
+			}
+			return nil
+		}(),
+		"venue_id": func() interface{} {
+			if venueLocationChID != nil {
+				return uint32(*venueLocationChID)
+			}
+			return nil
+		}(),
+		"venue_name":    venue["venue_name"],
+		"venue_country": strings.ToUpper(shared.ConvertToString(venue["venue_country"])),
+		"venue_city": func() interface{} {
+			if venueCityLocationChID != nil {
+				return uint32(*venueCityLocationChID)
+			}
+			return nil
+		}(),
+		"venue_city_name": func() *string {
+			if venueCity != nil && venueCity["name"] != nil {
+				nameStr := shared.ConvertToString(venueCity["name"])
+				return &nameStr
+			}
+			return nil
+		}(),
+		"venue_lat":              venue["venue_lat"],
+		"venue_long":             venue["venue_long"],
+		"published":              eventData["published"],
+		"status":                 eventData["status"],
+		"editions_audiance_type": eventData["event_audience"],
+		"edition_functionality":  eventData["functionality"],
+		"edition_website":        edition["edition_website"],
+		"edition_domain":         editionDomain,
+		"event_followers":        esInfoMap["event_following"],
+		"edition_followers":      esInfoMap["event_following"],
+		"event_exhibitor":        esInfoMap["event_exhibitors"],
+		"edition_exhibitor":      esInfoMap["edition_exhibitor"],
+		"exhibitors_upper_bound": nil,
+		"exhibitors_lower_bound": nil,
+		"exhibitors_mean":        nil,
+		"event_sponsor":          esInfoMap["event_totalSponsor"],
+		"edition_sponsor":        esInfoMap["edition_sponsor"],
+		"event_speaker":          esInfoMap["event_speakers"],
+		"edition_speaker":        esInfoMap["edition_speaker"],
+		"event_created":          eventData["created"],
+		"event_updated":          eventData["modified"],
+		"edition_created":        edition["edition_created"],
+		"event_hybrid":           esInfoMap["event_hybrid"],
+		"isBranded": func() *uint32 {
+			if eventData["brand_id"] != nil {
+				val := uint32(1)
+				return &val
+			}
+			val := uint32(0)
+			return &val
+		}(),
+		"eventBrandId": func() *string {
+			brandId := eventData["brand_id_from_table"]
+			brandCreated := eventData["brand_created"]
+			if brandId != nil && brandCreated != nil {
+				brandIdStr := shared.ConvertToString(brandId)
+				brandCreatedStr := shared.ConvertToString(brandCreated)
+				if brandIdStr != "" && brandCreatedStr != "" {
+					uuidInput := fmt.Sprintf("%s-%s", brandIdStr, brandCreatedStr)
+					uuid := shared.GenerateUUIDFromString(uuidInput)
+					return &uuid
+				}
+			}
+			return nil
+		}(),
+		"eventSeriesId": func() *string {
+			isSeries := eventData["multi_city"]
+			eventName := eventData["event_name"]
+
+			var isSeriesInt int
+			if isSeries != nil {
+				if val, ok := isSeries.(int64); ok {
+					isSeriesInt = int(val)
+				} else if val, ok := isSeries.(int); ok {
+					isSeriesInt = val
+				} else if val, ok := isSeries.(uint32); ok {
+					isSeriesInt = int(val)
+				}
+			}
+
+			if isSeriesInt == 1 && eventName != nil {
+				eventNameStr := shared.ConvertToString(eventName)
+				if eventNameStr != "" {
+					uuid := shared.GenerateUUIDFromString(eventNameStr)
+					return &uuid
+				}
+			}
+			return nil
+		}(),
+		"maturity": determinealleventMaturity(esInfoMap["total_edition"]),
+		"event_pricing": func() *string {
+			if ticketType, exists := ticketTypeMap[eventID]; exists && ticketType != "" {
+				return &ticketType
+			}
+			return nil
+		}(),
+		"tickets": func() []string {
+			if tickets, exists := ticketDataMap[eventID]; exists {
+				return tickets
+			}
+			return []string{}
+		}(),
+		"timings": func() []string {
+			editionIDUint32 := shared.ConvertToUInt32(edition["edition_id"])
+			eventIDUint32 := shared.ConvertToUInt32(eventID)
+			key := uint64(eventIDUint32)<<32 | uint64(editionIDUint32)
+			if timings, exists := timingDataMap[key]; exists {
+				return timings
+			}
+			return []string{}
+		}(),
+		"event_logo":                      esInfoMap["event_logo"],
+		"event_estimatedVisitors":         esInfoMap["eventEstimatedTag"],
+		"event_frequency":                 esInfoMap["event_frequency"],
+		"impactScore":                     esInfoMap["impactScore"],
+		"inboundScore":                    esInfoMap["inboundScore"],
+		"internationalScore":              esInfoMap["internationalScore"],
+		"repeatSentimentChangePercentage": esInfoMap["repeatSentimentChangePercentage"],
+		"repeatSentiment":                 esInfoMap["repeatSentiment"],
+		"reputationChangePercentage":      esInfoMap["reputationChangePercentage"],
+		"audienceZone":                    esInfoMap["audienceZone"],
+		"event_avgRating":                 esInfoMap["avg_rating"],
+		"10timesEventPageUrl":             eventData["url"],
+		"keywords":                        []string{},
+		"event_score":                     eventData["score"],
+		"yoyGrowth":                       esInfoMap["yoyGrowth"],
+		"futureExpexctedStartDate":        esInfoMap["futureExpexctedStartDate"],
+		"futureExpexctedEndDate":          esInfoMap["futureExpexctedEndDate"],
+		"PrimaryEventType": func() *string {
+			eventTypes := eventTypesMap[eventID]
+			eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
+			result := getPrimaryEventType(eventTypes, eventAudience)
+			return result
+		}(),
+		"verifiedOn": func() *string {
+			verified := eventData["verified"]
+			if verified != nil {
+				verifiedStr := shared.ConvertToString(verified)
+				if len(verifiedStr) >= 10 {
+					datePart := verifiedStr[:10]
+					return &datePart
+				}
+			}
+			return nil
+		}(),
+		"estimatedVisitorsMean": func() *uint32 {
+			if finalEstimate := esInfoMap["finalEstimate"]; finalEstimate != nil {
+				if finalEstimateStr, ok := finalEstimate.(string); ok && finalEstimateStr != "" {
+					if finalEstimateFloat, err := strconv.ParseFloat(finalEstimateStr, 64); err == nil {
+						result := uint32(finalEstimateFloat)
+						return &result
+					}
+				} else if finalEstimateFloat, ok := finalEstimate.(float64); ok {
+					result := uint32(finalEstimateFloat)
+					return &result
+				} else if finalEstimateInt, ok := finalEstimate.(int64); ok {
+					result := uint32(finalEstimateInt)
+					return &result
+				} else if finalEstimateInt, ok := finalEstimate.(int); ok {
+					result := uint32(finalEstimateInt)
+					return &result
+				}
+			}
+
+			highEstimate := esInfoMap["highEstimate"]
+			lowEstimate := esInfoMap["lowEstimate"]
+
+			var highVal, lowVal float64
+			highValid := false
+			lowValid := false
+
+			if highEstimate != nil {
+				if highStr, ok := highEstimate.(string); ok && highStr != "" {
+					if val, err := strconv.ParseFloat(highStr, 64); err == nil {
+						highVal = val
+						highValid = true
+					}
+				} else if val, ok := highEstimate.(float64); ok {
+					highVal = val
+					highValid = true
+				} else if val, ok := highEstimate.(int64); ok {
+					highVal = float64(val)
+					highValid = true
+				} else if val, ok := highEstimate.(int); ok {
+					highVal = float64(val)
+					highValid = true
+				}
+			}
+
+			if lowEstimate != nil {
+				if lowStr, ok := lowEstimate.(string); ok && lowStr != "" {
+					if val, err := strconv.ParseFloat(lowStr, 64); err == nil {
+						lowVal = val
+						lowValid = true
+					}
+				} else if val, ok := lowEstimate.(float64); ok {
+					lowVal = val
+					lowValid = true
+				} else if val, ok := lowEstimate.(int64); ok {
+					lowVal = float64(val)
+					lowValid = true
+				} else if val, ok := lowEstimate.(int); ok {
+					lowVal = float64(val)
+					lowValid = true
+				}
+			}
+
+			if highValid && lowValid {
+				mean := uint32((highVal + lowVal) / 2)
+				return &mean
+			}
+
+			return nil
+		}(),
+		"estimatedSize": func() *string {
+			eventTypes := eventTypesMap[eventID]
+			eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
+			primaryEventTypeUUID := getPrimaryEventType(eventTypes, eventAudience)
+
+			var primaryEventTypeID *uint32
+			if primaryEventTypeUUID != nil {
+				if id, ok := eventTypeUUIDToID[*primaryEventTypeUUID]; ok {
+					primaryEventTypeID = &id
+				}
+			}
+
+			var estimatedVisitorMean *uint32
+			if finalEstimate := esInfoMap["finalEstimate"]; finalEstimate != nil {
+				if finalEstimateStr, ok := finalEstimate.(string); ok && finalEstimateStr != "" {
+					if finalEstimateFloat, err := strconv.ParseFloat(finalEstimateStr, 64); err == nil {
+						result := uint32(finalEstimateFloat)
+						estimatedVisitorMean = &result
+					}
+				} else if finalEstimateFloat, ok := finalEstimate.(float64); ok {
+					result := uint32(finalEstimateFloat)
+					estimatedVisitorMean = &result
+				} else if finalEstimateInt, ok := finalEstimate.(int64); ok {
+					result := uint32(finalEstimateInt)
+					estimatedVisitorMean = &result
+				} else if finalEstimateInt, ok := finalEstimate.(int); ok {
+					result := uint32(finalEstimateInt)
+					estimatedVisitorMean = &result
+				}
+			}
+
+			if estimatedVisitorMean == nil {
+				highEstimate := esInfoMap["highEstimate"]
+				lowEstimate := esInfoMap["lowEstimate"]
+
+				var highVal, lowVal float64
+				highValid := false
+				lowValid := false
+
+				if highEstimate != nil {
+					if highStr, ok := highEstimate.(string); ok && highStr != "" {
+						if val, err := strconv.ParseFloat(highStr, 64); err == nil {
+							highVal = val
+							highValid = true
+						}
+					} else if val, ok := highEstimate.(float64); ok {
+						highVal = val
+						highValid = true
+					} else if val, ok := highEstimate.(int64); ok {
+						highVal = float64(val)
+						highValid = true
+					} else if val, ok := highEstimate.(int); ok {
+						highVal = float64(val)
+						highValid = true
+					}
+				}
+
+				if lowEstimate != nil {
+					if lowStr, ok := lowEstimate.(string); ok && lowStr != "" {
+						if val, err := strconv.ParseFloat(lowStr, 64); err == nil {
+							lowVal = val
+							lowValid = true
+						}
+					} else if val, ok := lowEstimate.(float64); ok {
+						lowVal = val
+						lowValid = true
+					} else if val, ok := lowEstimate.(int64); ok {
+						lowVal = float64(val)
+						lowValid = true
+					} else if val, ok := lowEstimate.(int); ok {
+						lowVal = float64(val)
+						lowValid = true
+					}
+				}
+
+				if highValid && lowValid {
+					mean := uint32((highVal + lowVal) / 2)
+					estimatedVisitorMean = &mean
+				}
+			}
+
+			return getAttendanceRange(primaryEventTypeID, estimatedVisitorMean)
+		}(),
+		"last_updated_at": time.Now().Format("2006-01-02 15:04:05"),
+		"version":         1,
+	}
+
+	// Post-processing for current editions
+	var currentEditionEventType interface{}
+	editionIDUint32 := shared.ConvertToUInt32(edition["edition_id"])
+	if currentEditionID > 0 && int64(currentEditionID) == int64(editionIDUint32) {
+		currentEditionEventType = eventData["event_type"]
+		eventName := shared.ConvertToString(eventData["event_name"])
+		eventAbbrName := shared.SafeConvertToNullableString(eventData["abbr_name"])
+		eventDescription := shared.SafeConvertToNullableString(esInfoMap["event_description"])
+		eventPunchline := shared.SafeConvertToNullableString(esInfoMap["event_punchline"])
+		categoryNames := categoryNamesMap[eventID]
+
+		keywords := extractalleventKeywords(eventName, eventAbbrName, eventDescription, eventPunchline, categoryNames)
+		record["keywords"] = keywords
+
+		exhibitorsCountByOrganizer := edition["current_edition_exhibitors_total"]
+		visitorLeads := esInfoMap["event_following"]
+		eventTypeSourceID := currentEditionEventType
+
+		var exhibitorsCount *int64
+		if exhibitorsCountByOrganizer != nil {
+			if val, ok := exhibitorsCountByOrganizer.(int64); ok {
+				exhibitorsCount = &val
+			}
+		}
+
+		var visitorLeadsInt int64 = 0
+		if visitorLeads != nil {
+			if val, ok := visitorLeads.(uint32); ok {
+				visitorLeadsInt = int64(val)
+			}
+		}
+
+		var eventTypeID *int64
+		if eventTypeSourceID != nil {
+			if val, ok := eventTypeSourceID.(int64); ok {
+				eventTypeID = &val
+			}
+		}
+
+		var upperBound, lowerBound, mean *int64
+
+		if exhibitorsCount != nil && *exhibitorsCount >= 0 {
+			upperBound = exhibitorsCount
+			lowerBound = exhibitorsCount
+		} else {
+			if eventTypeID != nil && *eventTypeID == 1 {
+				if visitorLeadsInt == 0 {
+					upper := int64(100)
+					lower := int64(20)
+					upperBound = &upper
+					lowerBound = &lower
+				} else if visitorLeadsInt >= 1 && visitorLeadsInt <= 100 {
+					upper := int64(500)
+					lower := int64(100)
+					upperBound = &upper
+					lowerBound = &lower
+				} else {
+					upper := int64(1000)
+					lower := int64(500)
+					upperBound = &upper
+					lowerBound = &lower
+				}
+			} else {
+				upperBound = nil
+				lowerBound = nil
+			}
+		}
+
+		if upperBound != nil && lowerBound != nil {
+			meanVal := (*upperBound + *lowerBound) / 2
+			mean = &meanVal
+		} else {
+			mean = nil
+		}
+
+		if upperBound != nil {
+			record["exhibitors_upper_bound"] = uint32(*upperBound)
+		}
+		if lowerBound != nil {
+			record["exhibitors_lower_bound"] = uint32(*lowerBound)
+		}
+		if mean != nil {
+			record["exhibitors_mean"] = uint32(*mean)
+		}
+	}
+
+	// Set edition_type
+	if editionType != nil {
+		record["edition_type"] = *editionType
+	} else {
+		record["edition_type"] = "NA"
+	}
+
+	// Set event_editions count for current editions
+	if editionType != nil && *editionType == "current_edition" {
+		if len(allEditions) > 0 {
+			eventEditionsCount := uint32(len(allEditions))
+			record["event_editions"] = eventEditionsCount
+		} else {
+			record["event_editions"] = nil
+		}
+	} else {
+		record["event_editions"] = nil
+	}
+
+	// Determine event_format
+	var eventFormat string
+	fieldHybrid := esInfoMap["event_hybrid"]
+	fieldCity := esInfoMap["event_city"]
+	var isOnline interface{}
+	if edition["is_online"] != nil {
+		isOnline = edition["is_online"]
+	}
+
+	if fieldHybrid != nil {
+		if h, ok := fieldHybrid.(uint8); ok && h == 1 {
+			eventFormat = "HYBRID"
+		} else if h, ok := fieldHybrid.(*uint8); ok && h != nil && *h == 1 {
+			eventFormat = "HYBRID"
+		}
+	}
+
+	if eventFormat == "" {
+		var cityStr string
+		var isOnlineStr string
+
+		if fieldCity != nil {
+			cityStr = shared.ConvertToString(fieldCity)
+		}
+		if isOnline != nil {
+			isOnlineStr = shared.ConvertToString(isOnline)
+		}
+
+		if cityStr == "1" || isOnlineStr == "1" {
+			eventFormat = "ONLINE"
+		} else {
+			eventFormat = "OFFLINE"
+		}
+	}
+
+	record["event_format"] = &eventFormat
+
+	// Add economic impact data
+	if economicData != nil {
+		if totalVal, ok := economicData["total"].(float64); ok {
+			record["event_economic_value"] = &totalVal
+		}
+		if flights, ok := economicData["flights"].(float64); ok {
+			record["event_economic_flights"] = &flights
+		}
+		if foodBeverages, ok := economicData["foodBeverages"].(float64); ok {
+			record["event_economic_FoodAndBevarage"] = &foodBeverages
+		}
+		if transportation, ok := economicData["transportation"].(float64); ok {
+			record["event_economic_Transportation"] = &transportation
+		}
+		if utilities, ok := economicData["utilities"].(float64); ok {
+			record["event_economic_Utilities"] = &utilities
+		}
+		if accommodation, ok := economicData["accommodation"].(float64); ok {
+			record["event_economic_Accomodation"] = &accommodation
+		}
+
+		if breakdownJSON, ok := economicData["breakdownJSON"].(string); ok {
+			record["event_economic_breakdown"] = breakdownJSON
+		} else {
+			record["event_economic_breakdown"] = "{}"
+		}
+
+		if dayWiseJSON, ok := economicData["dayWiseJSON"].(string); ok {
+			record["event_economic_dayWiseEconomicImpact"] = dayWiseJSON
+		} else {
+			record["event_economic_dayWiseEconomicImpact"] = "{}"
+		}
+
+		if rawJSON, ok := economicData["rawJSON"].(string); ok {
+			record["event_economic_impact"] = rawJSON
+		} else {
+			record["event_economic_impact"] = "{}"
+		}
+	} else {
+		record["event_economic_breakdown"] = "{}"
+		record["event_economic_dayWiseEconomicImpact"] = "{}"
+		record["event_economic_impact"] = "{}"
+	}
+
+	// Add inbound/international data
+	var inboundPerVal, inboundAttVal, internationalPerVal, internationalAttVal uint32
+
+	if economicData != nil {
+		if inboundPer, ok := economicData["inboundPercentage"].(*uint32); ok && inboundPer != nil {
+			inboundPerVal = *inboundPer
+		} else if inboundPer, ok := economicData["inboundPercentage"].(uint32); ok {
+			inboundPerVal = inboundPer
+		}
+		if inboundAtt, ok := economicData["inboundAttendance"].(*uint32); ok && inboundAtt != nil {
+			inboundAttVal = *inboundAtt
+		} else if inboundAtt, ok := economicData["inboundAttendance"].(uint32); ok {
+			inboundAttVal = inboundAtt
+		}
+		if internationalPer, ok := economicData["internationalPercentage"].(*uint32); ok && internationalPer != nil {
+			internationalPerVal = *internationalPer
+		} else if internationalPer, ok := economicData["internationalPercentage"].(uint32); ok {
+			internationalPerVal = internationalPer
+		}
+		if internationalAtt, ok := economicData["internationalAttendance"].(*uint32); ok && internationalAtt != nil {
+			internationalAttVal = *internationalAtt
+		} else if internationalAtt, ok := economicData["internationalAttendance"].(uint32); ok {
+			internationalAttVal = internationalAtt
+		}
+	} else {
+		if estimate.InboundPercentage != nil {
+			inboundPerVal = *estimate.InboundPercentage
+		}
+		if estimate.InboundAttendance != nil {
+			inboundAttVal = *estimate.InboundAttendance
+		}
+		if estimate.InternationalPercentage != nil {
+			internationalPerVal = *estimate.InternationalPercentage
+		}
+		if estimate.InternationalAttendance != nil {
+			internationalAttVal = *estimate.InternationalAttendance
+		}
+	}
+
+	record["inboundPercentage"] = inboundPerVal
+	record["inboundAttendance"] = inboundAttVal
+	record["internationalPercentage"] = internationalPerVal
+	record["internationalAttendance"] = internationalAttVal
+
+	return record
+}
+
+func retryFailedBatchesAfterCompletion(
+	mysqlDB *sql.DB,
+	clickhouseConn driver.Conn,
+	esClient *elasticsearch.Client,
+	config shared.Config,
+) error {
+	logDir := "failed_batches"
+	logFile := filepath.Join(logDir, fmt.Sprintf("retry_log_%s.txt", time.Now().Format("20060102_150405")))
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		log.Printf("WARNING: Failed to create log directory: %v", err)
+		logFile = ""
+	}
+
+	var logWriter *os.File
+	if logFile != "" {
+		var err error
+		logWriter, err = os.Create(logFile)
+		if err != nil {
+			log.Printf("WARNING: Failed to create retry log file: %v", err)
+			logWriter = nil
+		} else {
+			defer logWriter.Close()
+			logWriter.WriteString(fmt.Sprintf("=== Retry Failed Batches Log - Started at %s ===\n\n", time.Now().Format("2006-01-02 15:04:05")))
+		}
+	}
+
+	logToFile := func(format string, args ...interface{}) {
+		msg := fmt.Sprintf(format, args...)
+		log.Print(msg)
+		if logWriter != nil {
+			logWriter.WriteString(msg + "\n")
+		}
+	}
+
+	dir := "failed_batches"
+
+	maxAttempts := 3
+	backoffDuration := 2 * time.Minute
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		files, err := filepath.Glob(filepath.Join(dir, "failed_batches_chunk_*.csv"))
+		if err != nil {
+			logToFile("ERROR: Failed to glob failed batch files: %v", err)
+			return fmt.Errorf("failed to glob failed batch files: %w", err)
+		}
+
+		if len(files) == 0 {
+			if attempt == 1 {
+				logToFile("No failed batches to retry")
+			} else {
+				logToFile("✓ All failed batches successfully processed!")
+			}
+			return nil
+		}
+
+		logToFile("")
+		logToFile("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		logToFile("=== Retry Attempt %d/%d ===", attempt, maxAttempts)
+		logToFile("Found %d failed batch files to process", len(files))
+		if logFile != "" {
+			logToFile("Log file: %s", logFile)
+		}
+		logToFile("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+		totalSkipped := 0
+		totalRetried := 0
+		totalFailed := 0
+
+		for _, file := range files {
+			logToFile("")
+			logToFile("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			logToFile("Processing failed batch file: %s", file)
+			logToFile("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+			pairsByBatch, err := readCSVGroupedByBatch(file)
+			if err != nil {
+				logToFile("ERROR: Failed to read %s: %v", file, err)
+				continue
+			}
+
+			logToFile("Found %d batches in file", len(pairsByBatch))
+
+			fileProcessedSuccessfully := true
+
+			for batchNum, pairs := range pairsByBatch {
+				logToFile("")
+				logToFile("  → Processing batch %d with %d pairs...", batchNum, len(pairs))
+
+				logToFile("    Checking existence in allevent_temp for batch %d (%d pairs)...", batchNum, len(pairs))
+				existingPairs, err := checkExistenceInClickHouse(clickhouseConn, pairs, config)
+				if err != nil {
+					logToFile("    ERROR: Failed to check existence for batch %d: %v", batchNum, err)
+					totalFailed += len(pairs)
+					fileProcessedSuccessfully = false
+					continue
+				}
+
+				missingPairs := make([]EventEditionPair, 0)
+				for _, pair := range pairs {
+					key := uint64(pair.EventID)<<32 | uint64(pair.EditionID)
+					if !existingPairs[key] {
+						missingPairs = append(missingPairs, pair)
+					}
+				}
+
+				if len(existingPairs) == len(pairs) {
+					logToFile("    ✓ All %d pairs already exist in allevent_temp, no insert needed for batch %d", len(pairs), batchNum)
+					totalSkipped += len(pairs)
+					continue
+				} else if len(existingPairs) > 0 {
+					logToFile("    Found %d/%d pairs exist, %d pairs missing - will insert missing pairs only",
+						len(existingPairs), len(pairs), len(missingPairs))
+					totalSkipped += len(existingPairs)
+				} else {
+					logToFile("    No pairs exist in allevent_temp, will insert all %d pairs", len(pairs))
+				}
+
+				if len(missingPairs) == 0 {
+					continue
+				}
+
+				rebuildBatchSize := 5000
+				insertSuccess := true
+				failedSubBatches := make([]map[string]interface{}, 0)
+				backoffDuration := 30 * time.Second
+
+				optimizeConfigs := shared.GetTableOptimizeConfigs()
+				alleventOptimizeConfig, hasConfig := optimizeConfigs["allevent_ch"]
+
+				if hasConfig && alleventOptimizeConfig.PartitionExpression == "" {
+					createStatement, err := shared.GetTableCreateStatement(clickhouseConn, alleventOptimizeConfig.TempTableName, config)
+					if err == nil {
+						partitionExpr, err := shared.ExtractPartitionExpression(createStatement)
+						if err == nil {
+							alleventOptimizeConfig.PartitionExpression = partitionExpr
+						}
+					}
+				}
+
+				logToFile("    Processing %d missing pairs in batches of %d (rebuild → insert → verify → optimize)...", len(missingPairs), rebuildBatchSize)
+
+				for i := 0; i < len(missingPairs); i += rebuildBatchSize {
+					end := i + rebuildBatchSize
+					if end > len(missingPairs) {
+						end = len(missingPairs)
+					}
+					missingPairsBatch := missingPairs[i:end]
+
+					logToFile("      Processing missing pairs batch %d-%d (%d pairs): rebuilding records...", i+1, end, len(missingPairsBatch))
+
+					records, err := rebuildRecordsForFailedBatch(
+						mysqlDB,
+						clickhouseConn,
+						esClient,
+						missingPairsBatch,
+						config,
+					)
+					if err != nil {
+						logToFile("        ERROR: Failed to rebuild records for batch %d-%d: %v", i+1, end, err)
+						totalFailed += len(missingPairsBatch)
+						fileProcessedSuccessfully = false
+						continue
+					}
+
+					if len(records) == 0 {
+						logToFile("        WARNING: No records rebuilt for batch %d-%d (expected %d records) - possible data loss", i+1, end, len(missingPairsBatch))
+						totalFailed += len(missingPairsBatch)
+						fileProcessedSuccessfully = false
+						continue
+					}
+
+					if len(records) < len(missingPairsBatch) {
+						logToFile("        WARNING: Only rebuilt %d/%d records for batch %d-%d - %d records missing", len(records), len(missingPairsBatch), i+1, end, len(missingPairsBatch)-len(records))
+						totalFailed += len(missingPairsBatch) - len(records)
+						fileProcessedSuccessfully = false
+					}
+
+					logToFile("        ✓ Rebuilt %d records", len(records))
+
+					logToFile("        Checking existence in allevent_temp using duplicate detection columns (published, status, edition_type, event_id, edition_id)...")
+					existingBeforeInsert, err := checkExistenceByDuplicateColumns(clickhouseConn, records, config)
+					if err != nil {
+						logToFile("        WARNING: Failed to check existence before insert: %v, proceeding with insert anyway", err)
+					} else {
+						stillMissingRecords := make([]map[string]interface{}, 0)
+						existingCount := 0
+
+						for _, record := range records {
+							eventID := shared.ConvertToUInt32(record["event_id"])
+							editionID := shared.ConvertToUInt32(record["edition_id"])
+							published := shared.ConvertToUInt32(record["published"])
+							status := shared.ConvertToUInt32(record["status"])
+							editionType := shared.ConvertToUInt32(record["edition_type"])
+
+							key := fmt.Sprintf("%d|%d|%d|%d|%d", published, status, editionType, eventID, editionID)
+
+							if !existingBeforeInsert[key] {
+								stillMissingRecords = append(stillMissingRecords, record)
+							} else {
+								existingCount++
+							}
+						}
+
+						stillMissingPairs := make([]EventEditionPair, 0, len(stillMissingRecords))
+						for _, record := range stillMissingRecords {
+							eventID := shared.ConvertToUInt32(record["event_id"])
+							editionID := shared.ConvertToUInt32(record["edition_id"])
+							stillMissingPairs = append(stillMissingPairs, EventEditionPair{
+								EventID:   eventID,
+								EditionID: editionID,
+							})
+						}
+
+						if existingCount > 0 {
+							logToFile("        Found %d/%d records already exist (using duplicate detection columns), will insert only %d missing records", existingCount, len(records), len(stillMissingRecords))
+							totalSkipped += existingCount
+
+							if len(stillMissingRecords) == 0 {
+								logToFile("        ✓ All records already exist, skipping insert for this batch")
+								if i+rebuildBatchSize < len(missingPairs) {
+									logToFile("        ⏳ Waiting %v before processing next batch...", backoffDuration)
+									time.Sleep(backoffDuration)
+									logToFile("        ✓ Wait complete, continuing with next batch")
+								}
+								continue
+							}
+
+							records = stillMissingRecords
+							missingPairsBatch = stillMissingPairs
+						} else {
+							logToFile("        ✓ All %d records confirmed missing, proceeding with insert", len(records))
+						}
+					}
+
+					logToFile("        Inserting %d records...", len(records))
+
+					attemptCount := 0
+					insertErr := shared.RetryWithBackoff(
+						func() error {
+							if attemptCount > 0 {
+								now := time.Now().Format("2006-01-02 15:04:05")
+								for j := range records {
+									records[j]["last_updated_at"] = now
+								}
+								logToFile("          Retrying insert for batch %d-%d (attempt %d)", i+1, end, attemptCount+1)
+							}
+							attemptCount++
+							return insertalleventDataChunk(clickhouseConn, records, config)
+						},
+						3, // 3 retries for transient errors
+					)
+
+					if insertErr != nil {
+						logToFile("        ✗ ERROR: Failed to insert batch %d-%d after retries: %v", i+1, end, insertErr)
+						insertSuccess = false
+						totalFailed += len(records)
+
+						if isMemoryLimitError(insertErr) {
+							logToFile("          Memory error detected, writing back to CSV for retry")
+							chunkNum := extractChunkNumFromFilename(file)
+							if chunkNum >= 0 {
+								retryBatchNum := -batchNum*10000 - i
+								if writeErr := writeFailedBatchToCSV(records, retryBatchNum, chunkNum); writeErr != nil {
+									logToFile("          ERROR: Failed to write failed batch to CSV: %v", writeErr)
+								} else {
+									logToFile("          ✓ Successfully wrote failed batch %d-%d back to CSV (batchNum: %d)", i+1, end, retryBatchNum)
+								}
+							}
+						}
+
+						failedSubBatches = append(failedSubBatches, records...)
+						fileProcessedSuccessfully = false
+						continue
+					}
+
+					logToFile("        ✓ Successfully inserted batch %d-%d (%d records)", i+1, end, len(records))
+					totalRetried += len(records)
+
+					logToFile("        Double-checking: Verifying inserted records exist in allevent_temp...")
+					verifyPairs := make([]EventEditionPair, 0, len(records))
+					for _, record := range records {
+						eventID, ok1 := record["event_id"].(uint32)
+						editionID, ok2 := record["edition_id"].(uint32)
+						if ok1 && ok2 {
+							verifyPairs = append(verifyPairs, EventEditionPair{
+								EventID:   eventID,
+								EditionID: editionID,
+							})
+						}
+					}
+
+					if len(verifyPairs) > 0 {
+						existingAfterInsert, err := checkExistenceInClickHouse(clickhouseConn, verifyPairs, config)
+						if err != nil {
+							logToFile("        WARNING: Failed to verify inserted records: %v", err)
+						} else {
+							missingAfterInsert := 0
+							for _, pair := range verifyPairs {
+								key := uint64(pair.EventID)<<32 | uint64(pair.EditionID)
+								if !existingAfterInsert[key] {
+									missingAfterInsert++
+									logToFile("        ✗ WARNING: Record (event_id=%d, edition_id=%d) not found after insert!", pair.EventID, pair.EditionID)
+								}
+							}
+							if missingAfterInsert == 0 {
+								logToFile("        ✓ Double-check passed: All %d records confirmed in allevent_temp", len(verifyPairs))
+							} else {
+								logToFile("        ✗ WARNING: Double-check failed: %d/%d records missing after insert", missingAfterInsert, len(verifyPairs))
+								totalFailed += missingAfterInsert
+								fileProcessedSuccessfully = false
+							}
+						}
+					}
+
+					if hasConfig && alleventOptimizeConfig.PartitionExpression != "" {
+						logToFile("        ⏳ Waiting 30 seconds before checking for duplicates (to allow ClickHouse merge process)...")
+						time.Sleep(30 * time.Second)
+						logToFile("        Checking for duplicate partitions after insert...")
+
+						duplicatePartitions, err := shared.GetPartitionsWithDuplicates(clickhouseConn, alleventOptimizeConfig, config)
+						if err != nil {
+							logToFile("        WARNING: Failed to check for duplicates: %v", err)
+						} else if len(duplicatePartitions) > 0 {
+							logToFile("        Found %d partitions with duplicates, verifying they still exist (to avoid false positives)...", len(duplicatePartitions))
+							time.Sleep(20 * time.Second)
+							verifiedDuplicates, verifyErr := shared.GetPartitionsWithDuplicates(clickhouseConn, alleventOptimizeConfig, config)
+							if verifyErr != nil {
+								logToFile("        WARNING: Failed to verify duplicates: %v, proceeding with optimization anyway", verifyErr)
+								verifiedDuplicates = duplicatePartitions
+							} else if len(verifiedDuplicates) == 0 {
+								logToFile("        ✓ Duplicates were automatically merged by ClickHouse, no optimization needed")
+							} else {
+								verifiedPartitionMap := make(map[string]bool)
+								for _, p := range verifiedDuplicates {
+									verifiedPartitionMap[p] = true
+								}
+
+								partitionsToOptimize := make([]string, 0)
+								for _, partition := range duplicatePartitions {
+									if verifiedPartitionMap[partition] {
+										partitionsToOptimize = append(partitionsToOptimize, partition)
+									}
+								}
+
+								if len(partitionsToOptimize) > 0 {
+									logToFile("        Verified %d partitions still have duplicates, optimizing on priority...", len(partitionsToOptimize))
+									for _, partition := range partitionsToOptimize {
+										logToFile("          Optimizing partition: %s", partition)
+										optimizeErr := shared.OptimizeTablePartition(clickhouseConn, alleventOptimizeConfig.TempTableName, partition, config, "optimize_logs.log")
+										if optimizeErr != nil {
+											logToFile("          WARNING: Failed to optimize partition %s: %v", partition, optimizeErr)
+										} else {
+											logToFile("          ✓ Successfully optimized partition %s", partition)
+										}
+									}
+								} else {
+									logToFile("        ✓ All duplicates were automatically merged, no optimization needed")
+								}
+							}
+						} else {
+							logToFile("        ✓ No duplicate partitions found")
+						}
+					}
+
+					if i+rebuildBatchSize < len(missingPairs) {
+						logToFile("        ⏳ Waiting %v before processing next batch...", backoffDuration)
+						time.Sleep(backoffDuration)
+						logToFile("        ✓ Wait complete, continuing with next batch")
+					}
+				}
+
+				if insertSuccess {
+					logToFile("  ✓ Successfully processed batch %d", batchNum)
+				} else if len(failedSubBatches) > 0 {
+					logToFile("  ⚠ Batch %d partially failed - %d records failed to insert", batchNum, len(failedSubBatches))
+				}
+			}
+
+			if fileProcessedSuccessfully {
+				if err := os.Remove(file); err != nil {
+					logToFile("  WARNING: Failed to remove successfully processed file %s: %v", file, err)
+				} else {
+					logToFile("  ✓ Successfully removed processed file: %s (all batches succeeded)", file)
+				}
+			} else {
+				logToFile("  ⚠ Keeping file %s for retry (some batches failed or had issues)", file)
+				logToFile("     → This file will be processed again on next script run")
+			}
+		}
+
+		logToFile("")
+		logToFile("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		logToFile("=== Retry Attempt %d/%d Summary ===", attempt, maxAttempts)
+		logToFile("Total pairs skipped (already exist): %d", totalSkipped)
+		logToFile("Total records retried and inserted: %d", totalRetried)
+		logToFile("Total records failed: %d", totalFailed)
+		logToFile("=== Attempt %d completed at %s ===", attempt, time.Now().Format("2006-01-02 15:04:05"))
+
+		remainingFiles, err := filepath.Glob(filepath.Join(dir, "failed_batches_chunk_*.csv"))
+		if err != nil {
+			logToFile("WARNING: Failed to check for remaining failed batch files: %v", err)
+		} else if len(remainingFiles) == 0 {
+			logToFile("")
+			logToFile("✓ All failed batches successfully processed - no remaining files")
+			if logFile != "" {
+				logToFile("Full log saved to: %s", logFile)
+			}
+			return nil
+		} else {
+			logToFile("")
+			logToFile("⚠️  %d failed batch file(s) still remain after attempt %d:", len(remainingFiles), attempt)
+			for _, file := range remainingFiles {
+				logToFile("   - %s", file)
+			}
+
+			if attempt < maxAttempts {
+				logToFile("")
+				logToFile("⏳ Waiting %v before retry attempt %d/%d...", backoffDuration, attempt+1, maxAttempts)
+				time.Sleep(backoffDuration)
+				logToFile("✓ Backoff complete, starting next retry attempt")
+			} else {
+				logToFile("")
+				logToFile("⚠️  Maximum retry attempts (%d) reached", maxAttempts)
+				logToFile("   → These files will be processed on the next script run")
+				logToFile("   → Optimization will be skipped until all batches are successfully inserted")
+				if logFile != "" {
+					logToFile("Full log saved to: %s", logFile)
+				}
+				return fmt.Errorf("failed batches still remain after %d attempts: %d file(s) need to be processed", maxAttempts, len(remainingFiles))
+			}
+		}
+	}
+
 	return nil
 }
