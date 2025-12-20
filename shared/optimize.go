@@ -589,17 +589,12 @@ func OptimizeTablePartitions(clickhouseConn driver.Conn, optimizeConfig TableOpt
 		}
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-		optimizeErr := RetryWithBackoff(
-			func() error {
-				return OptimizeTablePartition(clickhouseConn, optimizeConfig.TempTableName, partition, dbConfig, errorLogFile)
-			},
-			3,
-		)
+		optimizeErr := OptimizeTablePartition(clickhouseConn, optimizeConfig.TempTableName, partition, dbConfig, errorLogFile)
 
 		if optimizeErr != nil {
-			errMsg := fmt.Errorf("failed to optimize partition %s for %s after retries: %w", partition, optimizeConfig.TableName, optimizeErr)
+			errMsg := fmt.Errorf("failed to optimize partition %s for %s: %w", partition, optimizeConfig.TableName, optimizeErr)
 			logErrorToFile("Optimize Table", errMsg, errorLogFile)
-			logOptimizeToFile("ERROR", "Optimize Table", fmt.Sprintf("Failed to optimize partition %s for %s after retries: %v", partition, optimizeConfig.TableName, optimizeErr))
+			logOptimizeToFile("ERROR", "Optimize Table", fmt.Sprintf("Failed to optimize partition %s for %s: %v", partition, optimizeConfig.TableName, optimizeErr))
 			log.Printf("⚠️  Error optimizing partition %s for %s: %v", partition, optimizeConfig.TableName, optimizeErr)
 			log.Printf("⚠️  Continuing with next partition...")
 		} else {
