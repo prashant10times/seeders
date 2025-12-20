@@ -298,7 +298,7 @@ func GetPartitionsWithDuplicates(clickhouseConn driver.Conn, config TableOptimiz
 	`, selectClause, fullTempTableName, groupByClause)
 
 	log.Printf("Checking for duplicate partitions in %s...", config.TempTableName)
-	log.Printf("Query: %s", query)
+	log.Printf("DUPLICATE CHECK QUERY: %s", query)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
@@ -325,6 +325,7 @@ func GetPartitionsWithDuplicates(clickhouseConn driver.Conn, config TableOptimiz
 			partitions = []string{}
 			seenPartitions := make(map[string]bool)
 			rowCount := 0
+			sampleDuplicates := make([]string, 0, 10) // Store first 10 duplicate rows for logging
 
 			for rows.Next() {
 				rowCount++
@@ -344,6 +345,16 @@ func GetPartitionsWithDuplicates(clickhouseConn driver.Conn, config TableOptimiz
 					return fmt.Errorf("failed to scan duplicate row: %w", err)
 				}
 
+				// Build sample duplicate info for logging (first 10 rows)
+				if len(sampleDuplicates) < 10 {
+					duplicateInfo := fmt.Sprintf("partition=%s, count=%d", partitionValue, count)
+					// Add column values if available (especially event_id, edition_id)
+					if len(dummyStrings) > 0 {
+						duplicateInfo += ", values=[" + strings.Join(dummyStrings, ", ") + "]"
+					}
+					sampleDuplicates = append(sampleDuplicates, duplicateInfo)
+				}
+
 				if !seenPartitions[partitionValue] {
 					partitions = append(partitions, partitionValue)
 					seenPartitions[partitionValue] = true
@@ -354,7 +365,16 @@ func GetPartitionsWithDuplicates(clickhouseConn driver.Conn, config TableOptimiz
 				return fmt.Errorf("error iterating duplicate rows: %w", err)
 			}
 
-			log.Printf("Query returned %d duplicate rows, extracted %d unique partitions", rowCount, len(partitions))
+			log.Printf("DUPLICATE CHECK RESULT: Query returned %d duplicate rows, extracted %d unique partitions", rowCount, len(partitions))
+			if len(sampleDuplicates) > 0 {
+				log.Printf("DUPLICATE CHECK SAMPLE (first %d):", len(sampleDuplicates))
+				for i, dup := range sampleDuplicates {
+					log.Printf("  [%d] %s", i+1, dup)
+				}
+				if rowCount > len(sampleDuplicates) {
+					log.Printf("  ... (%d more duplicate rows)", rowCount-len(sampleDuplicates))
+				}
+			}
 			return nil
 		},
 		3,

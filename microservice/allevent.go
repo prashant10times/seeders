@@ -2131,16 +2131,63 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 
 				log.Printf("allevent chunk %d: Total records collected: %d", chunkNum, len(clickHouseRecords))
 				if len(clickHouseRecords) > 0 {
-					log.Printf("allevent chunk %d: Attempting to insert %d records into ClickHouse...", chunkNum, len(clickHouseRecords))
+					log.Printf("allevent chunk %d: Attempting to insert %d records into ClickHouse (will be split into chunks of max 10,000)...", chunkNum, len(clickHouseRecords))
 
 					insertErr := insertalleventDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers, config)
 
 					if insertErr != nil {
-						log.Printf("allevent chunk %d: ClickHouse insertion failed for batch %d, writing %d records to CSV for retry: %v", chunkNum, batchNumber, len(clickHouseRecords), insertErr)
-						if err := writeFailedBatchToCSV(clickHouseRecords, batchNumber, chunkNum); err != nil {
-							log.Printf("ERROR: Failed to write failed batch to CSV: %v", err)
+						log.Printf("allevent chunk %d: ClickHouse insertion failed for batch %d, checking which records already exist before writing to CSV: %v", chunkNum, batchNumber, insertErr)
+
+						// Convert records to pairs for existence check
+						checkPairs := make([]EventEditionPair, 0, len(clickHouseRecords))
+						for _, record := range clickHouseRecords {
+							eventID := shared.ConvertToUInt32(record["event_id"])
+							editionID := shared.ConvertToUInt32(record["edition_id"])
+							checkPairs = append(checkPairs, EventEditionPair{
+								EventID:   eventID,
+								EditionID: editionID,
+							})
+						}
+
+						// Check which records already exist in the database
+						// Use FINAL=true to see unmerged records (critical: some records may have been inserted but not merged yet)
+						existingPairs, err := checkExistenceInClickHouseWithRetry(clickhouseConn, checkPairs, config, true, nil)
+						if err != nil {
+							log.Printf("allevent chunk %d: WARNING - Failed to check existence before writing to CSV: %v, writing all records to CSV", chunkNum, err)
+							// If check fails, write all records to CSV (safer to retry than skip)
+							if err := writeFailedBatchToCSV(clickHouseRecords, batchNumber, chunkNum); err != nil {
+								log.Printf("ERROR: Failed to write failed batch to CSV: %v", err)
+							} else {
+								log.Printf("allevent chunk %d: Successfully wrote batch %d to CSV for retry (existence check failed, wrote all %d records)", chunkNum, batchNumber, len(clickHouseRecords))
+							}
 						} else {
-							log.Printf("allevent chunk %d: Successfully wrote batch %d to CSV for retry", chunkNum, batchNumber)
+							// Filter out records that already exist
+							missingRecords := make([]map[string]interface{}, 0)
+							existingCount := 0
+							for _, record := range clickHouseRecords {
+								eventID := shared.ConvertToUInt32(record["event_id"])
+								editionID := shared.ConvertToUInt32(record["edition_id"])
+								key := uint64(eventID)<<32 | uint64(editionID)
+								if !existingPairs[key] {
+									missingRecords = append(missingRecords, record)
+								} else {
+									existingCount++
+								}
+							}
+
+							if existingCount > 0 {
+								log.Printf("allevent chunk %d: Found %d/%d records already exist in database, will write only %d missing records to CSV", chunkNum, existingCount, len(clickHouseRecords), len(missingRecords))
+							}
+
+							if len(missingRecords) > 0 {
+								if err := writeFailedBatchToCSV(missingRecords, batchNumber, chunkNum); err != nil {
+									log.Printf("ERROR: Failed to write failed batch to CSV: %v", err)
+								} else {
+									log.Printf("allevent chunk %d: Successfully wrote %d missing records (out of %d total) to CSV for retry", chunkNum, len(missingRecords), len(clickHouseRecords))
+								}
+							} else {
+								log.Printf("allevent chunk %d: All %d records already exist in database, skipping CSV write", chunkNum, len(clickHouseRecords))
+							}
 						}
 					} else {
 						log.Printf("allevent chunk %d: Successfully inserted %d records into ClickHouse", chunkNum, len(clickHouseRecords))
@@ -3586,14 +3633,91 @@ func readCSVGroupedByBatch(filename string) (map[int][]EventEditionPair, error) 
 	return pairsByBatch, nil
 }
 
+var queryLogFile *os.File
+var queryLogMutex sync.Mutex
+
+func initQueryLogFile() error {
+	queryLogMutex.Lock()
+	defer queryLogMutex.Unlock()
+
+	if queryLogFile != nil {
+		return nil // Already initialized
+	}
+
+	logDir := "failed_batches"
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("failed to create log directory: %w", err)
+	}
+
+	logFile := filepath.Join(logDir, fmt.Sprintf("existence_check_queries_%s.log", time.Now().Format("20060102_150405")))
+	file, err := os.Create(logFile)
+	if err != nil {
+		return fmt.Errorf("failed to create query log file: %w", err)
+	}
+
+	queryLogFile = file
+	file.WriteString(fmt.Sprintf("=== Existence Check Queries Log - Started at %s ===\n\n", time.Now().Format("2006-01-02 15:04:05")))
+	return nil
+}
+
+func logQueryToFile(query string, pairs []EventEditionPair, foundCount int) {
+	// Skip logging for batches where all records exist (common case, not an error)
+	// This significantly improves performance by avoiding unnecessary I/O
+	if foundCount == len(pairs) {
+		return
+	}
+
+	queryLogMutex.Lock()
+	defer queryLogMutex.Unlock()
+
+	if queryLogFile == nil {
+		if err := initQueryLogFile(); err != nil {
+			return // Silently fail if can't create log file
+		}
+	}
+
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	queryLogFile.WriteString(fmt.Sprintf("[%s] Checking %d pairs, Found %d existing\n", timestamp, len(pairs), foundCount))
+
+	// Truncate query to avoid writing extremely long queries (500+ pairs = huge query string)
+	// Log only first 1000 chars + last 200 chars to show structure
+	maxQueryLen := 1000
+	if len(query) > maxQueryLen {
+		queryPreview := query[:maxQueryLen] + "... [TRUNCATED, " + fmt.Sprintf("%d", len(query)-maxQueryLen) + " chars omitted] ..." + query[len(query)-200:]
+		queryLogFile.WriteString(fmt.Sprintf("QUERY (truncated):\n%s\n\n", queryPreview))
+	} else {
+		queryLogFile.WriteString(fmt.Sprintf("QUERY:\n%s\n\n", query))
+	}
+
+	// Write sample pairs being checked (first 10 only to reduce I/O)
+	sampleSize := 10
+	if len(pairs) < sampleSize {
+		sampleSize = len(pairs)
+	}
+	queryLogFile.WriteString(fmt.Sprintf("PAIRS BEING CHECKED (showing first %d of %d):\n", sampleSize, len(pairs)))
+	for i := 0; i < sampleSize; i++ {
+		queryLogFile.WriteString(fmt.Sprintf("  (%d, %d)\n", pairs[i].EventID, pairs[i].EditionID))
+	}
+	if len(pairs) > sampleSize {
+		queryLogFile.WriteString(fmt.Sprintf("  ... (%d more pairs)\n", len(pairs)-sampleSize))
+	}
+	queryLogFile.WriteString("\n")
+	// Don't call Sync() after every batch - let OS buffer and flush periodically
+	// This significantly improves performance for large batch processing
+}
+
 func checkExistenceInClickHouse(clickhouseConn driver.Conn, pairs []EventEditionPair, config shared.Config) (map[uint64]bool, error) {
+	return checkExistenceInClickHouseWithRetry(clickhouseConn, pairs, config, false, nil)
+}
+
+func checkExistenceInClickHouseWithRetry(clickhouseConn driver.Conn, pairs []EventEditionPair, config shared.Config, useFinal bool, logToFileFunc func(string, ...interface{})) (map[uint64]bool, error) {
 	if len(pairs) == 0 {
 		return make(map[uint64]bool), nil
 	}
 
 	tableName := shared.GetTableNameWithDB("allevent_temp", config)
 
-	batchSize := 10000
+	batchSize := 500 // Reduced from 1000 to 500 for better FINAL query performance (FINAL forces merges which can be slow)
 	existingPairs := make(map[uint64]bool)
 
 	for i := 0; i < len(pairs); i += batchSize {
@@ -3608,96 +3732,198 @@ func checkExistenceInClickHouse(clickhouseConn driver.Conn, pairs []EventEdition
 			tuples[j] = fmt.Sprintf("(%d, %d)", pair.EventID, pair.EditionID)
 		}
 
+		// Use FINAL keyword to force merge and see all data including unmerged parts
+		// This ensures we see data that was just inserted but hasn't been merged yet
+		finalKeyword := ""
+		if useFinal {
+			finalKeyword = "FINAL"
+		}
+
 		query := fmt.Sprintf(
-			"SELECT event_id, edition_id FROM %s WHERE (event_id, edition_id) IN (%s)",
+			"SELECT event_id, edition_id FROM %s %s WHERE (event_id, edition_id) IN (%s)",
 			tableName,
+			finalKeyword,
 			strings.Join(tuples, ","),
 		)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		rows, err := clickhouseConn.Query(ctx, query)
-		cancel()
-
-		if err != nil {
-			return nil, fmt.Errorf("failed to query existence: %w", err)
+		// Log FULL query to retry log file if available
+		if logToFileFunc != nil {
+			logToFileFunc("        EXISTENCE CHECK QUERY [batch %d/%d, useFinal=%v]:", i/batchSize+1, (len(pairs)+batchSize-1)/batchSize, useFinal)
+			logToFileFunc("        %s", query)
+			logToFileFunc("        Checking %d pairs in this batch", len(tuples))
 		}
 
-		for rows.Next() {
-			var eventID uint32
-			var editionID uint32
-			if err := rows.Scan(&eventID, &editionID); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("failed to scan row: %w", err)
+		// Log the query with sample pairs for debugging duplicates
+		if i == 0 {
+			// Log first batch with details
+			sampleSize := 10
+			if len(tuples) < sampleSize {
+				sampleSize = len(tuples)
 			}
-			key := uint64(eventID)<<32 | uint64(editionID)
-			existingPairs[key] = true
+			sampleTuples := tuples[:sampleSize]
+			log.Printf("EXISTENCE CHECK QUERY [batch %d/%d, useFinal=%v]: SELECT event_id, edition_id FROM %s %s WHERE (event_id, edition_id) IN (%s%s) [checking %d pairs total]",
+				i/batchSize+1,
+				(len(pairs)+batchSize-1)/batchSize,
+				useFinal,
+				tableName,
+				finalKeyword,
+				strings.Join(sampleTuples, ", "),
+				func() string {
+					if len(tuples) > sampleSize {
+						return fmt.Sprintf(", ... (%d more)", len(tuples)-sampleSize)
+					}
+					return ""
+				}(),
+				len(tuples),
+			)
+		} else {
+			// Log concise summary for subsequent batches
+			log.Printf("EXISTENCE CHECK QUERY [batch %d/%d, useFinal=%v]: Checking %d pairs", i/batchSize+1, (len(pairs)+batchSize-1)/batchSize, useFinal, len(tuples))
 		}
-		rows.Close()
+
+		// Retry logic to account for merge delays
+		var rows driver.Rows
+		var err error
+		var foundCount int
+		var scanDuration time.Duration
+		maxRetries := 3
+		retryDelay := 2 * time.Second
+		querySuccessful := false
+
+		for retry := 0; retry < maxRetries; retry++ {
+			if retry > 0 {
+				// Wait for merge process to catch up
+				time.Sleep(retryDelay * time.Duration(retry))
+			}
+
+			// Log query start time for performance tracking
+			queryStartTime := time.Now()
+			if logToFileFunc != nil {
+				logToFileFunc("        Executing query [batch %d/%d]...", i/batchSize+1, (len(pairs)+batchSize-1)/batchSize)
+			}
+
+			// Create context with timeout - keep it alive during row scanning
+			// ClickHouse driver may execute query lazily during rows.Next()
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			rows, err = clickhouseConn.Query(ctx, query)
+
+			if err != nil {
+				cancel() // Cancel immediately on error
+				queryDuration := time.Since(queryStartTime)
+				if logToFileFunc != nil {
+					logToFileFunc("        Query failed after %v: %v", queryDuration, err)
+				}
+				if retry < maxRetries-1 {
+					log.Printf("WARNING: Failed to query existence (attempt %d/%d) after %v, retrying: %v", retry+1, maxRetries, queryDuration, err)
+				}
+				continue // Retry
+			}
+
+			// Query() returned successfully, but actual execution might happen during rows.Next()
+			// Time the row scanning phase (this is where the actual query execution happens)
+			scanStartTime := time.Now()
+			foundCount = 0
+			for rows.Next() {
+				var eventID uint32
+				var editionID uint32
+				if err := rows.Scan(&eventID, &editionID); err != nil {
+					cancel() // Cancel context before closing
+					rows.Close()
+					return nil, fmt.Errorf("failed to scan row: %w", err)
+				}
+				key := uint64(eventID)<<32 | uint64(editionID)
+				existingPairs[key] = true
+				foundCount++
+			}
+			scanDuration = time.Since(scanStartTime)
+			totalDuration := time.Since(queryStartTime)
+
+			// Check for errors during iteration
+			if err := rows.Err(); err != nil {
+				cancel()
+				rows.Close()
+				return nil, fmt.Errorf("error during row iteration: %w", err)
+			}
+
+			rows.Close()
+			cancel() // Cancel context after all operations complete
+
+			if logToFileFunc != nil {
+				logToFileFunc("        Query + Scan completed in %v (scan: %v, query setup: %v)", totalDuration, scanDuration, scanStartTime.Sub(queryStartTime))
+			}
+
+			// Successfully completed query and scanning
+			querySuccessful = true
+			break
+		}
+
+		if !querySuccessful {
+			return nil, fmt.Errorf("failed to query existence after %d retries: %w", maxRetries, err)
+		}
+
+		// Log results to retry log file if available
+		if logToFileFunc != nil {
+			logToFileFunc("        EXISTENCE CHECK RESULT [batch %d/%d]: Found %d/%d pairs already exist in database",
+				i/batchSize+1,
+				(len(pairs)+batchSize-1)/batchSize,
+				foundCount,
+				len(tuples),
+			)
+		}
+
+		// Query is already logged via log.Printf above - no need to log to file
+
+		// Log results for debugging - print summary for all batches
+		log.Printf("EXISTENCE CHECK RESULT [batch %d/%d]: Found %d/%d pairs already exist in database",
+			i/batchSize+1,
+			(len(pairs)+batchSize-1)/batchSize,
+			foundCount,
+			len(tuples),
+		)
+		if i == 0 {
+			// Log sample of found pairs (first 5)
+			if foundCount > 0 {
+				sampleCount := 0
+				samplePairs := make([]string, 0, 5)
+				for _, pair := range batch {
+					if sampleCount >= 5 {
+						break
+					}
+					key := uint64(pair.EventID)<<32 | uint64(pair.EditionID)
+					if existingPairs[key] {
+						samplePairs = append(samplePairs, fmt.Sprintf("(%d,%d)", pair.EventID, pair.EditionID))
+						sampleCount++
+					}
+				}
+				if len(samplePairs) > 0 {
+					sampleMsg := fmt.Sprintf("EXISTENCE CHECK SAMPLE: Found pairs: %s%s",
+						strings.Join(samplePairs, ", "),
+						func() string {
+							if foundCount > len(samplePairs) {
+								return fmt.Sprintf(" ... (%d more)", foundCount-len(samplePairs))
+							}
+							return ""
+						}(),
+					)
+					log.Print(sampleMsg)
+					if logToFileFunc != nil {
+						logToFileFunc("        %s", sampleMsg)
+					}
+				}
+			}
+		}
+
+		// Log batch completion
+		if logToFileFunc != nil {
+			logToFileFunc("        Batch %d/%d completed, continuing to next batch...", i/batchSize+1, (len(pairs)+batchSize-1)/batchSize)
+		}
+	}
+
+	if logToFileFunc != nil {
+		logToFileFunc("        All batches completed for existence check")
 	}
 
 	return existingPairs, nil
-}
-
-func checkExistenceByDuplicateColumns(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) (map[string]bool, error) {
-	if len(records) == 0 {
-		return make(map[string]bool), nil
-	}
-
-	tableName := shared.GetTableNameWithDB("allevent_temp", config)
-	existingRecords := make(map[string]bool)
-	batchSize := 1000
-
-	for i := 0; i < len(records); i += batchSize {
-		end := i + batchSize
-		if end > len(records) {
-			end = len(records)
-		}
-
-		batch := records[i:end]
-		tuples := make([]string, 0, len(batch))
-
-		for _, record := range batch {
-			eventID := shared.ConvertToUInt32(record["event_id"])
-			editionID := shared.ConvertToUInt32(record["edition_id"])
-			published := shared.ConvertToUInt32(record["published"])
-			status := shared.ConvertToUInt32(record["status"])
-			editionType := shared.ConvertToUInt32(record["edition_type"])
-
-			tuple := fmt.Sprintf("(%d, %d, %d, %d, %d)", published, status, editionType, eventID, editionID)
-			tuples = append(tuples, tuple)
-		}
-
-		if len(tuples) == 0 {
-			continue
-		}
-
-		query := fmt.Sprintf(
-			"SELECT toString(published), toString(status), toString(edition_type), toString(event_id), toString(edition_id) FROM %s WHERE (published, status, edition_type, event_id, edition_id) IN (%s)",
-			tableName,
-			strings.Join(tuples, ","),
-		)
-
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		rows, err := clickhouseConn.Query(ctx, query)
-		cancel()
-
-		if err != nil {
-			return nil, fmt.Errorf("failed to query existence by duplicate columns: %w", err)
-		}
-
-		for rows.Next() {
-			var publishedStr, statusStr, editionTypeStr, eventIDStr, editionIDStr string
-			if err := rows.Scan(&publishedStr, &statusStr, &editionTypeStr, &eventIDStr, &editionIDStr); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("failed to scan row: %w", err)
-			}
-			key := fmt.Sprintf("%s|%s|%s|%s|%s", publishedStr, statusStr, editionTypeStr, eventIDStr, editionIDStr)
-			existingRecords[key] = true
-		}
-		rows.Close()
-	}
-
-	return existingRecords, nil
 }
 
 func rebuildRecordsForFailedBatch(
@@ -4996,13 +5222,15 @@ func retryFailedBatchesAfterCompletion(
 			logToFile("Found %d batches in file", len(pairsByBatch))
 
 			fileProcessedSuccessfully := true
+			allFailedRecords := make([]map[string]interface{}, 0) // Collect all failures at file level
 
 			for batchNum, pairs := range pairsByBatch {
 				logToFile("")
 				logToFile("  → Processing batch %d with %d pairs...", batchNum, len(pairs))
 
 				logToFile("    Checking existence in allevent_temp for batch %d (%d pairs)...", batchNum, len(pairs))
-				existingPairs, err := checkExistenceInClickHouse(clickhouseConn, pairs, config)
+				// Use FINAL to ensure we see all data including unmerged parts
+				existingPairs, err := checkExistenceInClickHouseWithRetry(clickhouseConn, pairs, config, true, logToFile)
 				if err != nil {
 					logToFile("    ERROR: Failed to check existence for batch %d: %v", batchNum, err)
 					totalFailed += len(pairs)
@@ -5092,46 +5320,46 @@ func retryFailedBatchesAfterCompletion(
 
 					logToFile("        ✓ Rebuilt %d records", len(records))
 
-					logToFile("        Checking existence in allevent_temp using duplicate detection columns (published, status, edition_type, event_id, edition_id)...")
-					existingBeforeInsert, err := checkExistenceByDuplicateColumns(clickhouseConn, records, config)
+					// Convert records to pairs for existence check
+					checkPairs := make([]EventEditionPair, 0, len(records))
+					for _, record := range records {
+						eventID := shared.ConvertToUInt32(record["event_id"])
+						editionID := shared.ConvertToUInt32(record["edition_id"])
+						checkPairs = append(checkPairs, EventEditionPair{
+							EventID:   eventID,
+							EditionID: editionID,
+						})
+					}
+
+					logToFile("        Checking existence in allevent_temp for (event_id, edition_id) pairs...")
+					// Use FINAL to ensure we see all data including unmerged parts from concurrent inserts
+					existingBeforeInsert, err := checkExistenceInClickHouseWithRetry(clickhouseConn, checkPairs, config, true, logToFile)
 					if err != nil {
 						logToFile("        WARNING: Failed to check existence before insert: %v, proceeding with insert anyway", err)
 					} else {
 						stillMissingRecords := make([]map[string]interface{}, 0)
+						stillMissingPairs := make([]EventEditionPair, 0)
 						existingCount := 0
 
-						for _, record := range records {
+						for i, record := range records {
 							eventID := shared.ConvertToUInt32(record["event_id"])
 							editionID := shared.ConvertToUInt32(record["edition_id"])
-							published := shared.ConvertToUInt32(record["published"])
-							status := shared.ConvertToUInt32(record["status"])
-							editionType := shared.ConvertToUInt32(record["edition_type"])
-
-							key := fmt.Sprintf("%d|%d|%d|%d|%d", published, status, editionType, eventID, editionID)
+							key := uint64(eventID)<<32 | uint64(editionID)
 
 							if !existingBeforeInsert[key] {
 								stillMissingRecords = append(stillMissingRecords, record)
+								stillMissingPairs = append(stillMissingPairs, checkPairs[i])
 							} else {
 								existingCount++
 							}
 						}
 
-						stillMissingPairs := make([]EventEditionPair, 0, len(stillMissingRecords))
-						for _, record := range stillMissingRecords {
-							eventID := shared.ConvertToUInt32(record["event_id"])
-							editionID := shared.ConvertToUInt32(record["edition_id"])
-							stillMissingPairs = append(stillMissingPairs, EventEditionPair{
-								EventID:   eventID,
-								EditionID: editionID,
-							})
-						}
-
 						if existingCount > 0 {
-							logToFile("        Found %d/%d records already exist (using duplicate detection columns), will insert only %d missing records", existingCount, len(records), len(stillMissingRecords))
+							logToFile("        Found %d/%d (event_id, edition_id) pairs already exist, will insert only %d missing records", existingCount, len(records), len(stillMissingRecords))
 							totalSkipped += existingCount
 
 							if len(stillMissingRecords) == 0 {
-								logToFile("        ✓ All records already exist, skipping insert for this batch")
+								logToFile("        ✓ All (event_id, edition_id) pairs already exist, skipping insert for this batch")
 								if i+rebuildBatchSize < len(missingPairs) {
 									logToFile("        ⏳ Waiting %v before processing next batch...", backoffDuration)
 									time.Sleep(backoffDuration)
@@ -5143,53 +5371,256 @@ func retryFailedBatchesAfterCompletion(
 							records = stillMissingRecords
 							missingPairsBatch = stillMissingPairs
 						} else {
-							logToFile("        ✓ All %d records confirmed missing, proceeding with insert", len(records))
+							logToFile("        ✓ All %d (event_id, edition_id) pairs confirmed missing, proceeding with insert", len(records))
 						}
 					}
 
+					// Final check right before insert to catch any last-minute concurrent inserts
+					// This is critical to prevent duplicates from race conditions
+					// Use retry logic with increasing wait times to catch concurrent inserts
+					logToFile("        Final existence check right before insert (to catch concurrent inserts)...")
+
+					finalCheckPairs := make([]EventEditionPair, 0, len(records))
+					for _, record := range records {
+						eventID := shared.ConvertToUInt32(record["event_id"])
+						editionID := shared.ConvertToUInt32(record["edition_id"])
+						finalCheckPairs = append(finalCheckPairs, EventEditionPair{
+							EventID:   eventID,
+							EditionID: editionID,
+						})
+					}
+
+					// Retry final check with increasing wait times to catch concurrent inserts
+					maxFinalCheckRetries := 3
+					finalWaitTimes := []time.Duration{3 * time.Second, 5 * time.Second, 10 * time.Second}
+					var finalExisting map[uint64]bool
+					var finalErr error
+					previousFoundCount := 0
+
+					for retry := 0; retry < maxFinalCheckRetries; retry++ {
+						if retry > 0 {
+							waitTime := finalWaitTimes[retry-1]
+							logToFile("        ⏳ Waiting %v before final check retry %d/%d (previous check found %d existing)...", waitTime, retry, maxFinalCheckRetries, previousFoundCount)
+							time.Sleep(waitTime)
+						}
+
+						finalExisting, finalErr = checkExistenceInClickHouseWithRetry(clickhouseConn, finalCheckPairs, config, true, logToFile)
+						if finalErr != nil {
+							logToFile("        WARNING: Final check failed (attempt %d/%d): %v", retry+1, maxFinalCheckRetries, finalErr)
+							if retry == maxFinalCheckRetries-1 {
+								logToFile("        ⚠ Final check failed after all retries, proceeding with insert anyway")
+								break
+							}
+							continue
+						}
+
+						currentFoundCount := len(finalExisting)
+						if currentFoundCount == previousFoundCount && retry > 0 {
+							// No new records found in this check, stable state
+							logToFile("        ✓ Final check stable: Found %d existing records (same as previous check)", currentFoundCount)
+							break
+						}
+
+						if currentFoundCount > previousFoundCount {
+							logToFile("        ⚠ Final check found %d existing (was %d) - %d new records inserted concurrently, will retry",
+								currentFoundCount, previousFoundCount, currentFoundCount-previousFoundCount)
+							previousFoundCount = currentFoundCount
+							if retry < maxFinalCheckRetries-1 {
+								continue // Retry to see if more appear
+							}
+						} else {
+							// Found same or fewer, stable
+							break
+						}
+					}
+
+					if finalErr == nil && len(finalExisting) > 0 {
+						// Filter out records that now exist
+						filteredRecords := make([]map[string]interface{}, 0)
+						filteredCount := 0
+						concurrentPairs := make([]string, 0, 10) // For logging
+						for _, record := range records {
+							eventID := shared.ConvertToUInt32(record["event_id"])
+							editionID := shared.ConvertToUInt32(record["edition_id"])
+							key := uint64(eventID)<<32 | uint64(editionID)
+							if !finalExisting[key] {
+								filteredRecords = append(filteredRecords, record)
+							} else {
+								filteredCount++
+								if len(concurrentPairs) < 10 {
+									concurrentPairs = append(concurrentPairs, fmt.Sprintf("(%d,%d)", eventID, editionID))
+								}
+							}
+						}
+						if filteredCount > 0 {
+							logToFile("        ⚠ Found %d records that were inserted concurrently, filtering them out", filteredCount)
+							if len(concurrentPairs) > 0 {
+								logToFile("        Concurrent pairs filtered: %s%s",
+									strings.Join(concurrentPairs, ", "),
+									func() string {
+										if filteredCount > len(concurrentPairs) {
+											return fmt.Sprintf(" ... (%d more)", filteredCount-len(concurrentPairs))
+										}
+										return ""
+									}())
+							}
+							totalSkipped += filteredCount
+						}
+						if len(filteredRecords) == 0 {
+							logToFile("        ✓ All records were inserted concurrently, skipping insert")
+							continue
+						}
+						records = filteredRecords
+						logToFile("        After final check filtering: %d records remain to insert (filtered out %d concurrent)", len(records), filteredCount)
+					}
+
+					// Cooldown period: Wait 1 minute after existence check before inserting
+					// This allows ClickHouse to complete any pending merges and reduces memory pressure
+					logToFile("        ⏳ Cooldown: Waiting 1 minute after existence check before inserting...")
+					time.Sleep(1 * time.Minute)
+					logToFile("        ✓ Cooldown complete, proceeding with insert")
+
 					logToFile("        Inserting %d records...", len(records))
 
+					// Custom retry logic with 1-minute wait between retries
+					maxRetries := 3
 					attemptCount := 0
-					insertErr := shared.RetryWithBackoff(
-						func() error {
-							if attemptCount > 0 {
-								now := time.Now().Format("2006-01-02 15:04:05")
-								for j := range records {
-									records[j]["last_updated_at"] = now
-								}
-								logToFile("          Retrying insert for batch %d-%d (attempt %d)", i+1, end, attemptCount+1)
+					var insertErr error
+					for attemptCount < maxRetries {
+						if attemptCount > 0 {
+							now := time.Now().Format("2006-01-02 15:04:05")
+							for j := range records {
+								records[j]["last_updated_at"] = now
 							}
-							attemptCount++
-							return insertalleventDataChunk(clickhouseConn, records, config)
-						},
-						3, // 3 retries for transient errors
-					)
+							logToFile("          ⏳ Waiting 1 minute before retry %d/%d...", attemptCount+1, maxRetries)
+							time.Sleep(1 * time.Minute)
+							logToFile("          ✓ Wait complete, retrying insert for batch %d-%d (attempt %d)", i+1, end, attemptCount+1)
+						}
+						attemptCount++
+
+						// Progressive batch splitting: attempt 2 uses 1000, attempt 3 uses 500
+						if attemptCount == 2 && len(records) > 1000 {
+							// Second retry attempt: split into batches of 1000
+							logToFile("          Second retry attempt: Splitting %d records into batches of 1000...", len(records))
+							retryBatchSize := 1000
+							successfulBatches := 0
+							failedBatches := 0
+							totalSmallBatches := (len(records) + retryBatchSize - 1) / retryBatchSize
+
+							for batchStart := 0; batchStart < len(records); batchStart += retryBatchSize {
+								batchEnd := batchStart + retryBatchSize
+								if batchEnd > len(records) {
+									batchEnd = len(records)
+								}
+								smallBatch := records[batchStart:batchEnd]
+								batchNum := (batchStart / retryBatchSize) + 1
+								logToFile("          Inserting small batch %d/%d (%d records) on retry attempt 2...", batchNum, totalSmallBatches, len(smallBatch))
+								smallBatchErr := insertalleventDataChunk(clickhouseConn, smallBatch, config)
+								if smallBatchErr != nil {
+									failedBatches++
+									insertErr = smallBatchErr // Keep last error for reporting
+									logToFile("          ✗ Small batch %d/%d failed: %v", batchNum, totalSmallBatches, smallBatchErr)
+									// Continue with remaining batches even if one fails
+								} else {
+									successfulBatches++
+									logToFile("          ✓ Small batch %d/%d inserted successfully", batchNum, totalSmallBatches)
+								}
+								// Small delay between small batches to reduce memory pressure
+								if batchEnd < len(records) {
+									time.Sleep(5 * time.Second)
+								}
+							}
+
+							// If all small batches succeeded, clear error
+							if successfulBatches == totalSmallBatches {
+								insertErr = nil
+								logToFile("          ✓ All %d small batches inserted successfully on retry attempt 2", totalSmallBatches)
+							} else if successfulBatches > 0 {
+								logToFile("          ⚠ Partial success: %d/%d small batches succeeded, %d failed", successfulBatches, totalSmallBatches, failedBatches)
+								// Still mark as error so failed records are tracked
+							} else {
+								logToFile("          ✗ All %d small batches failed on retry attempt 2", totalSmallBatches)
+							}
+						} else if attemptCount == maxRetries && len(records) > 500 {
+							// Last retry attempt: split into smaller batches of 500
+							logToFile("          Last retry attempt: Splitting %d records into batches of 500...", len(records))
+							lastRetryBatchSize := 500
+							successfulBatches := 0
+							failedBatches := 0
+							totalSmallBatches := (len(records) + lastRetryBatchSize - 1) / lastRetryBatchSize
+
+							for batchStart := 0; batchStart < len(records); batchStart += lastRetryBatchSize {
+								batchEnd := batchStart + lastRetryBatchSize
+								if batchEnd > len(records) {
+									batchEnd = len(records)
+								}
+								smallBatch := records[batchStart:batchEnd]
+								batchNum := (batchStart / lastRetryBatchSize) + 1
+								logToFile("          Inserting small batch %d/%d (%d records) on final retry attempt...", batchNum, totalSmallBatches, len(smallBatch))
+								smallBatchErr := insertalleventDataChunk(clickhouseConn, smallBatch, config)
+								if smallBatchErr != nil {
+									failedBatches++
+									insertErr = smallBatchErr // Keep last error for reporting
+									logToFile("          ✗ Small batch %d/%d failed: %v", batchNum, totalSmallBatches, smallBatchErr)
+									// Continue with remaining batches even if one fails
+								} else {
+									successfulBatches++
+									logToFile("          ✓ Small batch %d/%d inserted successfully", batchNum, totalSmallBatches)
+								}
+								// Small delay between small batches to reduce memory pressure
+								if batchEnd < len(records) {
+									time.Sleep(5 * time.Second)
+								}
+							}
+
+							// If all small batches succeeded, clear error
+							if successfulBatches == totalSmallBatches {
+								insertErr = nil
+								logToFile("          ✓ All %d small batches inserted successfully on final retry", totalSmallBatches)
+							} else if successfulBatches > 0 {
+								logToFile("          ⚠ Partial success: %d/%d small batches succeeded, %d failed", successfulBatches, totalSmallBatches, failedBatches)
+								// Still mark as error so failed records are tracked
+							} else {
+								logToFile("          ✗ All %d small batches failed on final retry attempt", totalSmallBatches)
+							}
+						} else {
+							// First attempt: insert all records at once
+							insertErr = insertalleventDataChunk(clickhouseConn, records, config)
+						}
+
+						if insertErr == nil {
+							break // Success, exit retry loop
+						}
+						if attemptCount < maxRetries {
+							logToFile("          ✗ Insert attempt %d/%d failed: %v", attemptCount, maxRetries, insertErr)
+						}
+					}
 
 					if insertErr != nil {
 						logToFile("        ✗ ERROR: Failed to insert batch %d-%d after retries: %v", i+1, end, insertErr)
 						insertSuccess = false
 						totalFailed += len(records)
 
+						// Collect failures for writing back to CSV at the end (prevents CSV accumulation)
 						if isMemoryLimitError(insertErr) {
-							logToFile("          Memory error detected, writing back to CSV for retry")
-							chunkNum := extractChunkNumFromFilename(file)
-							if chunkNum >= 0 {
-								retryBatchNum := -batchNum*10000 - i
-								if writeErr := writeFailedBatchToCSV(records, retryBatchNum, chunkNum); writeErr != nil {
-									logToFile("          ERROR: Failed to write failed batch to CSV: %v", writeErr)
-								} else {
-									logToFile("          ✓ Successfully wrote failed batch %d-%d back to CSV (batchNum: %d)", i+1, end, retryBatchNum)
-								}
-							}
+							logToFile("          Memory error detected, will write back to CSV after processing all batches")
+							failedSubBatches = append(failedSubBatches, records...)
+						} else {
+							// For non-memory errors, also collect for retry
+							failedSubBatches = append(failedSubBatches, records...)
 						}
 
-						failedSubBatches = append(failedSubBatches, records...)
 						fileProcessedSuccessfully = false
 						continue
 					}
 
 					logToFile("        ✓ Successfully inserted batch %d-%d (%d records)", i+1, end, len(records))
 					totalRetried += len(records)
+
+					// Wait for ClickHouse merge process to make inserted data visible
+					// This prevents false negatives when checking for duplicates
+					logToFile("        ⏳ Waiting 5 seconds for ClickHouse merge process to make data visible...")
+					time.Sleep(5 * time.Second)
 
 					logToFile("        Double-checking: Verifying inserted records exist in allevent_temp...")
 					verifyPairs := make([]EventEditionPair, 0, len(records))
@@ -5205,7 +5636,8 @@ func retryFailedBatchesAfterCompletion(
 					}
 
 					if len(verifyPairs) > 0 {
-						existingAfterInsert, err := checkExistenceInClickHouse(clickhouseConn, verifyPairs, config)
+						// Use FINAL to ensure we see the data we just inserted (may be in unmerged parts)
+						existingAfterInsert, err := checkExistenceInClickHouseWithRetry(clickhouseConn, verifyPairs, config, true, logToFile)
 						if err != nil {
 							logToFile("        WARNING: Failed to verify inserted records: %v", err)
 						} else {
@@ -5284,11 +5716,37 @@ func retryFailedBatchesAfterCompletion(
 					}
 				}
 
+				// Collect failures from this batch
+				if len(failedSubBatches) > 0 {
+					allFailedRecords = append(allFailedRecords, failedSubBatches...)
+				}
+
 				if insertSuccess {
 					logToFile("  ✓ Successfully processed batch %d", batchNum)
 				} else if len(failedSubBatches) > 0 {
 					logToFile("  ⚠ Batch %d partially failed - %d records failed to insert", batchNum, len(failedSubBatches))
 				}
+			}
+
+			// Write all failures back to CSV at the end (clearing CSV first to prevent accumulation)
+			if len(allFailedRecords) > 0 {
+				chunkNum := extractChunkNumFromFilename(file)
+				if chunkNum >= 0 {
+					logToFile("")
+					logToFile("  Writing %d failed records back to CSV (clearing file first to prevent accumulation)...", len(allFailedRecords))
+					// Clear the CSV file by removing it, then write only new failures
+					if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+						logToFile("  WARNING: Failed to clear CSV file %s: %v", file, err)
+					}
+					// Write all failures with a single batch number for the next retry
+					retryBatchNum := 1
+					if writeErr := writeFailedBatchToCSV(allFailedRecords, retryBatchNum, chunkNum); writeErr != nil {
+						logToFile("  ERROR: Failed to write failed records to CSV: %v", writeErr)
+					} else {
+						logToFile("  ✓ Successfully wrote %d failed records to CSV (file cleared and rewritten)", len(allFailedRecords))
+					}
+				}
+				fileProcessedSuccessfully = false
 			}
 
 			if fileProcessedSuccessfully {
