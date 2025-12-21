@@ -170,6 +170,14 @@ func SafeConvertToNullableUInt8(value interface{}) *uint8 {
 		}
 		return nil
 	}
+	// Handle float64 (JSON unmarshals numbers as float64)
+	if num, ok := value.(float64); ok {
+		if num >= 0 && num <= 255 {
+			result := uint8(num)
+			return &result
+		}
+		return nil
+	}
 
 	// Handle string conversion
 	str := SafeConvertToString(value)
@@ -266,6 +274,13 @@ func SafeConvertToUInt32(value interface{}) uint32 {
 	if num, ok := value.(uint64); ok {
 		return uint32(num)
 	}
+	// Handle float64 (JSON unmarshals numbers as float64)
+	if num, ok := value.(float64); ok {
+		if num >= 0 && num <= float64(^uint32(0)) {
+			return uint32(num)
+		}
+		return 0
+	}
 	return 0
 }
 
@@ -289,6 +304,13 @@ func SafeConvertToUInt16(value interface{}) uint16 {
 		return uint16(num)
 	}
 
+	// Handle float64 (JSON unmarshals numbers as float64)
+	if num, ok := value.(float64); ok {
+		if num >= 0 && num <= float64(^uint16(0)) {
+			return uint16(num)
+		}
+		return 0
+	}
 	if str, ok := value.(string); ok {
 		if i, err := strconv.ParseUint(str, 10, 16); err == nil {
 			return uint16(i)
@@ -324,6 +346,13 @@ func SafeConvertToInt8(value interface{}) int8 {
 	if num, ok := value.(uint64); ok {
 		return int8(num)
 	}
+	// Handle float64 (JSON unmarshals numbers as float64)
+	if num, ok := value.(float64); ok {
+		if num >= -128 && num <= 127 {
+			return int8(num)
+		}
+		return 0
+	}
 	return 0
 }
 
@@ -358,6 +387,14 @@ func SafeConvertToNullableInt8(value interface{}) *int8 {
 	}
 	if num, ok := value.(uint8); ok {
 		if num <= 127 {
+			result := int8(num)
+			return &result
+		}
+		return nil
+	}
+	// Handle float64 (JSON unmarshals numbers as float64)
+	if num, ok := value.(float64); ok {
+		if num >= -128 && num <= 127 {
 			result := int8(num)
 			return &result
 		}
@@ -410,6 +447,14 @@ func SafeConvertToNullableInt32(value interface{}) *int32 {
 		}
 		return nil
 	}
+	// Handle float64 (JSON unmarshals numbers as float64)
+	if num, ok := value.(float64); ok {
+		if num >= -2147483648 && num <= 2147483647 {
+			i32 := int32(num)
+			return &i32
+		}
+		return nil
+	}
 	str := SafeConvertToString(value)
 	if str == "" {
 		return nil
@@ -439,6 +484,14 @@ func SafeConvertToNullableUInt32(value interface{}) *uint32 {
 	if num, ok := value.(uint64); ok {
 		u32 := uint32(num)
 		return &u32
+	}
+	// Handle float64 (JSON unmarshals numbers as float64)
+	if num, ok := value.(float64); ok {
+		if num >= 0 && num <= float64(^uint32(0)) {
+			u32 := uint32(num)
+			return &u32
+		}
+		return nil
 	}
 	return nil
 }

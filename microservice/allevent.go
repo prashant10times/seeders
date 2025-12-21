@@ -3,7 +3,7 @@ package microservice
 import (
 	"context"
 	"database/sql"
-	"encoding/csv"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -251,108 +251,264 @@ func loadEventTypeIDsFromDB(clickhouseConn driver.Conn, config shared.Config) (m
 	return eventTypeMap, nil
 }
 
+func decodeBase64Date(value interface{}) string {
+	str := shared.SafeConvertToString(value)
+	if str == "" {
+		return "1970-01-01"
+	}
+	decoded, err := base64.StdEncoding.DecodeString(str)
+	if err == nil {
+		decodedStr := string(decoded)
+		if matched, _ := regexp.MatchString(`^\d{4}-\d{2}-\d{2}$`, decodedStr); matched {
+			return decodedStr
+		}
+		return decodedStr
+	}
+	return str
+}
+
+func decodeBase64NullableDate(value interface{}) *string {
+	if value == nil {
+		return nil
+	}
+	str := shared.SafeConvertToString(value)
+	if str == "" {
+		return nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(str)
+	if err == nil {
+		decodedStr := string(decoded)
+		if matched, _ := regexp.MatchString(`^\d{4}-\d{2}-\d{2}$`, decodedStr); matched {
+			return &decodedStr
+		}
+		return &decodedStr
+	}
+	return &str
+}
+
+func decodeBase64DateTime(value interface{}) string {
+	str := shared.SafeConvertToString(value)
+	if str == "" {
+		return "1970-01-01 00:00:00"
+	}
+	decoded, err := base64.StdEncoding.DecodeString(str)
+	if err == nil {
+		decodedStr := string(decoded)
+		if matched, _ := regexp.MatchString(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$`, decodedStr); matched {
+			return decodedStr
+		}
+		return decodedStr
+	}
+	return str
+}
+
+func decodeBase64StringIfNeeded(value interface{}) string {
+	str := shared.SafeConvertToString(value)
+	if str == "" {
+		return ""
+	}
+	if len(str) < 4 || (!strings.HasSuffix(str, "=") && !strings.HasSuffix(str, "==")) {
+		return str
+	}
+	decoded, err := base64.StdEncoding.DecodeString(str)
+	if err == nil {
+		decodedStr := string(decoded)
+		if len(decodedStr) > 0 {
+			printableCount := 0
+			for _, r := range decodedStr {
+				if r >= 32 && r <= 126 {
+					printableCount++
+				}
+			}
+			if len(decodedStr) > 0 && float64(printableCount)/float64(len(decodedStr)) >= 0.8 {
+				return decodedStr
+			}
+		}
+	}
+	return str
+}
+
+func decodeBase64NullableStringIfNeeded(value interface{}) *string {
+	if value == nil {
+		return nil
+	}
+	str := shared.SafeConvertToString(value)
+	if str == "" {
+		return nil
+	}
+	if len(str) < 4 || (!strings.HasSuffix(str, "=") && !strings.HasSuffix(str, "==")) {
+		return &str
+	}
+	decoded, err := base64.StdEncoding.DecodeString(str)
+	if err == nil {
+		decodedStr := string(decoded)
+		if len(decodedStr) > 0 {
+			printableCount := 0
+			for _, r := range decodedStr {
+				if r >= 32 && r <= 126 {
+					printableCount++
+				}
+			}
+			if float64(printableCount)/float64(len(decodedStr)) >= 0.8 {
+				return &decodedStr
+			}
+		}
+	}
+	return &str
+}
+
+func decodeValueWithBase64Support(value interface{}, fieldType string) interface{} {
+	if value == nil {
+		return nil
+	}
+
+	str, ok := value.(string)
+	if !ok {
+		str = shared.SafeConvertToString(value)
+		if str == "" {
+			return value
+		}
+	}
+
+	switch fieldType {
+	case "date":
+		return decodeBase64Date(value)
+	case "datetime":
+		return decodeBase64DateTime(value)
+	case "nullable_date":
+		return decodeBase64NullableDate(value)
+	}
+
+	if len(str) >= 4 && (strings.HasSuffix(str, "=") || strings.HasSuffix(str, "==")) {
+		decoded, err := base64.StdEncoding.DecodeString(str)
+		if err == nil {
+			decodedStr := string(decoded)
+			if len(decodedStr) > 0 {
+				printableCount := 0
+				for _, r := range decodedStr {
+					if r >= 32 && r <= 126 {
+						printableCount++
+					}
+				}
+				if float64(printableCount)/float64(len(decodedStr)) >= 0.8 {
+					return decodedStr
+				}
+			}
+		}
+	}
+
+	return value
+}
+
 // converts a map to alleventRecord struct
 func convertToalleventRecord(record map[string]interface{}) alleventRecord {
+	decodeStr := func(key string) string {
+		val := decodeValueWithBase64Support(record[key], "string")
+		return shared.SafeConvertToString(val)
+	}
+	decodeNullableStr := func(key string) *string {
+		val := decodeValueWithBase64Support(record[key], "string")
+		return shared.SafeConvertToNullableString(val)
+	}
+
 	return alleventRecord{
 		EventID:            shared.SafeConvertToUInt32(record["event_id"]),
-		EventUUID:          shared.SafeConvertToString(record["event_uuid"]),
-		EventName:          shared.SafeConvertToString(record["event_name"]),
-		EventAbbrName:      shared.SafeConvertToNullableString(record["event_abbr_name"]),
-		EventDescription:   shared.SafeConvertToNullableString(record["event_description"]),
-		EventPunchline:     shared.SafeConvertToNullableString(record["event_punchline"]),
-		StartDate:          shared.SafeConvertToDateString(record["start_date"]),
-		EndDate:            shared.SafeConvertToDateString(record["end_date"]),
+		EventUUID:          decodeStr("event_uuid"),
+		EventName:          decodeStr("event_name"),
+		EventAbbrName:      decodeNullableStr("event_abbr_name"),
+		EventDescription:   decodeNullableStr("event_description"),
+		EventPunchline:     decodeNullableStr("event_punchline"),
+		StartDate:          decodeBase64Date(record["start_date"]),
+		EndDate:            decodeBase64Date(record["end_date"]),
 		EditionID:          shared.SafeConvertToUInt32(record["edition_id"]),
-		EditionCountry:     strings.ToUpper(shared.SafeConvertToString(record["edition_country"])),
+		EditionCountry:     strings.ToUpper(decodeStr("edition_country")),
 		EditionCity:        shared.SafeConvertToUInt32(record["edition_city"]),
-		EditionCityName:    shared.SafeConvertToString(record["edition_city_name"]),
+		EditionCityName:    decodeStr("edition_city_name"),
 		EditionCityStateID: shared.SafeConvertToNullableUInt32(record["edition_city_state_id"]),
-		EditionCityState:   shared.SafeConvertToString(record["edition_city_state"]),
+		EditionCityState:   decodeStr("edition_city_state"),
 		EditionCityLat:     shared.SafeConvertToFloat64(record["edition_city_lat"]),
 		EditionCityLong:    shared.SafeConvertToFloat64(record["edition_city_long"]),
 		CompanyID:          shared.SafeConvertToNullableUInt32(record["company_id"]),
-		CompanyUUID:        shared.SafeConvertToString(record["company_uuid"]),
-		CompanyName:        shared.SafeConvertToNullableString(record["company_name"]),
-		CompanyDomain:      shared.SafeConvertToNullableString(record["company_domain"]),
-		CompanyWebsite:     shared.SafeConvertToNullableString(record["company_website"]),
-		CompanyLogoUrl:     shared.SafeConvertToNullableString(record["companyLogoUrl"]),
-		CompanyCountry:     shared.ToUpperNullableString(shared.SafeConvertToNullableString(record["company_country"])),
-		CompanyState:       shared.SafeConvertToNullableString(record["company_state"]),
+		CompanyUUID:        decodeStr("company_uuid"),
+		CompanyName:        decodeNullableStr("company_name"),
+		CompanyDomain:      decodeNullableStr("company_domain"),
+		CompanyWebsite:     decodeNullableStr("company_website"),
+		CompanyLogoUrl:     decodeNullableStr("companyLogoUrl"),
+		CompanyCountry:     shared.ToUpperNullableString(decodeNullableStr("company_country")),
+		CompanyState:       decodeNullableStr("company_state"),
 		CompanyCity:        shared.SafeConvertToNullableUInt32(record["company_city"]),
-		CompanyCityName: func() *string {
-			if val, ok := record["company_city_name"].(*string); ok {
-				return val
+		CompanyCityName:    decodeNullableStr("company_city_name"),
+		CompanyAddress:     decodeNullableStr("company_address"),
+		VenueID:            shared.SafeConvertToNullableUInt32(record["venue_id"]),
+		VenueName:          decodeNullableStr("venue_name"),
+		VenueCountry:       shared.ToUpperNullableString(decodeNullableStr("venue_country")),
+		VenueCity:          shared.SafeConvertToNullableUInt32(record["venue_city"]),
+		VenueCityName:      decodeNullableStr("venue_city_name"),
+		VenueLat:           shared.SafeConvertToNullableFloat64(record["venue_lat"]),
+		VenueLong:          shared.SafeConvertToNullableFloat64(record["venue_long"]),
+		Published:          shared.SafeConvertToInt8(record["published"]),
+		Status: func() string {
+			status := shared.SafeConvertToStatusString(record["status"])
+			// FixedString(1) requires exactly 1 character - handle edge cases
+			status = strings.TrimSpace(status)
+			if status == "" || status == "null" || len(status) == 0 {
+				return "A" // Default as per schema
 			}
-			return nil
+			// Take only first character if longer than 1
+			if len(status) > 1 {
+				return string(status[0])
+			}
+			return status
 		}(),
-		CompanyAddress: shared.SafeConvertToNullableString(record["company_address"]),
-		VenueID:        shared.SafeConvertToNullableUInt32(record["venue_id"]),
-		VenueName:      shared.SafeConvertToNullableString(record["venue_name"]),
-		VenueCountry:   shared.ToUpperNullableString(shared.SafeConvertToNullableString(record["venue_country"])),
-		VenueCity:      shared.SafeConvertToNullableUInt32(record["venue_city"]),
-		VenueCityName: func() *string {
-			if val, ok := record["venue_city_name"].(*string); ok {
-				return val
+		EditionsAudianceType: func() uint16 {
+			decoded := decodeStr("editions_audiance_type")
+			if decoded == "" {
+				return 0
 			}
-			return nil
+			// Try to parse as uint16
+			if val, err := strconv.ParseUint(decoded, 10, 16); err == nil {
+				return uint16(val)
+			}
+			return shared.SafeConvertToUInt16(record["editions_audiance_type"])
 		}(),
-		VenueLat:             shared.SafeConvertToNullableFloat64(record["venue_lat"]),
-		VenueLong:            shared.SafeConvertToNullableFloat64(record["venue_long"]),
-		Published:            shared.SafeConvertToInt8(record["published"]),
-		Status:               shared.SafeConvertToStatusString(record["status"]),
-		EditionsAudianceType: shared.SafeConvertToUInt16(record["editions_audiance_type"]),
-		EditionFunctionality: shared.SafeConvertToString(record["edition_functionality"]),
-		EditionWebsite:       shared.SafeConvertToNullableString(record["edition_website"]),
-		EditionDomain:        shared.SafeConvertToNullableString(record["edition_domain"]),
-		EditionType:          *shared.SafeConvertToNullableString(record["edition_type"]),
-		EventEditions:        shared.SafeConvertToNullableUInt32(record["event_editions"]),
-		EventFollowers:       shared.SafeConvertToNullableUInt32(record["event_followers"]),
-		EditionFollowers:     shared.SafeConvertToNullableUInt32(record["edition_followers"]),
-		EventExhibitor:       shared.SafeConvertToNullableUInt32(record["event_exhibitor"]),
-		EditionExhibitor:     shared.SafeConvertToNullableUInt32(record["edition_exhibitor"]),
-		ExhibitorsUpperBound: shared.SafeConvertToNullableUInt32(record["exhibitors_upper_bound"]),
-		ExhibitorsLowerBound: shared.SafeConvertToNullableUInt32(record["exhibitors_lower_bound"]),
-		ExhibitorsMean:       shared.SafeConvertToNullableUInt32(record["exhibitors_mean"]),
-		EventSponsor:         shared.SafeConvertToNullableUInt32(record["event_sponsor"]),
-		EditionSponsor:       shared.SafeConvertToNullableUInt32(record["edition_sponsor"]),
-		EventSpeaker:         shared.SafeConvertToNullableUInt32(record["event_speaker"]),
-		EditionSpeaker:       shared.SafeConvertToNullableUInt32(record["edition_speaker"]),
-		EventCreated:         shared.SafeConvertToDateTimeString(record["event_created"]),
-		EventUpdated:         shared.SafeConvertToDateTimeString(record["event_updated"]),
-		EditionCreated:       shared.SafeConvertToDateTimeString(record["edition_created"]),
-		EventHybrid:          shared.SafeConvertToNullableUInt8(record["event_hybrid"]),
-		EventFormat:          shared.SafeConvertToNullableString(record["event_format"]),
-		IsBranded: func() *uint32 {
-			if val, ok := record["isBranded"].(*uint32); ok {
-				return val
-			}
-			return nil
-		}(),
-		EventBrandId:           shared.SafeConvertToNullableString(record["eventBrandId"]),
-		EventSeriesId:          shared.SafeConvertToNullableString(record["eventSeriesId"]),
-		Maturity:               shared.SafeConvertToNullableString(record["maturity"]),
-		EventPricing:           shared.SafeConvertToNullableString(record["event_pricing"]),
-		EventLogo:              shared.SafeConvertToNullableString(record["event_logo"]),
-		EventEstimatedVisitors: shared.SafeConvertToNullableString(record["event_estimatedVisitors"]),
-		EstimatedVisitorsMean: func() *uint32 {
-			val := record["estimatedVisitorsMean"]
-			if val == nil {
-				return nil
-			}
-			if ptr, ok := val.(*uint32); ok {
-				return ptr
-			}
-			return shared.SafeConvertToNullableUInt32(val)
-		}(),
-		EstimatedSize:                   shared.SafeConvertToNullableString(record["estimatedSize"]),
-		EventFrequency:                  shared.SafeConvertToNullableString(record["event_frequency"]),
+		EditionFunctionality:            decodeStr("edition_functionality"),
+		EditionWebsite:                  decodeNullableStr("edition_website"),
+		EditionDomain:                   decodeNullableStr("edition_domain"),
+		EditionType:                     *shared.SafeConvertToNullableString(record["edition_type"]),
+		EventEditions:                   shared.SafeConvertToNullableUInt32(record["event_editions"]),
+		EventFollowers:                  shared.SafeConvertToNullableUInt32(record["event_followers"]),
+		EditionFollowers:                shared.SafeConvertToNullableUInt32(record["edition_followers"]),
+		EventExhibitor:                  shared.SafeConvertToNullableUInt32(record["event_exhibitor"]),
+		EditionExhibitor:                shared.SafeConvertToNullableUInt32(record["edition_exhibitor"]),
+		ExhibitorsUpperBound:            shared.SafeConvertToNullableUInt32(record["exhibitors_upper_bound"]),
+		ExhibitorsLowerBound:            shared.SafeConvertToNullableUInt32(record["exhibitors_lower_bound"]),
+		ExhibitorsMean:                  shared.SafeConvertToNullableUInt32(record["exhibitors_mean"]),
+		EventSponsor:                    shared.SafeConvertToNullableUInt32(record["event_sponsor"]),
+		EditionSponsor:                  shared.SafeConvertToNullableUInt32(record["edition_sponsor"]),
+		EventSpeaker:                    shared.SafeConvertToNullableUInt32(record["event_speaker"]),
+		EditionSpeaker:                  shared.SafeConvertToNullableUInt32(record["edition_speaker"]),
+		EventCreated:                    decodeBase64DateTime(record["event_created"]),
+		EventUpdated:                    decodeBase64DateTime(record["event_updated"]),
+		EditionCreated:                  decodeBase64DateTime(record["edition_created"]),
+		EventHybrid:                     shared.SafeConvertToNullableUInt8(record["event_hybrid"]),
+		EventFormat:                     decodeNullableStr("event_format"),
+		IsBranded:                       shared.SafeConvertToNullableUInt32(record["isBranded"]),
+		EventBrandId:                    decodeNullableStr("eventBrandId"),
+		EventSeriesId:                   decodeNullableStr("eventSeriesId"),
+		Maturity:                        decodeNullableStr("maturity"),
+		EventPricing:                    decodeNullableStr("event_pricing"),
+		EventLogo:                       decodeNullableStr("event_logo"),
+		EventEstimatedVisitors:          decodeNullableStr("event_estimatedVisitors"),
+		EstimatedVisitorsMean:           shared.SafeConvertToNullableUInt32(record["estimatedVisitorsMean"]),
+		EstimatedSize:                   decodeNullableStr("estimatedSize"),
+		EventFrequency:                  decodeNullableStr("event_frequency"),
 		ImpactScore:                     shared.SafeConvertToNullableUInt32(record["impactScore"]),
 		InboundScore:                    shared.SafeConvertToNullableUInt32(record["inboundScore"]),
 		InternationalScore:              shared.SafeConvertToNullableUInt32(record["internationalScore"]),
 		RepeatSentimentChangePercentage: shared.SafeConvertToNullableFloat64(record["repeatSentimentChangePercentage"]),
 		RepeatSentiment:                 shared.SafeConvertToNullableUInt32(record["repeatSentiment"]),
 		ReputationChangePercentage:      shared.SafeConvertToNullableFloat64(record["reputationChangePercentage"]),
-		AudienceZone:                    shared.SafeConvertToNullableString(record["audienceZone"]),
+		AudienceZone:                    decodeNullableStr("audienceZone"),
 		InboundPercentage:               shared.SafeConvertToUInt32(record["inboundPercentage"]),
 		InboundAttendance:               shared.SafeConvertToUInt32(record["inboundAttendance"]),
 		InternationalPercentage:         shared.SafeConvertToUInt32(record["internationalPercentage"]),
@@ -363,21 +519,21 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EventEconomicUtilities:          shared.SafeConvertToNullableFloat64(record["event_economic_Utilities"]),
 		EventEconomicFlights:            shared.SafeConvertToNullableFloat64(record["event_economic_flights"]),
 		EventEconomicValue:              shared.SafeConvertToNullableFloat64(record["event_economic_value"]),
-		EventEconomicDayWiseImpact:      shared.SafeConvertToString(record["event_economic_dayWiseEconomicImpact"]),
-		EventEconomicBreakdown:          shared.SafeConvertToString(record["event_economic_breakdown"]),
-		EventEconomicImpact:             shared.SafeConvertToString(record["event_economic_impact"]),
+		EventEconomicDayWiseImpact:      decodeStr("event_economic_dayWiseEconomicImpact"),
+		EventEconomicBreakdown:          decodeStr("event_economic_breakdown"),
+		EventEconomicImpact:             decodeStr("event_economic_impact"),
 		EventAvgRating:                  shared.SafeConvertFloat64ToDecimalString(record["event_avgRating"]),
-		TenTimesEventPageUrl:            shared.SafeConvertToNullableString(record["10timesEventPageUrl"]),
+		TenTimesEventPageUrl:            decodeNullableStr("10timesEventPageUrl"),
 		Keywords:                        shared.ConvertToStringArray(record["keywords"]),
 		Tickets:                         shared.ConvertToStringArray(record["tickets"]),
 		Timings:                         shared.ConvertToStringArray(record["timings"]),
 		EventScore:                      shared.SafeConvertToNullableInt32(record["event_score"]),
 		YoYGrowth:                       shared.SafeConvertToNullableUInt32(record["yoyGrowth"]),
-		FutureExpectedStartDate:         shared.SafeConvertToNullableString(record["futureExpexctedStartDate"]),
-		FutureExpectedEndDate:           shared.SafeConvertToNullableString(record["futureExpexctedEndDate"]),
-		PrimaryEventType:                shared.SafeConvertToNullableString(record["PrimaryEventType"]),
-		VerifiedOn:                      shared.SafeConvertToNullableString(record["verifiedOn"]),
-		LastUpdatedAt:                   shared.SafeConvertToDateTimeString(record["last_updated_at"]),
+		FutureExpectedStartDate:         decodeBase64NullableDate(record["futureExpexctedStartDate"]),
+		FutureExpectedEndDate:           decodeBase64NullableDate(record["futureExpexctedEndDate"]),
+		PrimaryEventType:                decodeNullableStr("PrimaryEventType"),
+		VerifiedOn:                      decodeBase64NullableDate(record["verifiedOn"]),
+		LastUpdatedAt:                   decodeBase64DateTime(record["last_updated_at"]),
 		Version:                         shared.SafeConvertToUInt32(record["version"]),
 	}
 }
@@ -1702,10 +1858,7 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 	log.Println("allevent processing completed!")
 
 	log.Println("=== Checking for failed batches to retry ===")
-	log.Println("⏳ Waiting 30 seconds before starting retry phase (to allow memory to clear)...")
-	time.Sleep(30 * time.Second)
-	log.Println("✓ Wait complete, starting retry phase")
-	retryErr := retryFailedBatchesAfterCompletion(mysqlDB, clickhouseConn, esClient, config)
+	retryErr := retryFailedBatchesAfterCompletion(clickhouseConn, config)
 	if retryErr != nil {
 		log.Printf("ERROR: Failed to retry failed batches: %v", retryErr)
 		log.Printf("⚠️  WARNING: Some batches still failed - optimization will be skipped")
@@ -1715,7 +1868,7 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 
 func HasRemainingFailedBatches() bool {
 	dir := "failed_batches"
-	files, err := filepath.Glob(filepath.Join(dir, "failed_batches_chunk_*.csv"))
+	files, err := filepath.Glob(filepath.Join(dir, "failed_batches_chunk_*_batch_*.json"))
 	if err != nil {
 		log.Printf("WARNING: Failed to check for remaining failed batch files: %v", err)
 		return false
@@ -2136,7 +2289,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					insertErr := insertalleventDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers, config)
 
 					if insertErr != nil {
-						log.Printf("allevent chunk %d: ClickHouse insertion failed for batch %d, checking which records already exist before writing to CSV: %v", chunkNum, batchNumber, insertErr)
+						log.Printf("allevent chunk %d: ClickHouse insertion failed for batch %d, checking which records already exist before writing to JSON: %v", chunkNum, batchNumber, insertErr)
 
 						// Convert records to pairs for existence check
 						checkPairs := make([]EventEditionPair, 0, len(clickHouseRecords))
@@ -2153,12 +2306,12 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 						// Use FINAL=true to see unmerged records (critical: some records may have been inserted but not merged yet)
 						existingPairs, err := checkExistenceInClickHouseWithRetry(clickhouseConn, checkPairs, config, true, nil)
 						if err != nil {
-							log.Printf("allevent chunk %d: WARNING - Failed to check existence before writing to CSV: %v, writing all records to CSV", chunkNum, err)
-							// If check fails, write all records to CSV (safer to retry than skip)
-							if err := writeFailedBatchToCSV(clickHouseRecords, batchNumber, chunkNum); err != nil {
-								log.Printf("ERROR: Failed to write failed batch to CSV: %v", err)
+							log.Printf("allevent chunk %d: WARNING - Failed to check existence before writing to JSON: %v, writing all records", chunkNum, err)
+							// If check fails, write all records (safer to retry than skip)
+							if err := writeFailedBatchToJSON(clickHouseRecords, batchNumber, chunkNum); err != nil {
+								log.Printf("ERROR: Failed to write failed batch to JSON: %v", err)
 							} else {
-								log.Printf("allevent chunk %d: Successfully wrote batch %d to CSV for retry (existence check failed, wrote all %d records)", chunkNum, batchNumber, len(clickHouseRecords))
+								log.Printf("allevent chunk %d: Successfully wrote batch %d to JSON for retry (existence check failed, wrote all %d records)", chunkNum, batchNumber, len(clickHouseRecords))
 							}
 						} else {
 							// Filter out records that already exist
@@ -2176,17 +2329,18 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							}
 
 							if existingCount > 0 {
-								log.Printf("allevent chunk %d: Found %d/%d records already exist in database, will write only %d missing records to CSV", chunkNum, existingCount, len(clickHouseRecords), len(missingRecords))
+								log.Printf("allevent chunk %d: Found %d/%d records already exist in database, will write only %d missing records", chunkNum, existingCount, len(clickHouseRecords), len(missingRecords))
 							}
 
 							if len(missingRecords) > 0 {
-								if err := writeFailedBatchToCSV(missingRecords, batchNumber, chunkNum); err != nil {
-									log.Printf("ERROR: Failed to write failed batch to CSV: %v", err)
+								// Write JSON with full record data for efficient retry
+								if err := writeFailedBatchToJSON(missingRecords, batchNumber, chunkNum); err != nil {
+									log.Printf("ERROR: Failed to write failed batch to JSON: %v", err)
 								} else {
-									log.Printf("allevent chunk %d: Successfully wrote %d missing records (out of %d total) to CSV for retry", chunkNum, len(missingRecords), len(clickHouseRecords))
+									log.Printf("allevent chunk %d: Successfully wrote %d missing records to JSON for retry", chunkNum, len(missingRecords))
 								}
 							} else {
-								log.Printf("allevent chunk %d: All %d records already exist in database, skipping CSV write", chunkNum, len(clickHouseRecords))
+								log.Printf("allevent chunk %d: All %d records already exist in database, skipping file write", chunkNum, len(clickHouseRecords))
 							}
 						}
 					} else {
@@ -3529,108 +3683,63 @@ func isMemoryLimitError(err error) bool {
 		strings.Contains(errStr, "memory limit exceeded")
 }
 
-func extractChunkNumFromFilename(filename string) int {
+func extractChunkNumFromJSONFilename(filename string) int {
 	base := filepath.Base(filename)
 	parts := strings.Split(base, "_")
-	if len(parts) >= 4 && parts[0] == "failed" && parts[1] == "batches" && parts[2] == "chunk" {
-		if chunkNum, err := strconv.Atoi(strings.TrimSuffix(parts[3], ".csv")); err == nil {
+	if len(parts) >= 5 && parts[0] == "failed" && parts[1] == "batches" && parts[2] == "chunk" {
+		if chunkNum, err := strconv.Atoi(parts[3]); err == nil {
 			return chunkNum
 		}
 	}
 	return -1
 }
 
-func writeFailedBatchToCSV(records []map[string]interface{}, batchNum int, chunkNum int) error {
+func extractBatchNumFromJSONFilename(filename string) int {
+	base := filepath.Base(filename)
+	parts := strings.Split(base, "_")
+	if len(parts) >= 6 && parts[0] == "failed" && parts[1] == "batches" && parts[2] == "chunk" && parts[4] == "batch" {
+		if batchNum, err := strconv.Atoi(strings.TrimSuffix(parts[5], ".json")); err == nil {
+			return batchNum
+		}
+	}
+	return -1
+}
+
+// writeFailedBatchToJSON saves full record data as JSON for efficient retry
+func writeFailedBatchToJSON(records []map[string]interface{}, batchNum int, chunkNum int) error {
 	dir := "failed_batches"
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	filepath := filepath.Join(dir, fmt.Sprintf("failed_batches_chunk_%d.csv", chunkNum))
+	filepath := filepath.Join(dir, fmt.Sprintf("failed_batches_chunk_%d_batch_%d.json", chunkNum, batchNum))
 
-	file, err := os.OpenFile(filepath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	jsonData, err := json.Marshal(records)
 	if err != nil {
-		return fmt.Errorf("failed to open file %s: %w", filepath, err)
-	}
-	defer file.Close()
-
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-
-	fileInfo, err := file.Stat()
-	if err == nil && fileInfo.Size() == 0 {
-		if err := writer.Write([]string{"event_id", "edition_id", "batch_num"}); err != nil {
-			return fmt.Errorf("failed to write CSV header: %w", err)
-		}
+		return fmt.Errorf("failed to marshal records to JSON: %w", err)
 	}
 
-	for _, record := range records {
-		eventID := shared.SafeConvertToUInt32(record["event_id"])
-		editionID := shared.SafeConvertToUInt32(record["edition_id"])
-
-		row := []string{
-			strconv.FormatUint(uint64(eventID), 10),
-			strconv.FormatUint(uint64(editionID), 10),
-			strconv.Itoa(batchNum),
-		}
-
-		if err := writer.Write(row); err != nil {
-			return fmt.Errorf("failed to write CSV row: %w", err)
-		}
+	if err := os.WriteFile(filepath, jsonData, 0644); err != nil {
+		return fmt.Errorf("failed to write JSON file %s: %w", filepath, err)
 	}
 
-	log.Printf("Written %d failed pairs to %s (batch %d)", len(records), filepath, batchNum)
+	log.Printf("Written %d failed records to %s (batch %d)", len(records), filepath, batchNum)
 	return nil
 }
 
-func readCSVGroupedByBatch(filename string) (map[int][]EventEditionPair, error) {
-	file, err := os.Open(filename)
+// readFailedBatchFromJSON reads full record data from JSON file
+func readFailedBatchFromJSON(filepath string) ([]map[string]interface{}, error) {
+	jsonData, err := os.ReadFile(filepath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open file %s: %w", filename, err)
-	}
-	defer file.Close()
-
-	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read CSV: %w", err)
+		return nil, fmt.Errorf("failed to read JSON file %s: %w", filepath, err)
 	}
 
-	if len(records) == 0 {
-		return make(map[int][]EventEditionPair), nil
+	var records []map[string]interface{}
+	if err := json.Unmarshal(jsonData, &records); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
 	}
 
-	startIdx := 0
-	if len(records) > 0 && len(records[0]) > 0 && records[0][0] == "event_id" {
-		startIdx = 1
-	}
-
-	pairsByBatch := make(map[int][]EventEditionPair)
-
-	for i := startIdx; i < len(records); i++ {
-		if len(records[i]) < 3 {
-			continue
-		}
-
-		eventID, err1 := strconv.ParseUint(records[i][0], 10, 32)
-		editionID, err2 := strconv.ParseUint(records[i][1], 10, 32)
-		batchNum, err3 := strconv.Atoi(records[i][2])
-
-		if err1 != nil || err2 != nil || err3 != nil {
-			log.Printf("WARNING: Skipping invalid row in %s: %v", filename, records[i])
-			continue
-		}
-
-		pair := EventEditionPair{
-			EventID:   uint32(eventID),
-			EditionID: uint32(editionID),
-			BatchNum:  batchNum,
-		}
-
-		pairsByBatch[batchNum] = append(pairsByBatch[batchNum], pair)
-	}
-
-	return pairsByBatch, nil
+	return records, nil
 }
 
 var queryLogFile *os.File
@@ -3787,13 +3896,15 @@ func checkExistenceInClickHouseWithRetry(clickhouseConn driver.Conn, pairs []Eve
 		var foundCount int
 		var scanDuration time.Duration
 		maxRetries := 3
-		retryDelay := 2 * time.Second
 		querySuccessful := false
 
 		for retry := 0; retry < maxRetries; retry++ {
 			if retry > 0 {
-				// Wait for merge process to catch up
-				time.Sleep(retryDelay * time.Duration(retry))
+				// Wait 10 seconds on failure before retry
+				if logToFileFunc != nil {
+					logToFileFunc("        ⏳ Waiting 10 seconds before existence check retry %d/%d...", retry+1, maxRetries)
+				}
+				time.Sleep(10 * time.Second)
 			}
 
 			// Log query start time for performance tracking
@@ -5139,10 +5250,210 @@ func buildAlleventRecord(
 	return record
 }
 
-func retryFailedBatchesAfterCompletion(
-	mysqlDB *sql.DB,
+// processFailedBatchInsert handles the insert logic for records that are already built
+// Returns (success bool, failedRecords []map[string]interface{})
+func processFailedBatchInsert(
 	clickhouseConn driver.Conn,
-	esClient *elasticsearch.Client,
+	records []map[string]interface{},
+	config shared.Config,
+	logToFile func(string, ...interface{}),
+) (bool, []map[string]interface{}) {
+	if len(records) == 0 {
+		return true, nil
+	}
+
+	// Final check right before insert to catch any last-minute concurrent inserts
+	logToFile("        Final existence check right before insert (to catch concurrent inserts)...")
+	finalCheckPairs := make([]EventEditionPair, 0, len(records))
+	for _, record := range records {
+		eventID := shared.ConvertToUInt32(record["event_id"])
+		editionID := shared.ConvertToUInt32(record["edition_id"])
+		finalCheckPairs = append(finalCheckPairs, EventEditionPair{
+			EventID:   eventID,
+			EditionID: editionID,
+		})
+	}
+
+	// Final existence check (no retries, just check once)
+	var finalExisting map[uint64]bool
+	var finalErr error
+
+	finalExisting, finalErr = checkExistenceInClickHouseWithRetry(clickhouseConn, finalCheckPairs, config, true, logToFile)
+	if finalErr != nil {
+		logToFile("        WARNING: Final check failed: %v, proceeding with insert anyway", finalErr)
+	}
+
+	if finalErr == nil && len(finalExisting) > 0 {
+		filteredRecords := make([]map[string]interface{}, 0)
+		filteredCount := 0
+		for _, record := range records {
+			eventID := shared.ConvertToUInt32(record["event_id"])
+			editionID := shared.ConvertToUInt32(record["edition_id"])
+			key := uint64(eventID)<<32 | uint64(editionID)
+			if !finalExisting[key] {
+				filteredRecords = append(filteredRecords, record)
+			} else {
+				filteredCount++
+			}
+		}
+		if filteredCount > 0 {
+			logToFile("        ⚠ Found %d records that were inserted concurrently, filtering them out", filteredCount)
+		}
+		if len(filteredRecords) == 0 {
+			logToFile("        ✓ All records were inserted concurrently, skipping insert")
+			return true, nil
+		}
+		records = filteredRecords
+		logToFile("        After final check filtering: %d records remain to insert (filtered out %d concurrent)", len(records), filteredCount)
+	}
+
+	logToFile("        Inserting %d records...", len(records))
+
+	// Custom retry logic with 10-second timeout on failure
+	maxRetries := 3
+	attemptCount := 0
+	var insertErr error
+	for attemptCount < maxRetries {
+		if attemptCount > 0 {
+			now := time.Now().Format("2006-01-02 15:04:05")
+			for j := range records {
+				records[j]["last_updated_at"] = now
+			}
+			logToFile("          ⏳ Waiting 10 seconds before retry %d/%d...", attemptCount+1, maxRetries)
+			time.Sleep(10 * time.Second)
+			logToFile("          ✓ Wait complete, retrying insert (attempt %d)", attemptCount+1)
+		}
+		attemptCount++
+
+		// Progressive batch splitting: attempt 2 uses 1000, attempt 3 uses 500
+		if attemptCount == 2 && len(records) > 1000 {
+			logToFile("          Second retry attempt: Splitting %d records into batches of 1000...", len(records))
+			retryBatchSize := 1000
+			successfulBatches := 0
+			failedBatches := 0
+			totalSmallBatches := (len(records) + retryBatchSize - 1) / retryBatchSize
+
+			for batchStart := 0; batchStart < len(records); batchStart += retryBatchSize {
+				batchEnd := batchStart + retryBatchSize
+				if batchEnd > len(records) {
+					batchEnd = len(records)
+				}
+				smallBatch := records[batchStart:batchEnd]
+				smallBatchNum := (batchStart / retryBatchSize) + 1
+				logToFile("          Inserting small batch %d/%d (%d records) on retry attempt 2...", smallBatchNum, totalSmallBatches, len(smallBatch))
+				smallBatchErr := insertalleventDataChunk(clickhouseConn, smallBatch, config)
+				if smallBatchErr != nil {
+					failedBatches++
+					insertErr = smallBatchErr
+					logToFile("          ✗ Small batch %d/%d failed: %v", smallBatchNum, totalSmallBatches, smallBatchErr)
+				} else {
+					successfulBatches++
+					logToFile("          ✓ Small batch %d/%d inserted successfully", smallBatchNum, totalSmallBatches)
+				}
+			}
+
+			if successfulBatches == totalSmallBatches {
+				insertErr = nil
+				logToFile("          ✓ All %d small batches inserted successfully on retry attempt 2", totalSmallBatches)
+			} else if successfulBatches > 0 {
+				logToFile("          ⚠ Partial success: %d/%d small batches succeeded, %d failed", successfulBatches, totalSmallBatches, failedBatches)
+			} else {
+				logToFile("          ✗ All %d small batches failed on retry attempt 2", totalSmallBatches)
+			}
+		} else if attemptCount == maxRetries && len(records) > 500 {
+			logToFile("          Last retry attempt: Splitting %d records into batches of 500...", len(records))
+			lastRetryBatchSize := 500
+			successfulBatches := 0
+			failedBatches := 0
+			totalSmallBatches := (len(records) + lastRetryBatchSize - 1) / lastRetryBatchSize
+
+			for batchStart := 0; batchStart < len(records); batchStart += lastRetryBatchSize {
+				batchEnd := batchStart + lastRetryBatchSize
+				if batchEnd > len(records) {
+					batchEnd = len(records)
+				}
+				smallBatch := records[batchStart:batchEnd]
+				smallBatchNum := (batchStart / lastRetryBatchSize) + 1
+				logToFile("          Inserting small batch %d/%d (%d records) on final retry attempt...", smallBatchNum, totalSmallBatches, len(smallBatch))
+				smallBatchErr := insertalleventDataChunk(clickhouseConn, smallBatch, config)
+				if smallBatchErr != nil {
+					failedBatches++
+					insertErr = smallBatchErr
+					logToFile("          ✗ Small batch %d/%d failed: %v", smallBatchNum, totalSmallBatches, smallBatchErr)
+				} else {
+					successfulBatches++
+					logToFile("          ✓ Small batch %d/%d inserted successfully", smallBatchNum, totalSmallBatches)
+				}
+			}
+
+			if successfulBatches == totalSmallBatches {
+				insertErr = nil
+				logToFile("          ✓ All %d small batches inserted successfully on final retry", totalSmallBatches)
+			} else if successfulBatches > 0 {
+				logToFile("          ⚠ Partial success: %d/%d small batches succeeded, %d failed", successfulBatches, totalSmallBatches, failedBatches)
+			} else {
+				logToFile("          ✗ All %d small batches failed on final retry attempt", totalSmallBatches)
+			}
+		} else {
+			insertErr = insertalleventDataChunk(clickhouseConn, records, config)
+		}
+
+		if insertErr == nil {
+			break
+		}
+		if attemptCount < maxRetries {
+			logToFile("          ✗ Insert attempt %d/%d failed: %v", attemptCount, maxRetries, insertErr)
+		}
+	}
+
+	if insertErr != nil {
+		logToFile("        ✗ ERROR: Failed to insert after retries: %v", insertErr)
+		return false, records
+	}
+
+	logToFile("        ✓ Successfully inserted %d records", len(records))
+
+	// Verify inserted records
+	logToFile("        Double-checking: Verifying inserted records exist in allevent_temp...")
+	verifyPairs := make([]EventEditionPair, 0, len(records))
+	for _, record := range records {
+		eventID, ok1 := record["event_id"].(uint32)
+		editionID, ok2 := record["edition_id"].(uint32)
+		if ok1 && ok2 {
+			verifyPairs = append(verifyPairs, EventEditionPair{
+				EventID:   eventID,
+				EditionID: editionID,
+			})
+		}
+	}
+
+	if len(verifyPairs) > 0 {
+		existingAfterInsert, err := checkExistenceInClickHouseWithRetry(clickhouseConn, verifyPairs, config, true, logToFile)
+		if err != nil {
+			logToFile("        WARNING: Failed to verify inserted records: %v", err)
+		} else {
+			missingAfterInsert := 0
+			for _, pair := range verifyPairs {
+				key := uint64(pair.EventID)<<32 | uint64(pair.EditionID)
+				if !existingAfterInsert[key] {
+					missingAfterInsert++
+					logToFile("        ✗ WARNING: Record (event_id=%d, edition_id=%d) not found after insert!", pair.EventID, pair.EditionID)
+				}
+			}
+			if missingAfterInsert == 0 {
+				logToFile("        ✓ Double-check passed: All %d records confirmed in allevent_temp", len(verifyPairs))
+			} else {
+				logToFile("        ✗ WARNING: Double-check failed: %d/%d records missing after insert", missingAfterInsert, len(verifyPairs))
+				return false, records
+			}
+		}
+	}
+
+	return true, nil
+}
+
+func retryFailedBatchesAfterCompletion(
+	clickhouseConn driver.Conn,
 	config shared.Config,
 ) error {
 	logDir := "failed_batches"
@@ -5176,16 +5487,24 @@ func retryFailedBatchesAfterCompletion(
 	dir := "failed_batches"
 
 	maxAttempts := 3
-	backoffDuration := 2 * time.Minute
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		files, err := filepath.Glob(filepath.Join(dir, "failed_batches_chunk_*.csv"))
+		jsonFiles, err := filepath.Glob(filepath.Join(dir, "failed_batches_chunk_*_batch_*.json"))
 		if err != nil {
-			logToFile("ERROR: Failed to glob failed batch files: %v", err)
+			logToFile("ERROR: Failed to glob JSON files: %v", err)
 			return fmt.Errorf("failed to glob failed batch files: %w", err)
 		}
 
-		if len(files) == 0 {
+		chunkFiles := make(map[int][]string)
+
+		for _, jsonFile := range jsonFiles {
+			chunkNum := extractChunkNumFromJSONFilename(jsonFile)
+			if chunkNum >= 0 {
+				chunkFiles[chunkNum] = append(chunkFiles[chunkNum], jsonFile)
+			}
+		}
+
+		if len(chunkFiles) == 0 {
 			if attempt == 1 {
 				logToFile("No failed batches to retry")
 			} else {
@@ -5197,7 +5516,7 @@ func retryFailedBatchesAfterCompletion(
 		logToFile("")
 		logToFile("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		logToFile("=== Retry Attempt %d/%d ===", attempt, maxAttempts)
-		logToFile("Found %d failed batch files to process", len(files))
+		logToFile("Found %d chunk(s) with failed batches to process", len(chunkFiles))
 		if logFile != "" {
 			logToFile("Log file: %s", logFile)
 		}
@@ -5207,557 +5526,98 @@ func retryFailedBatchesAfterCompletion(
 		totalRetried := 0
 		totalFailed := 0
 
-		for _, file := range files {
+		for chunkNum, jsonFiles := range chunkFiles {
 			logToFile("")
 			logToFile("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			logToFile("Processing failed batch file: %s", file)
+			logToFile("Processing chunk %d: %d JSON file(s)", chunkNum, len(jsonFiles))
 			logToFile("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-			pairsByBatch, err := readCSVGroupedByBatch(file)
-			if err != nil {
-				logToFile("ERROR: Failed to read %s: %v", file, err)
-				continue
-			}
+			allFailedRecords := make([]map[string]interface{}, 0)
 
-			logToFile("Found %d batches in file", len(pairsByBatch))
-
-			fileProcessedSuccessfully := true
-			allFailedRecords := make([]map[string]interface{}, 0) // Collect all failures at file level
-
-			for batchNum, pairs := range pairsByBatch {
+			for _, jsonFile := range jsonFiles {
+				batchNum := extractBatchNumFromJSONFilename(jsonFile)
 				logToFile("")
-				logToFile("  → Processing batch %d with %d pairs...", batchNum, len(pairs))
+				logToFile("  → Processing JSON file: %s (batch %d)", filepath.Base(jsonFile), batchNum)
 
-				logToFile("    Checking existence in allevent_temp for batch %d (%d pairs)...", batchNum, len(pairs))
-				// Use FINAL to ensure we see all data including unmerged parts
-				existingPairs, err := checkExistenceInClickHouseWithRetry(clickhouseConn, pairs, config, true, logToFile)
+				records, err := readFailedBatchFromJSON(jsonFile)
 				if err != nil {
-					logToFile("    ERROR: Failed to check existence for batch %d: %v", batchNum, err)
-					totalFailed += len(pairs)
-					fileProcessedSuccessfully = false
+					logToFile("    ERROR: Failed to read JSON file: %v", err)
+					totalFailed += 1
 					continue
 				}
 
-				missingPairs := make([]EventEditionPair, 0)
-				for _, pair := range pairs {
-					key := uint64(pair.EventID)<<32 | uint64(pair.EditionID)
+				logToFile("    Loaded %d records from JSON", len(records))
+
+				checkPairs := make([]EventEditionPair, 0, len(records))
+				for _, record := range records {
+					eventID := shared.ConvertToUInt32(record["event_id"])
+					editionID := shared.ConvertToUInt32(record["edition_id"])
+					checkPairs = append(checkPairs, EventEditionPair{
+						EventID:   eventID,
+						EditionID: editionID,
+					})
+				}
+
+				logToFile("    Checking existence in allevent_temp for %d records...", len(records))
+				existingPairs, err := checkExistenceInClickHouseWithRetry(clickhouseConn, checkPairs, config, true, logToFile)
+				if err != nil {
+					logToFile("    ERROR: Failed to check existence: %v", err)
+					totalFailed += len(records)
+					continue
+				}
+
+				missingRecords := make([]map[string]interface{}, 0)
+				for _, record := range records {
+					eventID := shared.ConvertToUInt32(record["event_id"])
+					editionID := shared.ConvertToUInt32(record["edition_id"])
+					key := uint64(eventID)<<32 | uint64(editionID)
 					if !existingPairs[key] {
-						missingPairs = append(missingPairs, pair)
+						missingRecords = append(missingRecords, record)
 					}
 				}
 
-				if len(existingPairs) == len(pairs) {
-					logToFile("    ✓ All %d pairs already exist in allevent_temp, no insert needed for batch %d", len(pairs), batchNum)
-					totalSkipped += len(pairs)
+				if len(existingPairs) == len(records) {
+					logToFile("    ✓ All %d records already exist, skipping insert", len(records))
+					totalSkipped += len(records)
+					if err := os.Remove(jsonFile); err != nil {
+						logToFile("    WARNING: Failed to remove processed JSON file: %v", err)
+					} else {
+						logToFile("    ✓ Removed processed JSON file")
+					}
 					continue
 				} else if len(existingPairs) > 0 {
-					logToFile("    Found %d/%d pairs exist, %d pairs missing - will insert missing pairs only",
-						len(existingPairs), len(pairs), len(missingPairs))
+					logToFile("    Found %d/%d records exist, %d records missing", len(existingPairs), len(records), len(missingRecords))
 					totalSkipped += len(existingPairs)
-				} else {
-					logToFile("    No pairs exist in allevent_temp, will insert all %d pairs", len(pairs))
 				}
 
-				if len(missingPairs) == 0 {
+				if len(missingRecords) == 0 {
 					continue
 				}
 
-				rebuildBatchSize := 5000
-				insertSuccess := true
-				failedSubBatches := make([]map[string]interface{}, 0)
-				backoffDuration := 30 * time.Second
-
-				optimizeConfigs := shared.GetTableOptimizeConfigs()
-				alleventOptimizeConfig, hasConfig := optimizeConfigs["allevent_ch"]
-
-				if hasConfig && alleventOptimizeConfig.PartitionExpression == "" {
-					createStatement, err := shared.GetTableCreateStatement(clickhouseConn, alleventOptimizeConfig.TempTableName, config)
-					if err == nil {
-						partitionExpr, err := shared.ExtractPartitionExpression(createStatement)
-						if err == nil {
-							alleventOptimizeConfig.PartitionExpression = partitionExpr
-						}
-					}
-				}
-
-				logToFile("    Processing %d missing pairs in batches of %d (rebuild → insert → verify → optimize)...", len(missingPairs), rebuildBatchSize)
-
-				for i := 0; i < len(missingPairs); i += rebuildBatchSize {
-					end := i + rebuildBatchSize
-					if end > len(missingPairs) {
-						end = len(missingPairs)
-					}
-					missingPairsBatch := missingPairs[i:end]
-
-					logToFile("      Processing missing pairs batch %d-%d (%d pairs): rebuilding records...", i+1, end, len(missingPairsBatch))
-
-					records, err := rebuildRecordsForFailedBatch(
-						mysqlDB,
-						clickhouseConn,
-						esClient,
-						missingPairsBatch,
-						config,
-					)
-					if err != nil {
-						logToFile("        ERROR: Failed to rebuild records for batch %d-%d: %v", i+1, end, err)
-						totalFailed += len(missingPairsBatch)
-						fileProcessedSuccessfully = false
-						continue
-					}
-
-					if len(records) == 0 {
-						logToFile("        WARNING: No records rebuilt for batch %d-%d (expected %d records) - possible data loss", i+1, end, len(missingPairsBatch))
-						totalFailed += len(missingPairsBatch)
-						fileProcessedSuccessfully = false
-						continue
-					}
-
-					if len(records) < len(missingPairsBatch) {
-						logToFile("        WARNING: Only rebuilt %d/%d records for batch %d-%d - %d records missing", len(records), len(missingPairsBatch), i+1, end, len(missingPairsBatch)-len(records))
-						totalFailed += len(missingPairsBatch) - len(records)
-						fileProcessedSuccessfully = false
-					}
-
-					logToFile("        ✓ Rebuilt %d records", len(records))
-
-					// Convert records to pairs for existence check
-					checkPairs := make([]EventEditionPair, 0, len(records))
-					for _, record := range records {
-						eventID := shared.ConvertToUInt32(record["event_id"])
-						editionID := shared.ConvertToUInt32(record["edition_id"])
-						checkPairs = append(checkPairs, EventEditionPair{
-							EventID:   eventID,
-							EditionID: editionID,
-						})
-					}
-
-					logToFile("        Checking existence in allevent_temp for (event_id, edition_id) pairs...")
-					// Use FINAL to ensure we see all data including unmerged parts from concurrent inserts
-					existingBeforeInsert, err := checkExistenceInClickHouseWithRetry(clickhouseConn, checkPairs, config, true, logToFile)
-					if err != nil {
-						logToFile("        WARNING: Failed to check existence before insert: %v, proceeding with insert anyway", err)
-					} else {
-						stillMissingRecords := make([]map[string]interface{}, 0)
-						stillMissingPairs := make([]EventEditionPair, 0)
-						existingCount := 0
-
-						for i, record := range records {
-							eventID := shared.ConvertToUInt32(record["event_id"])
-							editionID := shared.ConvertToUInt32(record["edition_id"])
-							key := uint64(eventID)<<32 | uint64(editionID)
-
-							if !existingBeforeInsert[key] {
-								stillMissingRecords = append(stillMissingRecords, record)
-								stillMissingPairs = append(stillMissingPairs, checkPairs[i])
-							} else {
-								existingCount++
-							}
-						}
-
-						if existingCount > 0 {
-							logToFile("        Found %d/%d (event_id, edition_id) pairs already exist, will insert only %d missing records", existingCount, len(records), len(stillMissingRecords))
-							totalSkipped += existingCount
-
-							if len(stillMissingRecords) == 0 {
-								logToFile("        ✓ All (event_id, edition_id) pairs already exist, skipping insert for this batch")
-								if i+rebuildBatchSize < len(missingPairs) {
-									logToFile("        ⏳ Waiting %v before processing next batch...", backoffDuration)
-									time.Sleep(backoffDuration)
-									logToFile("        ✓ Wait complete, continuing with next batch")
-								}
-								continue
-							}
-
-							records = stillMissingRecords
-							missingPairsBatch = stillMissingPairs
-						} else {
-							logToFile("        ✓ All %d (event_id, edition_id) pairs confirmed missing, proceeding with insert", len(records))
-						}
-					}
-
-					// Final check right before insert to catch any last-minute concurrent inserts
-					// This is critical to prevent duplicates from race conditions
-					// Use retry logic with increasing wait times to catch concurrent inserts
-					logToFile("        Final existence check right before insert (to catch concurrent inserts)...")
-
-					finalCheckPairs := make([]EventEditionPair, 0, len(records))
-					for _, record := range records {
-						eventID := shared.ConvertToUInt32(record["event_id"])
-						editionID := shared.ConvertToUInt32(record["edition_id"])
-						finalCheckPairs = append(finalCheckPairs, EventEditionPair{
-							EventID:   eventID,
-							EditionID: editionID,
-						})
-					}
-
-					// Retry final check with increasing wait times to catch concurrent inserts
-					maxFinalCheckRetries := 3
-					finalWaitTimes := []time.Duration{3 * time.Second, 5 * time.Second, 10 * time.Second}
-					var finalExisting map[uint64]bool
-					var finalErr error
-					previousFoundCount := 0
-
-					for retry := 0; retry < maxFinalCheckRetries; retry++ {
-						if retry > 0 {
-							waitTime := finalWaitTimes[retry-1]
-							logToFile("        ⏳ Waiting %v before final check retry %d/%d (previous check found %d existing)...", waitTime, retry, maxFinalCheckRetries, previousFoundCount)
-							time.Sleep(waitTime)
-						}
-
-						finalExisting, finalErr = checkExistenceInClickHouseWithRetry(clickhouseConn, finalCheckPairs, config, true, logToFile)
-						if finalErr != nil {
-							logToFile("        WARNING: Final check failed (attempt %d/%d): %v", retry+1, maxFinalCheckRetries, finalErr)
-							if retry == maxFinalCheckRetries-1 {
-								logToFile("        ⚠ Final check failed after all retries, proceeding with insert anyway")
-								break
-							}
-							continue
-						}
-
-						currentFoundCount := len(finalExisting)
-						if currentFoundCount == previousFoundCount && retry > 0 {
-							// No new records found in this check, stable state
-							logToFile("        ✓ Final check stable: Found %d existing records (same as previous check)", currentFoundCount)
-							break
-						}
-
-						if currentFoundCount > previousFoundCount {
-							logToFile("        ⚠ Final check found %d existing (was %d) - %d new records inserted concurrently, will retry",
-								currentFoundCount, previousFoundCount, currentFoundCount-previousFoundCount)
-							previousFoundCount = currentFoundCount
-							if retry < maxFinalCheckRetries-1 {
-								continue // Retry to see if more appear
-							}
-						} else {
-							// Found same or fewer, stable
-							break
-						}
-					}
-
-					if finalErr == nil && len(finalExisting) > 0 {
-						// Filter out records that now exist
-						filteredRecords := make([]map[string]interface{}, 0)
-						filteredCount := 0
-						concurrentPairs := make([]string, 0, 10) // For logging
-						for _, record := range records {
-							eventID := shared.ConvertToUInt32(record["event_id"])
-							editionID := shared.ConvertToUInt32(record["edition_id"])
-							key := uint64(eventID)<<32 | uint64(editionID)
-							if !finalExisting[key] {
-								filteredRecords = append(filteredRecords, record)
-							} else {
-								filteredCount++
-								if len(concurrentPairs) < 10 {
-									concurrentPairs = append(concurrentPairs, fmt.Sprintf("(%d,%d)", eventID, editionID))
-								}
-							}
-						}
-						if filteredCount > 0 {
-							logToFile("        ⚠ Found %d records that were inserted concurrently, filtering them out", filteredCount)
-							if len(concurrentPairs) > 0 {
-								logToFile("        Concurrent pairs filtered: %s%s",
-									strings.Join(concurrentPairs, ", "),
-									func() string {
-										if filteredCount > len(concurrentPairs) {
-											return fmt.Sprintf(" ... (%d more)", filteredCount-len(concurrentPairs))
-										}
-										return ""
-									}())
-							}
-							totalSkipped += filteredCount
-						}
-						if len(filteredRecords) == 0 {
-							logToFile("        ✓ All records were inserted concurrently, skipping insert")
-							continue
-						}
-						records = filteredRecords
-						logToFile("        After final check filtering: %d records remain to insert (filtered out %d concurrent)", len(records), filteredCount)
-					}
-
-					// Cooldown period: Wait 1 minute after existence check before inserting
-					// This allows ClickHouse to complete any pending merges and reduces memory pressure
-					logToFile("        ⏳ Cooldown: Waiting 1 minute after existence check before inserting...")
-					time.Sleep(1 * time.Minute)
-					logToFile("        ✓ Cooldown complete, proceeding with insert")
-
-					logToFile("        Inserting %d records...", len(records))
-
-					// Custom retry logic with 1-minute wait between retries
-					maxRetries := 3
-					attemptCount := 0
-					var insertErr error
-					for attemptCount < maxRetries {
-						if attemptCount > 0 {
-							now := time.Now().Format("2006-01-02 15:04:05")
-							for j := range records {
-								records[j]["last_updated_at"] = now
-							}
-							logToFile("          ⏳ Waiting 1 minute before retry %d/%d...", attemptCount+1, maxRetries)
-							time.Sleep(1 * time.Minute)
-							logToFile("          ✓ Wait complete, retrying insert for batch %d-%d (attempt %d)", i+1, end, attemptCount+1)
-						}
-						attemptCount++
-
-						// Progressive batch splitting: attempt 2 uses 1000, attempt 3 uses 500
-						if attemptCount == 2 && len(records) > 1000 {
-							// Second retry attempt: split into batches of 1000
-							logToFile("          Second retry attempt: Splitting %d records into batches of 1000...", len(records))
-							retryBatchSize := 1000
-							successfulBatches := 0
-							failedBatches := 0
-							totalSmallBatches := (len(records) + retryBatchSize - 1) / retryBatchSize
-
-							for batchStart := 0; batchStart < len(records); batchStart += retryBatchSize {
-								batchEnd := batchStart + retryBatchSize
-								if batchEnd > len(records) {
-									batchEnd = len(records)
-								}
-								smallBatch := records[batchStart:batchEnd]
-								batchNum := (batchStart / retryBatchSize) + 1
-								logToFile("          Inserting small batch %d/%d (%d records) on retry attempt 2...", batchNum, totalSmallBatches, len(smallBatch))
-								smallBatchErr := insertalleventDataChunk(clickhouseConn, smallBatch, config)
-								if smallBatchErr != nil {
-									failedBatches++
-									insertErr = smallBatchErr // Keep last error for reporting
-									logToFile("          ✗ Small batch %d/%d failed: %v", batchNum, totalSmallBatches, smallBatchErr)
-									// Continue with remaining batches even if one fails
-								} else {
-									successfulBatches++
-									logToFile("          ✓ Small batch %d/%d inserted successfully", batchNum, totalSmallBatches)
-								}
-								// Small delay between small batches to reduce memory pressure
-								if batchEnd < len(records) {
-									time.Sleep(5 * time.Second)
-								}
-							}
-
-							// If all small batches succeeded, clear error
-							if successfulBatches == totalSmallBatches {
-								insertErr = nil
-								logToFile("          ✓ All %d small batches inserted successfully on retry attempt 2", totalSmallBatches)
-							} else if successfulBatches > 0 {
-								logToFile("          ⚠ Partial success: %d/%d small batches succeeded, %d failed", successfulBatches, totalSmallBatches, failedBatches)
-								// Still mark as error so failed records are tracked
-							} else {
-								logToFile("          ✗ All %d small batches failed on retry attempt 2", totalSmallBatches)
-							}
-						} else if attemptCount == maxRetries && len(records) > 500 {
-							// Last retry attempt: split into smaller batches of 500
-							logToFile("          Last retry attempt: Splitting %d records into batches of 500...", len(records))
-							lastRetryBatchSize := 500
-							successfulBatches := 0
-							failedBatches := 0
-							totalSmallBatches := (len(records) + lastRetryBatchSize - 1) / lastRetryBatchSize
-
-							for batchStart := 0; batchStart < len(records); batchStart += lastRetryBatchSize {
-								batchEnd := batchStart + lastRetryBatchSize
-								if batchEnd > len(records) {
-									batchEnd = len(records)
-								}
-								smallBatch := records[batchStart:batchEnd]
-								batchNum := (batchStart / lastRetryBatchSize) + 1
-								logToFile("          Inserting small batch %d/%d (%d records) on final retry attempt...", batchNum, totalSmallBatches, len(smallBatch))
-								smallBatchErr := insertalleventDataChunk(clickhouseConn, smallBatch, config)
-								if smallBatchErr != nil {
-									failedBatches++
-									insertErr = smallBatchErr // Keep last error for reporting
-									logToFile("          ✗ Small batch %d/%d failed: %v", batchNum, totalSmallBatches, smallBatchErr)
-									// Continue with remaining batches even if one fails
-								} else {
-									successfulBatches++
-									logToFile("          ✓ Small batch %d/%d inserted successfully", batchNum, totalSmallBatches)
-								}
-								// Small delay between small batches to reduce memory pressure
-								if batchEnd < len(records) {
-									time.Sleep(5 * time.Second)
-								}
-							}
-
-							// If all small batches succeeded, clear error
-							if successfulBatches == totalSmallBatches {
-								insertErr = nil
-								logToFile("          ✓ All %d small batches inserted successfully on final retry", totalSmallBatches)
-							} else if successfulBatches > 0 {
-								logToFile("          ⚠ Partial success: %d/%d small batches succeeded, %d failed", successfulBatches, totalSmallBatches, failedBatches)
-								// Still mark as error so failed records are tracked
-							} else {
-								logToFile("          ✗ All %d small batches failed on final retry attempt", totalSmallBatches)
-							}
-						} else {
-							// First attempt: insert all records at once
-							insertErr = insertalleventDataChunk(clickhouseConn, records, config)
-						}
-
-						if insertErr == nil {
-							break // Success, exit retry loop
-						}
-						if attemptCount < maxRetries {
-							logToFile("          ✗ Insert attempt %d/%d failed: %v", attemptCount, maxRetries, insertErr)
-						}
-					}
-
-					if insertErr != nil {
-						logToFile("        ✗ ERROR: Failed to insert batch %d-%d after retries: %v", i+1, end, insertErr)
-						insertSuccess = false
-						totalFailed += len(records)
-
-						// Collect failures for writing back to CSV at the end (prevents CSV accumulation)
-						if isMemoryLimitError(insertErr) {
-							logToFile("          Memory error detected, will write back to CSV after processing all batches")
-							failedSubBatches = append(failedSubBatches, records...)
-						} else {
-							// For non-memory errors, also collect for retry
-							failedSubBatches = append(failedSubBatches, records...)
-						}
-
-						fileProcessedSuccessfully = false
-						continue
-					}
-
-					logToFile("        ✓ Successfully inserted batch %d-%d (%d records)", i+1, end, len(records))
-					totalRetried += len(records)
-
-					// Wait for ClickHouse merge process to make inserted data visible
-					// This prevents false negatives when checking for duplicates
-					logToFile("        ⏳ Waiting 5 seconds for ClickHouse merge process to make data visible...")
-					time.Sleep(5 * time.Second)
-
-					logToFile("        Double-checking: Verifying inserted records exist in allevent_temp...")
-					verifyPairs := make([]EventEditionPair, 0, len(records))
-					for _, record := range records {
-						eventID, ok1 := record["event_id"].(uint32)
-						editionID, ok2 := record["edition_id"].(uint32)
-						if ok1 && ok2 {
-							verifyPairs = append(verifyPairs, EventEditionPair{
-								EventID:   eventID,
-								EditionID: editionID,
-							})
-						}
-					}
-
-					if len(verifyPairs) > 0 {
-						// Use FINAL to ensure we see the data we just inserted (may be in unmerged parts)
-						existingAfterInsert, err := checkExistenceInClickHouseWithRetry(clickhouseConn, verifyPairs, config, true, logToFile)
-						if err != nil {
-							logToFile("        WARNING: Failed to verify inserted records: %v", err)
-						} else {
-							missingAfterInsert := 0
-							for _, pair := range verifyPairs {
-								key := uint64(pair.EventID)<<32 | uint64(pair.EditionID)
-								if !existingAfterInsert[key] {
-									missingAfterInsert++
-									logToFile("        ✗ WARNING: Record (event_id=%d, edition_id=%d) not found after insert!", pair.EventID, pair.EditionID)
-								}
-							}
-							if missingAfterInsert == 0 {
-								logToFile("        ✓ Double-check passed: All %d records confirmed in allevent_temp", len(verifyPairs))
-							} else {
-								logToFile("        ✗ WARNING: Double-check failed: %d/%d records missing after insert", missingAfterInsert, len(verifyPairs))
-								totalFailed += missingAfterInsert
-								fileProcessedSuccessfully = false
-							}
-						}
-					}
-
-					if hasConfig && alleventOptimizeConfig.PartitionExpression != "" {
-						logToFile("        ⏳ Waiting 30 seconds before checking for duplicates (to allow ClickHouse merge process)...")
-						time.Sleep(30 * time.Second)
-						logToFile("        Checking for duplicate partitions after insert...")
-
-						duplicatePartitions, err := shared.GetPartitionsWithDuplicates(clickhouseConn, alleventOptimizeConfig, config)
-						if err != nil {
-							logToFile("        WARNING: Failed to check for duplicates: %v", err)
-						} else if len(duplicatePartitions) > 0 {
-							logToFile("        Found %d partitions with duplicates, verifying they still exist (to avoid false positives)...", len(duplicatePartitions))
-							time.Sleep(20 * time.Second)
-							verifiedDuplicates, verifyErr := shared.GetPartitionsWithDuplicates(clickhouseConn, alleventOptimizeConfig, config)
-							if verifyErr != nil {
-								logToFile("        WARNING: Failed to verify duplicates: %v, proceeding with optimization anyway", verifyErr)
-								verifiedDuplicates = duplicatePartitions
-							} else if len(verifiedDuplicates) == 0 {
-								logToFile("        ✓ Duplicates were automatically merged by ClickHouse, no optimization needed")
-							} else {
-								verifiedPartitionMap := make(map[string]bool)
-								for _, p := range verifiedDuplicates {
-									verifiedPartitionMap[p] = true
-								}
-
-								partitionsToOptimize := make([]string, 0)
-								for _, partition := range duplicatePartitions {
-									if verifiedPartitionMap[partition] {
-										partitionsToOptimize = append(partitionsToOptimize, partition)
-									}
-								}
-
-								if len(partitionsToOptimize) > 0 {
-									logToFile("        Verified %d partitions still have duplicates, optimizing on priority...", len(partitionsToOptimize))
-									for _, partition := range partitionsToOptimize {
-										logToFile("          Optimizing partition: %s", partition)
-										optimizeErr := shared.OptimizeTablePartition(clickhouseConn, alleventOptimizeConfig.TempTableName, partition, config, "optimize_logs.log")
-										if optimizeErr != nil {
-											logToFile("          WARNING: Failed to optimize partition %s: %v", partition, optimizeErr)
-										} else {
-											logToFile("          ✓ Successfully optimized partition %s", partition)
-										}
-									}
-								} else {
-									logToFile("        ✓ All duplicates were automatically merged, no optimization needed")
-								}
-							}
-						} else {
-							logToFile("        ✓ No duplicate partitions found")
-						}
-					}
-
-					if i+rebuildBatchSize < len(missingPairs) {
-						logToFile("        ⏳ Waiting %v before processing next batch...", backoffDuration)
-						time.Sleep(backoffDuration)
-						logToFile("        ✓ Wait complete, continuing with next batch")
-					}
-				}
-
-				// Collect failures from this batch
-				if len(failedSubBatches) > 0 {
-					allFailedRecords = append(allFailedRecords, failedSubBatches...)
-				}
-
+				insertSuccess, failedRecords := processFailedBatchInsert(clickhouseConn, missingRecords, config, logToFile)
 				if insertSuccess {
-					logToFile("  ✓ Successfully processed batch %d", batchNum)
-				} else if len(failedSubBatches) > 0 {
-					logToFile("  ⚠ Batch %d partially failed - %d records failed to insert", batchNum, len(failedSubBatches))
-				}
-			}
-
-			// Write all failures back to CSV at the end (clearing CSV first to prevent accumulation)
-			if len(allFailedRecords) > 0 {
-				chunkNum := extractChunkNumFromFilename(file)
-				if chunkNum >= 0 {
-					logToFile("")
-					logToFile("  Writing %d failed records back to CSV (clearing file first to prevent accumulation)...", len(allFailedRecords))
-					// Clear the CSV file by removing it, then write only new failures
-					if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
-						logToFile("  WARNING: Failed to clear CSV file %s: %v", file, err)
-					}
-					// Write all failures with a single batch number for the next retry
-					retryBatchNum := 1
-					if writeErr := writeFailedBatchToCSV(allFailedRecords, retryBatchNum, chunkNum); writeErr != nil {
-						logToFile("  ERROR: Failed to write failed records to CSV: %v", writeErr)
+					totalRetried += len(missingRecords)
+					if err := os.Remove(jsonFile); err != nil {
+						logToFile("    WARNING: Failed to remove processed JSON file: %v", err)
 					} else {
-						logToFile("  ✓ Successfully wrote %d failed records to CSV (file cleared and rewritten)", len(allFailedRecords))
+						logToFile("    ✓ Removed processed JSON file")
 					}
+				} else {
+					totalFailed += len(failedRecords)
+					allFailedRecords = append(allFailedRecords, failedRecords...)
 				}
-				fileProcessedSuccessfully = false
 			}
 
-			if fileProcessedSuccessfully {
-				if err := os.Remove(file); err != nil {
-					logToFile("  WARNING: Failed to remove successfully processed file %s: %v", file, err)
-				} else {
-					logToFile("  ✓ Successfully removed processed file: %s (all batches succeeded)", file)
+			if len(allFailedRecords) > 0 {
+				logToFile("")
+				logToFile("  Writing %d failed records back to JSON...", len(allFailedRecords))
+				retryBatchNum := 1
+				for _, record := range allFailedRecords {
+					if err := writeFailedBatchToJSON([]map[string]interface{}{record}, retryBatchNum, chunkNum); err != nil {
+						logToFile("  WARNING: Failed to write failed record to JSON: %v", err)
+					}
 				}
-			} else {
-				logToFile("  ⚠ Keeping file %s for retry (some batches failed or had issues)", file)
-				logToFile("     → This file will be processed again on next script run")
+				logToFile("  ✓ Successfully wrote %d failed records to JSON", len(allFailedRecords))
 			}
 		}
 
@@ -5769,10 +5629,12 @@ func retryFailedBatchesAfterCompletion(
 		logToFile("Total records failed: %d", totalFailed)
 		logToFile("=== Attempt %d completed at %s ===", attempt, time.Now().Format("2006-01-02 15:04:05"))
 
-		remainingFiles, err := filepath.Glob(filepath.Join(dir, "failed_batches_chunk_*.csv"))
+		remainingJSONFiles, err := filepath.Glob(filepath.Join(dir, "failed_batches_chunk_*_batch_*.json"))
 		if err != nil {
 			logToFile("WARNING: Failed to check for remaining failed batch files: %v", err)
-		} else if len(remainingFiles) == 0 {
+		}
+		remainingFiles := len(remainingJSONFiles)
+		if remainingFiles == 0 {
 			logToFile("")
 			logToFile("✓ All failed batches successfully processed - no remaining files")
 			if logFile != "" {
@@ -5781,16 +5643,16 @@ func retryFailedBatchesAfterCompletion(
 			return nil
 		} else {
 			logToFile("")
-			logToFile("⚠️  %d failed batch file(s) still remain after attempt %d:", len(remainingFiles), attempt)
-			for _, file := range remainingFiles {
+			logToFile("⚠️  %d failed batch file(s) still remain after attempt %d:", remainingFiles, attempt)
+			for _, file := range remainingJSONFiles {
 				logToFile("   - %s", file)
 			}
 
 			if attempt < maxAttempts {
 				logToFile("")
-				logToFile("⏳ Waiting %v before retry attempt %d/%d...", backoffDuration, attempt+1, maxAttempts)
-				time.Sleep(backoffDuration)
-				logToFile("✓ Backoff complete, starting next retry attempt")
+				logToFile("⏳ Waiting 10 seconds before retry attempt %d/%d...", attempt+1, maxAttempts)
+				time.Sleep(10 * time.Second)
+				logToFile("✓ Wait complete, starting next retry attempt")
 			} else {
 				logToFile("")
 				logToFile("⚠️  Maximum retry attempts (%d) reached", maxAttempts)
@@ -5799,7 +5661,7 @@ func retryFailedBatchesAfterCompletion(
 				if logFile != "" {
 					logToFile("Full log saved to: %s", logFile)
 				}
-				return fmt.Errorf("failed batches still remain after %d attempts: %d file(s) need to be processed", maxAttempts, len(remainingFiles))
+				return fmt.Errorf("failed batches still remain after %d attempts: %d file(s) need to be processed", maxAttempts, remainingFiles)
 			}
 		}
 	}
