@@ -3734,6 +3734,11 @@ func readFailedBatchFromJSON(filepath string) ([]map[string]interface{}, error) 
 		return nil, fmt.Errorf("failed to read JSON file %s: %w", filepath, err)
 	}
 
+	// Check for empty file
+	if len(jsonData) == 0 {
+		return []map[string]interface{}{}, nil
+	}
+
 	var records []map[string]interface{}
 	if err := json.Unmarshal(jsonData, &records); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
@@ -5262,51 +5267,6 @@ func processFailedBatchInsert(
 		return true, nil
 	}
 
-	// Final check right before insert to catch any last-minute concurrent inserts
-	logToFile("        Final existence check right before insert (to catch concurrent inserts)...")
-	finalCheckPairs := make([]EventEditionPair, 0, len(records))
-	for _, record := range records {
-		eventID := shared.ConvertToUInt32(record["event_id"])
-		editionID := shared.ConvertToUInt32(record["edition_id"])
-		finalCheckPairs = append(finalCheckPairs, EventEditionPair{
-			EventID:   eventID,
-			EditionID: editionID,
-		})
-	}
-
-	// Final existence check (no retries, just check once)
-	var finalExisting map[uint64]bool
-	var finalErr error
-
-	finalExisting, finalErr = checkExistenceInClickHouseWithRetry(clickhouseConn, finalCheckPairs, config, true, logToFile)
-	if finalErr != nil {
-		logToFile("        WARNING: Final check failed: %v, proceeding with insert anyway", finalErr)
-	}
-
-	if finalErr == nil && len(finalExisting) > 0 {
-		filteredRecords := make([]map[string]interface{}, 0)
-		filteredCount := 0
-		for _, record := range records {
-			eventID := shared.ConvertToUInt32(record["event_id"])
-			editionID := shared.ConvertToUInt32(record["edition_id"])
-			key := uint64(eventID)<<32 | uint64(editionID)
-			if !finalExisting[key] {
-				filteredRecords = append(filteredRecords, record)
-			} else {
-				filteredCount++
-			}
-		}
-		if filteredCount > 0 {
-			logToFile("        ⚠ Found %d records that were inserted concurrently, filtering them out", filteredCount)
-		}
-		if len(filteredRecords) == 0 {
-			logToFile("        ✓ All records were inserted concurrently, skipping insert")
-			return true, nil
-		}
-		records = filteredRecords
-		logToFile("        After final check filtering: %d records remain to insert (filtered out %d concurrent)", len(records), filteredCount)
-	}
-
 	logToFile("        Inserting %d records...", len(records))
 
 	// Custom retry logic with 10-second timeout on failure
@@ -5543,6 +5503,16 @@ func retryFailedBatchesAfterCompletion(
 				if err != nil {
 					logToFile("    ERROR: Failed to read JSON file: %v", err)
 					totalFailed += 1
+					continue
+				}
+
+				if len(records) == 0 {
+					logToFile("    File is empty, removing it...")
+					if err := os.Remove(jsonFile); err != nil {
+						logToFile("    WARNING: Failed to remove empty JSON file: %v", err)
+					} else {
+						logToFile("    ✓ Removed empty JSON file")
+					}
 					continue
 				}
 
