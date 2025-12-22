@@ -1,6 +1,7 @@
 package microservice
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -3698,50 +3699,177 @@ func extractBatchNumFromJSONFilename(filename string) int {
 	base := filepath.Base(filename)
 	parts := strings.Split(base, "_")
 	if len(parts) >= 6 && parts[0] == "failed" && parts[1] == "batches" && parts[2] == "chunk" && parts[4] == "batch" {
-		if batchNum, err := strconv.Atoi(strings.TrimSuffix(parts[5], ".json")); err == nil {
+		if batchNum, err := strconv.Atoi(parts[5]); err == nil {
 			return batchNum
 		}
 	}
 	return -1
 }
 
-// writeFailedBatchToJSON saves full record data as JSON for efficient retry
 func writeFailedBatchToJSON(records []map[string]interface{}, batchNum int, chunkNum int) error {
+	const maxFileSize = 20 * 1024 * 1024 // 20MB limit
 	dir := "failed_batches"
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
 
-	filepath := filepath.Join(dir, fmt.Sprintf("failed_batches_chunk_%d_batch_%d.json", chunkNum, batchNum))
+	var currentFile *os.File
+	var currentWriter *bufio.Writer
+	var currentFilePath string
+	var currentFileSize int64
+	var partNum int
+	var totalRecordsWritten int
+	var invalidJSONFile *os.File
+	var invalidJSONWriter *bufio.Writer
+	var invalidJSONCount int
 
-	jsonData, err := json.Marshal(records)
-	if err != nil {
-		return fmt.Errorf("failed to marshal records to JSON: %w", err)
+	createNewFile := func() error {
+		if currentWriter != nil {
+			if err := currentWriter.Flush(); err != nil {
+				return fmt.Errorf("failed to flush buffer: %w", err)
+			}
+		}
+		if currentFile != nil {
+			if err := currentFile.Close(); err != nil {
+				return fmt.Errorf("failed to close file: %w", err)
+			}
+		}
+
+		if partNum == 0 {
+			currentFilePath = filepath.Join(dir, fmt.Sprintf("failed_batches_chunk_%d_batch_%d.json", chunkNum, batchNum))
+		} else {
+			currentFilePath = filepath.Join(dir, fmt.Sprintf("failed_batches_chunk_%d_batch_%d_part_%d.json", chunkNum, batchNum, partNum))
+		}
+
+		var err error
+		currentFile, err = os.Create(currentFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to create JSON file %s: %w", currentFilePath, err)
+		}
+		currentWriter = bufio.NewWriter(currentFile)
+		currentFileSize = 0
+		partNum++
+		return nil
 	}
 
-	if err := os.WriteFile(filepath, jsonData, 0644); err != nil {
-		return fmt.Errorf("failed to write JSON file %s: %w", filepath, err)
+	ensureInvalidJSONFile := func() error {
+		if invalidJSONFile == nil {
+			invalidJSONPath := filepath.Join(dir, fmt.Sprintf("invalid_json_chunk_%d_batch_%d.json", chunkNum, batchNum))
+			var err error
+			invalidJSONFile, err = os.OpenFile(invalidJSONPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				return fmt.Errorf("failed to create invalid JSON file %s: %w", invalidJSONPath, err)
+			}
+			invalidJSONWriter = bufio.NewWriter(invalidJSONFile)
+		}
+		return nil
 	}
 
-	log.Printf("Written %d failed records to %s (batch %d)", len(records), filepath, batchNum)
+	if err := createNewFile(); err != nil {
+		return err
+	}
+	defer func() {
+		if currentWriter != nil {
+			currentWriter.Flush()
+		}
+		if currentFile != nil {
+			currentFile.Close()
+		}
+		if invalidJSONWriter != nil {
+			invalidJSONWriter.Flush()
+		}
+		if invalidJSONFile != nil {
+			invalidJSONFile.Close()
+		}
+	}()
+
+	for _, record := range records {
+		jsonData, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("failed to marshal record to JSON: %w", err)
+		}
+
+		if !json.Valid(jsonData) {
+			if err := ensureInvalidJSONFile(); err != nil {
+				return err
+			}
+			if _, err := invalidJSONWriter.Write(jsonData); err != nil {
+				return fmt.Errorf("failed to write invalid JSON to file: %w", err)
+			}
+			if _, err := invalidJSONWriter.WriteString("\n"); err != nil {
+				return fmt.Errorf("failed to write newline to invalid JSON file: %w", err)
+			}
+			invalidJSONCount++
+			log.Printf("WARNING: Invalid JSON detected for batch %d (full record written to invalid_json file)", batchNum)
+			continue
+		}
+
+		recordSize := int64(len(jsonData) + 1)
+		if currentFileSize > 0 && currentFileSize+recordSize > maxFileSize {
+			log.Printf("File size limit reached (%d bytes), creating new file part %d for batch %d", currentFileSize, partNum, batchNum)
+			if err := createNewFile(); err != nil {
+				return err
+			}
+		}
+
+		if _, err := currentWriter.Write(jsonData); err != nil {
+			return fmt.Errorf("failed to write record to file: %w", err)
+		}
+		if _, err := currentWriter.WriteString("\n"); err != nil {
+			return fmt.Errorf("failed to write newline: %w", err)
+		}
+		currentFileSize += recordSize
+		totalRecordsWritten++
+	}
+
+	if err := currentWriter.Flush(); err != nil {
+		return fmt.Errorf("failed to flush buffer: %w", err)
+	}
+
+	if invalidJSONWriter != nil {
+		if err := invalidJSONWriter.Flush(); err != nil {
+			return fmt.Errorf("failed to flush invalid JSON buffer: %w", err)
+		}
+	}
+
+	if partNum > 1 {
+		log.Printf("Written %d failed records across %d files (batch %d, chunk %d)", totalRecordsWritten, partNum, batchNum, chunkNum)
+	} else {
+		log.Printf("Written %d failed records to %s (batch %d)", totalRecordsWritten, currentFilePath, batchNum)
+	}
+	if invalidJSONCount > 0 {
+		log.Printf("WARNING: %d invalid JSON records written to invalid_json_chunk_%d_batch_%d.json", invalidJSONCount, chunkNum, batchNum)
+	}
 	return nil
 }
 
-// readFailedBatchFromJSON reads full record data from JSON file
 func readFailedBatchFromJSON(filepath string) ([]map[string]interface{}, error) {
-	jsonData, err := os.ReadFile(filepath)
+	file, err := os.Open(filepath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read JSON file %s: %w", filepath, err)
+		return nil, fmt.Errorf("failed to open JSON file %s: %w", filepath, err)
 	}
-
-	// Check for empty file
-	if len(jsonData) == 0 {
-		return []map[string]interface{}{}, nil
-	}
+	defer file.Close()
 
 	var records []map[string]interface{}
-	if err := json.Unmarshal(jsonData, &records); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal JSON: %w", err)
+	scanner := bufio.NewScanner(file)
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var record map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal JSON on line %d: %w", lineNum, err)
+		}
+		records = append(records, record)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read JSON file %s: %w", filepath, err)
 	}
 
 	return records, nil
@@ -3755,7 +3883,7 @@ func initQueryLogFile() error {
 	defer queryLogMutex.Unlock()
 
 	if queryLogFile != nil {
-		return nil // Already initialized
+		return nil
 	}
 
 	logDir := "failed_batches"
@@ -3775,8 +3903,6 @@ func initQueryLogFile() error {
 }
 
 func logQueryToFile(query string, pairs []EventEditionPair, foundCount int) {
-	// Skip logging for batches where all records exist (common case, not an error)
-	// This significantly improves performance by avoiding unnecessary I/O
 	if foundCount == len(pairs) {
 		return
 	}
@@ -3786,15 +3912,13 @@ func logQueryToFile(query string, pairs []EventEditionPair, foundCount int) {
 
 	if queryLogFile == nil {
 		if err := initQueryLogFile(); err != nil {
-			return // Silently fail if can't create log file
+			return
 		}
 	}
 
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	queryLogFile.WriteString(fmt.Sprintf("[%s] Checking %d pairs, Found %d existing\n", timestamp, len(pairs), foundCount))
 
-	// Truncate query to avoid writing extremely long queries (500+ pairs = huge query string)
-	// Log only first 1000 chars + last 200 chars to show structure
 	maxQueryLen := 1000
 	if len(query) > maxQueryLen {
 		queryPreview := query[:maxQueryLen] + "... [TRUNCATED, " + fmt.Sprintf("%d", len(query)-maxQueryLen) + " chars omitted] ..." + query[len(query)-200:]
@@ -3803,7 +3927,6 @@ func logQueryToFile(query string, pairs []EventEditionPair, foundCount int) {
 		queryLogFile.WriteString(fmt.Sprintf("QUERY:\n%s\n\n", query))
 	}
 
-	// Write sample pairs being checked (first 10 only to reduce I/O)
 	sampleSize := 10
 	if len(pairs) < sampleSize {
 		sampleSize = len(pairs)
@@ -3816,8 +3939,6 @@ func logQueryToFile(query string, pairs []EventEditionPair, foundCount int) {
 		queryLogFile.WriteString(fmt.Sprintf("  ... (%d more pairs)\n", len(pairs)-sampleSize))
 	}
 	queryLogFile.WriteString("\n")
-	// Don't call Sync() after every batch - let OS buffer and flush periodically
-	// This significantly improves performance for large batch processing
 }
 
 func checkExistenceInClickHouse(clickhouseConn driver.Conn, pairs []EventEditionPair, config shared.Config) (map[uint64]bool, error) {
