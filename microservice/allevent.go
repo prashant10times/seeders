@@ -380,19 +380,45 @@ func decodeValueWithBase64Support(value interface{}, fieldType string) interface
 		return decodeBase64NullableDate(value)
 	}
 
-	if len(str) >= 4 && (strings.HasSuffix(str, "=") || strings.HasSuffix(str, "==")) {
-		decoded, err := base64.StdEncoding.DecodeString(str)
-		if err == nil {
-			decodedStr := string(decoded)
-			if len(decodedStr) > 0 {
-				printableCount := 0
-				for _, r := range decodedStr {
-					if r >= 32 && r <= 126 {
-						printableCount++
-					}
+	// Try to decode base64 - check for padding first (common case), then try without padding
+	// Base64 strings are typically longer than 4 chars and contain only base64 characters
+	if len(str) >= 4 {
+		// Check if it looks like base64 (contains only base64 characters)
+		isBase64Like := true
+		base64Chars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+		for _, r := range str {
+			if !strings.ContainsRune(base64Chars, r) {
+				isBase64Like = false
+				break
+			}
+		}
+
+		if isBase64Like {
+			// Try decoding - first with original string, then with padding if needed
+			decoded, err := base64.StdEncoding.DecodeString(str)
+			if err != nil {
+				// If decoding failed, try adding padding
+				// Base64 padding is needed when length is not multiple of 4
+				missingPadding := (4 - len(str)%4) % 4
+				if missingPadding > 0 {
+					paddedStr := str + strings.Repeat("=", missingPadding)
+					decoded, err = base64.StdEncoding.DecodeString(paddedStr)
 				}
-				if float64(printableCount)/float64(len(decodedStr)) >= 0.8 {
-					return decodedStr
+			}
+
+			if err == nil {
+				decodedStr := string(decoded)
+				if len(decodedStr) > 0 {
+					printableCount := 0
+					for _, r := range decodedStr {
+						if r >= 32 && r <= 126 {
+							printableCount++
+						}
+					}
+					// Only return decoded if it's mostly printable (80% threshold)
+					if float64(printableCount)/float64(len(decodedStr)) >= 0.8 {
+						return decodedStr
+					}
 				}
 			}
 		}
@@ -4729,12 +4755,12 @@ func buildAlleventRecord(
 	record := map[string]interface{}{
 		"event_id":          eventData["id"],
 		"event_uuid":        shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(eventData["id"]), shared.ConvertToString(edition["edition_created"]))),
-		"event_name":        eventData["event_name"],
-		"event_abbr_name":   eventData["abbr_name"],
-		"event_description": esInfoMap["event_description"],
-		"event_punchline":   esInfoMap["event_punchline"],
-		"start_date":        eventData["start_date"],
-		"end_date":          eventData["end_date"],
+		"event_name":        decodeBase64StringIfNeeded(eventData["event_name"]),
+		"event_abbr_name":   decodeBase64NullableStringIfNeeded(eventData["abbr_name"]),
+		"event_description": decodeBase64NullableStringIfNeeded(esInfoMap["event_description"]),
+		"event_punchline":   decodeBase64NullableStringIfNeeded(esInfoMap["event_punchline"]),
+		"start_date":        decodeBase64Date(eventData["start_date"]),
+		"end_date":          decodeBase64Date(eventData["end_date"]),
 		"edition_id":        edition["edition_id"],
 		"edition_country":   editionCountryISO,
 		"edition_city": func() interface{} {
@@ -4743,10 +4769,10 @@ func buildAlleventRecord(
 			}
 			return nil
 		}(),
-		"edition_city_name": shared.ConvertToString(city["name"]),
+		"edition_city_name": decodeBase64StringIfNeeded(city["name"]),
 		"edition_city_state": func() string {
 			if city != nil && city["state"] != nil {
-				stateStr := shared.ConvertToString(city["state"])
+				stateStr := decodeBase64StringIfNeeded(city["state"])
 				if strings.TrimSpace(stateStr) == "" {
 					return "any"
 				}
@@ -4803,18 +4829,24 @@ func buildAlleventRecord(
 			idInputString := fmt.Sprintf("company-%s-%s", eventIDStr, editionIDStr)
 			return shared.GenerateUUIDFromString(idInputString)
 		}(),
-		"company_name":    company["company_name"],
+		"company_name":    decodeBase64NullableStringIfNeeded(company["company_name"]),
 		"company_domain":  companyDomain,
-		"company_website": company["company_website"],
-		"companyLogoUrl":  company["company_logo_url"],
-		"company_country": strings.ToUpper(shared.ConvertToString(company["company_country"])),
+		"company_website": decodeBase64NullableStringIfNeeded(company["company_website"]),
+		"companyLogoUrl":  decodeBase64NullableStringIfNeeded(company["company_logo_url"]),
+		"company_country": func() *string {
+			country := decodeBase64NullableStringIfNeeded(company["company_country"])
+			if country != nil {
+				upper := strings.ToUpper(*country)
+				return &upper
+			}
+			return nil
+		}(),
 		"company_state": func() *string {
 			if companyCity != nil && companyCity["state"] != nil {
-				stateStr := shared.ConvertToString(companyCity["state"])
-				if strings.TrimSpace(stateStr) == "" {
-					return nil
+				stateStr := decodeBase64NullableStringIfNeeded(companyCity["state"])
+				if stateStr != nil && strings.TrimSpace(*stateStr) != "" {
+					return stateStr
 				}
-				return &stateStr
 			}
 			return nil
 		}(),
@@ -4826,18 +4858,16 @@ func buildAlleventRecord(
 		}(),
 		"company_city_name": func() *string {
 			if companyCity != nil && companyCity["name"] != nil {
-				nameStr := shared.ConvertToString(companyCity["name"])
-				return &nameStr
+				return decodeBase64NullableStringIfNeeded(companyCity["name"])
 			}
 			return nil
 		}(),
 		"company_address": func() *string {
 			if company != nil && company["address"] != nil {
-				addressStr := shared.ConvertToString(company["address"])
-				if strings.TrimSpace(addressStr) == "" {
-					return nil
+				addressStr := decodeBase64NullableStringIfNeeded(company["address"])
+				if addressStr != nil && strings.TrimSpace(*addressStr) != "" {
+					return addressStr
 				}
-				return &addressStr
 			}
 			return nil
 		}(),
@@ -4847,8 +4877,15 @@ func buildAlleventRecord(
 			}
 			return nil
 		}(),
-		"venue_name":    venue["venue_name"],
-		"venue_country": strings.ToUpper(shared.ConvertToString(venue["venue_country"])),
+		"venue_name": decodeBase64NullableStringIfNeeded(venue["venue_name"]),
+		"venue_country": func() *string {
+			country := decodeBase64NullableStringIfNeeded(venue["venue_country"])
+			if country != nil {
+				upper := strings.ToUpper(*country)
+				return &upper
+			}
+			return nil
+		}(),
 		"venue_city": func() interface{} {
 			if venueCityLocationChID != nil {
 				return uint32(*venueCityLocationChID)
@@ -4857,8 +4894,7 @@ func buildAlleventRecord(
 		}(),
 		"venue_city_name": func() *string {
 			if venueCity != nil && venueCity["name"] != nil {
-				nameStr := shared.ConvertToString(venueCity["name"])
-				return &nameStr
+				return decodeBase64NullableStringIfNeeded(venueCity["name"])
 			}
 			return nil
 		}(),
@@ -4868,7 +4904,7 @@ func buildAlleventRecord(
 		"status":                 eventData["status"],
 		"editions_audiance_type": eventData["event_audience"],
 		"edition_functionality":  eventData["functionality"],
-		"edition_website":        edition["edition_website"],
+		"edition_website":        decodeBase64NullableStringIfNeeded(edition["edition_website"]),
 		"edition_domain":         editionDomain,
 		"event_followers":        esInfoMap["event_following"],
 		"edition_followers":      esInfoMap["event_following"],
@@ -4881,9 +4917,9 @@ func buildAlleventRecord(
 		"edition_sponsor":        esInfoMap["edition_sponsor"],
 		"event_speaker":          esInfoMap["event_speakers"],
 		"edition_speaker":        esInfoMap["edition_speaker"],
-		"event_created":          eventData["created"],
-		"event_updated":          eventData["modified"],
-		"edition_created":        edition["edition_created"],
+		"event_created":          decodeBase64DateTime(eventData["created"]),
+		"event_updated":          decodeBase64DateTime(eventData["modified"]),
+		"edition_created":        decodeBase64DateTime(edition["edition_created"]),
 		"event_hybrid":           esInfoMap["event_hybrid"],
 		"isBranded": func() *uint32 {
 			if eventData["brand_id"] != nil {
@@ -4953,23 +4989,23 @@ func buildAlleventRecord(
 			}
 			return []string{}
 		}(),
-		"event_logo":                      esInfoMap["event_logo"],
-		"event_estimatedVisitors":         esInfoMap["eventEstimatedTag"],
-		"event_frequency":                 esInfoMap["event_frequency"],
+		"event_logo":                      decodeBase64NullableStringIfNeeded(esInfoMap["event_logo"]),
+		"event_estimatedVisitors":         decodeBase64NullableStringIfNeeded(esInfoMap["eventEstimatedTag"]),
+		"event_frequency":                 decodeBase64NullableStringIfNeeded(esInfoMap["event_frequency"]),
 		"impactScore":                     esInfoMap["impactScore"],
 		"inboundScore":                    esInfoMap["inboundScore"],
 		"internationalScore":              esInfoMap["internationalScore"],
 		"repeatSentimentChangePercentage": esInfoMap["repeatSentimentChangePercentage"],
 		"repeatSentiment":                 esInfoMap["repeatSentiment"],
 		"reputationChangePercentage":      esInfoMap["reputationChangePercentage"],
-		"audienceZone":                    esInfoMap["audienceZone"],
+		"audienceZone":                    decodeBase64NullableStringIfNeeded(esInfoMap["audienceZone"]),
 		"event_avgRating":                 esInfoMap["avg_rating"],
-		"10timesEventPageUrl":             eventData["url"],
+		"10timesEventPageUrl":             decodeBase64NullableStringIfNeeded(eventData["url"]),
 		"keywords":                        []string{},
 		"event_score":                     eventData["score"],
 		"yoyGrowth":                       esInfoMap["yoyGrowth"],
-		"futureExpexctedStartDate":        esInfoMap["futureExpexctedStartDate"],
-		"futureExpexctedEndDate":          esInfoMap["futureExpexctedEndDate"],
+		"futureExpexctedStartDate":        decodeBase64NullableDate(esInfoMap["futureExpexctedStartDate"]),
+		"futureExpexctedEndDate":          decodeBase64NullableDate(esInfoMap["futureExpexctedEndDate"]),
 		"PrimaryEventType": func() *string {
 			eventTypes := eventTypesMap[eventID]
 			eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
@@ -4979,7 +5015,7 @@ func buildAlleventRecord(
 		"verifiedOn": func() *string {
 			verified := eventData["verified"]
 			if verified != nil {
-				verifiedStr := shared.ConvertToString(verified)
+				verifiedStr := decodeBase64StringIfNeeded(verified)
 				if len(verifiedStr) >= 10 {
 					datePart := verifiedStr[:10]
 					return &datePart
