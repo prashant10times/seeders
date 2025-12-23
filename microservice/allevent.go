@@ -3779,7 +3779,8 @@ func writeFailedBatchToJSON(records []map[string]interface{}, batchNum int, chun
 		if err != nil {
 			return fmt.Errorf("failed to create JSON file %s: %w", currentFilePath, err)
 		}
-		currentWriter = bufio.NewWriter(currentFile)
+		// Use a larger buffer (1MB) to handle large JSON records efficiently
+		currentWriter = bufio.NewWriterSize(currentFile, 1024*1024)
 		currentFileSize = 0
 		partNum++
 		return nil
@@ -3841,27 +3842,78 @@ func writeFailedBatchToJSON(records []map[string]interface{}, batchNum int, chun
 
 		// Check if this single record exceeds the file size limit
 		if recordSize > maxFileSize {
-			log.Printf("WARNING: Record size (%d bytes) exceeds file size limit (%d bytes) for batch %d. Writing anyway but may cause issues.", recordSize, maxFileSize, batchNum)
-		}
+			log.Printf("WARNING: Record size (%d bytes) exceeds file size limit (%d bytes) for batch %d. Writing to new file.", recordSize, maxFileSize, batchNum)
+			// If current file has data, close it first
+			if currentFileSize > 0 {
+				if err := createNewFile(); err != nil {
+					return err
+				}
+			}
+		} else {
+			// Check if adding this record would exceed the limit (only if record fits in one file)
+			// Use safety margin: if we're within 1MB of limit, create new file to prevent any edge cases
+			safetyMargin := int64(1024 * 1024) // 1MB safety margin
+			if currentFileSize > 0 {
+				// Only check actual file size if we're getting close to the limit (within 2MB)
+				// This avoids expensive stat() calls for every record
+				if currentFileSize+recordSize > maxFileSize-(2*safetyMargin) {
+					// Flush buffer first to get accurate file size on disk
+					if err := currentWriter.Flush(); err != nil {
+						return fmt.Errorf("failed to flush buffer before size check: %w", err)
+					}
+					// Get actual file size on disk for accurate checking
+					fileInfo, err := currentFile.Stat()
+					if err != nil {
+						return fmt.Errorf("failed to get file size: %w", err)
+					}
+					actualFileSize := fileInfo.Size()
 
-		// Check if adding this record would exceed the limit (only if record fits in one file)
-		if recordSize <= maxFileSize && currentFileSize > 0 && currentFileSize+recordSize > maxFileSize {
-			log.Printf("File size limit reached (%d bytes), creating new file part %d for batch %d", currentFileSize, partNum, batchNum)
-			if err := createNewFile(); err != nil {
-				return err
+					// Update currentFileSize to match actual disk size
+					currentFileSize = actualFileSize
+
+					// Check with safety margin: create new file if we're close to limit
+					if actualFileSize+recordSize > maxFileSize-safetyMargin {
+						log.Printf("File size limit approaching (%d bytes, adding %d bytes would exceed %d bytes), creating new file part %d for batch %d", actualFileSize, recordSize, maxFileSize-safetyMargin, partNum, batchNum)
+						if err := createNewFile(); err != nil {
+							return err
+						}
+					}
+				} else if currentFileSize+recordSize > maxFileSize {
+					// Quick check: if in-memory size would exceed limit, create new file
+					log.Printf("File size limit reached (%d bytes), creating new file part %d for batch %d", currentFileSize, partNum, batchNum)
+					if err := createNewFile(); err != nil {
+						return err
+					}
+				}
 			}
 		}
 
-		// Write the complete record atomically - flush after each write to prevent truncation
-		if _, err := currentWriter.Write(jsonData); err != nil {
-			return fmt.Errorf("failed to write record to file: %w", err)
-		}
-		if _, err := currentWriter.WriteString("\n"); err != nil {
-			return fmt.Errorf("failed to write newline: %w", err)
-		}
-		// Flush immediately after each record to prevent truncation if process is interrupted
-		if err := currentWriter.Flush(); err != nil {
-			return fmt.Errorf("failed to flush after writing record: %w", err)
+		// Write the complete record atomically in a single operation
+		// Combine jsonData + newline into one write for true atomicity
+		recordWithNewline := append(jsonData, '\n')
+
+		// For very large records, write directly to file to avoid buffer issues
+		if recordSize > 1024*1024 { // If record > 1MB, write directly
+			if err := currentWriter.Flush(); err != nil {
+				return fmt.Errorf("failed to flush buffer before large record write: %w", err)
+			}
+			// Single atomic write: record + newline together
+			if _, err := currentFile.Write(recordWithNewline); err != nil {
+				return fmt.Errorf("failed to write large record to file: %w", err)
+			}
+			// Sync to disk for large records to ensure data is persisted
+			if err := currentFile.Sync(); err != nil {
+				return fmt.Errorf("failed to sync large record to disk: %w", err)
+			}
+		} else {
+			// For smaller records, use buffered write (single atomic operation)
+			if _, err := currentWriter.Write(recordWithNewline); err != nil {
+				return fmt.Errorf("failed to write record to file: %w", err)
+			}
+			// Flush immediately after each record to prevent truncation if process is interrupted
+			if err := currentWriter.Flush(); err != nil {
+				return fmt.Errorf("failed to flush after writing record: %w", err)
+			}
 		}
 		currentFileSize += recordSize
 		totalRecordsWritten++
@@ -3869,6 +3921,12 @@ func writeFailedBatchToJSON(records []map[string]interface{}, batchNum int, chun
 
 	if err := currentWriter.Flush(); err != nil {
 		return fmt.Errorf("failed to flush buffer: %w", err)
+	}
+	// Sync to disk to ensure all data is persisted
+	if currentFile != nil {
+		if err := currentFile.Sync(); err != nil {
+			return fmt.Errorf("failed to sync file to disk: %w", err)
+		}
 	}
 
 	if invalidJSONWriter != nil {
@@ -5681,7 +5739,12 @@ func retryFailedBatchesAfterCompletion(
 			log.Printf("WARNING: Failed to create retry log file: %v", err)
 			logWriter = nil
 		} else {
-			defer logWriter.Close()
+			defer func() {
+				if logWriter != nil {
+					logWriter.Sync()
+					logWriter.Close()
+				}
+			}()
 			logWriter.WriteString(fmt.Sprintf("=== Retry Failed Batches Log - Started at %s ===\n\n", time.Now().Format("2006-01-02 15:04:05")))
 		}
 	}
@@ -5691,6 +5754,13 @@ func retryFailedBatchesAfterCompletion(
 		log.Print(msg)
 		if logWriter != nil {
 			logWriter.WriteString(msg + "\n")
+		}
+	}
+
+	// Helper function to ensure log file is flushed and synced before returning
+	ensureLogFlushed := func() {
+		if logWriter != nil {
+			logWriter.Sync() // Ensure data is written to disk
 		}
 	}
 
@@ -5832,12 +5902,11 @@ func retryFailedBatchesAfterCompletion(
 				logToFile("")
 				logToFile("  Writing %d failed records back to JSON...", len(allFailedRecords))
 				retryBatchNum := 1
-				for _, record := range allFailedRecords {
-					if err := writeFailedBatchToJSON([]map[string]interface{}{record}, retryBatchNum, chunkNum); err != nil {
-						logToFile("  WARNING: Failed to write failed record to JSON: %v", err)
-					}
+				if err := writeFailedBatchToJSON(allFailedRecords, retryBatchNum, chunkNum); err != nil {
+					logToFile("  WARNING: Failed to write failed records to JSON: %v", err)
+				} else {
+					logToFile("  ✓ Successfully wrote %d failed records to JSON", len(allFailedRecords))
 				}
-				logToFile("  ✓ Successfully wrote %d failed records to JSON", len(allFailedRecords))
 			}
 		}
 
@@ -5860,6 +5929,7 @@ func retryFailedBatchesAfterCompletion(
 			if logFile != "" {
 				logToFile("Full log saved to: %s", logFile)
 			}
+			ensureLogFlushed()
 			return nil
 		} else {
 			logToFile("")
@@ -5881,10 +5951,12 @@ func retryFailedBatchesAfterCompletion(
 				if logFile != "" {
 					logToFile("Full log saved to: %s", logFile)
 				}
+				ensureLogFlushed()
 				return fmt.Errorf("failed batches still remain after %d attempts: %d file(s) need to be processed", maxAttempts, remainingFiles)
 			}
 		}
 	}
 
+	ensureLogFlushed()
 	return nil
 }
