@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
@@ -643,7 +644,18 @@ func OptimizeSingleTable(clickhouseConn driver.Conn, tableName string, config Co
 	log.Printf("OPTIMIZING TABLE: %s (after insertion)", optimizeConfig.TableName)
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	if err := OptimizeTablePartitions(clickhouseConn, optimizeConfig, config, errorLogFile); err != nil {
+	log.Printf("Creating Native protocol connection for optimization (port %s)...", config.ClickhouseNativePort)
+	nativeConn, err := setupNativeProtocolConnectionForOptimize(config)
+	if err != nil {
+		errMsg := fmt.Errorf("failed to create Native protocol connection for optimization: %w", err)
+		logOptimizeToFile("ERROR", "Optimize Single Table", errMsg.Error())
+		log.Printf("⚠️  %v", errMsg)
+	} else {
+		defer nativeConn.Close()
+		log.Printf("✓ Native protocol connection established for optimization")
+	}
+
+	if err := OptimizeTablePartitions(nativeConn, optimizeConfig, config, errorLogFile); err != nil {
 		logOptimizeToFile("ERROR", "Optimize Single Table", fmt.Sprintf("Error optimizing %s: %v", tableName, err))
 		log.Printf("⚠️  Error optimizing %s: %v", tableName, err)
 		return err
@@ -707,4 +719,41 @@ func OptimizeAllPhase1Tables(clickhouseConn driver.Conn, config Config, errorLog
 	logOptimizeToFile("SUCCESS", "Optimize All Phase 1 Tables", "Completed optimization for all Phase 1 tables")
 
 	return nil
+}
+
+func setupNativeProtocolConnectionForOptimize(config Config) (driver.Conn, error) {
+	conn, err := clickhouse.Open(&clickhouse.Options{
+		Addr: []string{config.ClickhouseHost + ":" + config.ClickhouseNativePort},
+		Auth: clickhouse.Auth{
+			Database: config.ClickhouseDB,
+			Username: config.ClickhouseUser,
+			Password: config.ClickhousePassword,
+		},
+		Protocol: clickhouse.Native,
+		Settings: clickhouse.Settings{
+			"max_execution_time": 900,     
+			"max_block_size":     1000000, 
+			"mutations_sync":     0,       
+			"receive_timeout":    900,     
+			"send_timeout":       900,     
+		},
+		Compression: &clickhouse.Compression{
+			Method: clickhouse.CompressionLZ4,
+		},
+		MaxOpenConns:     50,
+		MaxIdleConns:     25,
+		DialTimeout:      900 * time.Second, 
+		ReadTimeout:      900 * time.Second, 
+		ConnOpenStrategy: clickhouse.ConnOpenInOrder,
+		Debug:            false,
+	})
+
+	if err != nil {
+		if conn != nil {
+			conn.Close()
+		}
+		return nil, fmt.Errorf("ClickHouse Native protocol connection failed: %v", err)
+	}
+
+	return conn, nil
 }

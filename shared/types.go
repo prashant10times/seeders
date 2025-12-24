@@ -18,19 +18,20 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	DatabaseHost       string `envconfig:"DB_HOST" required:"true"`
-	DatabasePort       int    `envconfig:"DB_PORT" required:"true"`
-	DatabaseName       string `envconfig:"DB_NAME" required:"true"`
-	DatabaseUser       string `envconfig:"DB_USER" required:"true"`
-	DatabasePassword   string `envconfig:"DB_PASSWORD" required:"true"`
-	ClickhouseUser     string `envconfig:"CLICKHOUSE_USER" required:"true"`
-	ClickhousePassword string `envconfig:"CLICKHOUSE_PASSWORD" required:"true"`
-	ClickhouseHost     string `envconfig:"CLICKHOUSE_HOST" required:"true"`
-	ClickhousePort     string `envconfig:"CLICKHOUSE_PORT" required:"true"`
-	ClickhouseDB       string `envconfig:"CLICKHOUSE_DB" required:"true"`
-	ElasticsearchHost  string `envconfig:"ELASTICSEARCH_HOST" required:"true"`
-	ElasticsearchPort  string `envconfig:"ELASTICSEARCH_PORT" required:"true"`
-	ElasticsearchIndex string `envconfig:"ELASTICSEARCH_INDEX" required:"true"`
+	DatabaseHost         string `envconfig:"DB_HOST" required:"true"`
+	DatabasePort         int    `envconfig:"DB_PORT" required:"true"`
+	DatabaseName         string `envconfig:"DB_NAME" required:"true"`
+	DatabaseUser         string `envconfig:"DB_USER" required:"true"`
+	DatabasePassword     string `envconfig:"DB_PASSWORD" required:"true"`
+	ClickhouseUser       string `envconfig:"CLICKHOUSE_USER" required:"true"`
+	ClickhousePassword   string `envconfig:"CLICKHOUSE_PASSWORD" required:"true"`
+	ClickhouseHost       string `envconfig:"CLICKHOUSE_HOST" required:"true"`
+	ClickhousePort       string `envconfig:"CLICKHOUSE_PORT" required:"true"`
+	ClickhouseNativePort string `envconfig:"CLICKHOUSE_NATIVE_PORT" required:"true"`
+	ClickhouseDB         string `envconfig:"CLICKHOUSE_DB" required:"true"`
+	ElasticsearchHost    string `envconfig:"ELASTICSEARCH_HOST" required:"true"`
+	ElasticsearchPort    string `envconfig:"ELASTICSEARCH_PORT" required:"true"`
+	ElasticsearchIndex   string `envconfig:"ELASTICSEARCH_INDEX" required:"true"`
 
 	MySQLDSN               string
 	ClickhouseDSN          string
