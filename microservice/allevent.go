@@ -567,7 +567,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 
 type alleventRecord struct {
 	EventID                         uint32   `ch:"event_id"`
-	EventUUID                       string   `ch:"event_uuid"` // UUID generated from event_id + edition_created
+	EventUUID                       string   `ch:"event_uuid"` // UUID generated from event_id + event_created
 	EventName                       string   `ch:"event_name"`
 	EventAbbrName                   *string  `ch:"event_abbr_name"`
 	EventDescription                *string  `ch:"event_description"`
@@ -4905,7 +4905,7 @@ func buildAlleventRecord(
 ) map[string]interface{} {
 	record := map[string]interface{}{
 		"event_id":          eventData["id"],
-		"event_uuid":        shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(eventData["id"]), shared.ConvertToString(edition["edition_created"]))),
+		"event_uuid":        shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(eventData["id"]), decodeBase64DateTime(eventData["created"]))),
 		"event_name":        decodeBase64StringIfNeeded(eventData["event_name"]),
 		"event_abbr_name":   decodeBase64NullableStringIfNeeded(eventData["abbr_name"]),
 		"event_description": decodeBase64NullableStringIfNeeded(esInfoMap["event_description"]),
