@@ -316,6 +316,8 @@ func fetchHolidayLocations(mysqlDB *sql.DB, clusterName, startDate, endDate stri
 		SELECT hs.id, hs.entity_id, hs.entity_type
 		FROM holiday h 
 		LEFT JOIN holiday_score hs ON h.id = hs.holiday_id 
+		LEFT JOIN city c ON hs.entity_id = c.id AND hs.entity_type = 'city'
+		LEFT JOIN area_values av ON c.state_id = av.id
 		WHERE h.cluster_name = ?
 		AND h.start_date = ?
 		AND h.end_date = ?
@@ -364,12 +366,33 @@ func getDistinctLocationSourceIDs(holidayLocations []map[string]interface{}) []s
 	locationSourceIDs := make(map[string]bool)
 
 	for _, holidayLocation := range holidayLocations {
-		entityID := shared.SafeConvertToString(holidayLocation["entity_id"])
-		entityType := shared.SafeConvertToString(holidayLocation["entity_type"])
+		entityID := holidayLocation["entity_id"]
+		entityType := holidayLocation["entity_type"]
+		stateID := holidayLocation["state_id"]
+		stateNameISO := holidayLocation["state_name_iso"]
 
-		if entityID != "" && entityType != "" {
-			sourceID := fmt.Sprintf("%s-%s", entityType, entityID)
-			locationSourceIDs[sourceID] = true
+		if entityID != nil && entityType != nil {
+			entityTypeStr := strings.ToLower(shared.SafeConvertToString(entityType))
+
+			// Skip states
+			if entityTypeStr != "state" {
+				entityIDStr := shared.SafeConvertToString(entityID)
+				if entityIDStr != "" {
+					sourceID := fmt.Sprintf("%s-%s", entityTypeStr, entityIDStr)
+					locationSourceIDs[sourceID] = true
+					// For cities, also add state location using state_name_iso and state_id
+					if entityTypeStr == "city" {
+						if stateNameISO != nil && stateID != nil {
+							stateNameISOStr := shared.SafeConvertToString(stateNameISO)
+							stateIDStr := shared.SafeConvertToString(stateID)
+							if stateNameISOStr != "" && stateIDStr != "" {
+								stateSourceID := fmt.Sprintf("state-%s-%s", stateNameISOStr, stateIDStr)
+								locationSourceIDs[stateSourceID] = true
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 
