@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -396,7 +397,133 @@ func formatPartitionValue(partitionValue string) string {
 	return fmt.Sprintf("'%s'", strings.ReplaceAll(partitionValue, "'", "''"))
 }
 
+// MemoryInfo represents ClickHouse memory usage information
+type MemoryInfo struct {
+	CurrentRSS uint64 // Current RSS in bytes
+	MaxMemory  uint64 // Maximum memory limit in bytes
+	MemoryUsed uint64 // Memory currently used in bytes
+	MemoryFree uint64 // Memory free in bytes
+}
+
+// GetClickHouseMemoryUsage retrieves current memory usage from ClickHouse
+func GetClickHouseMemoryUsage(clickhouseConn driver.Conn) (*MemoryInfo, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Get memory usage from system.metrics
+	query := `
+		SELECT 
+			value
+		FROM system.metrics
+		WHERE metric = 'MemoryTracking'
+		LIMIT 1
+	`
+
+	var memoryUsedInt64 int64
+	row := clickhouseConn.QueryRow(ctx, query)
+	if err := row.Scan(&memoryUsedInt64); err != nil {
+		return nil, fmt.Errorf("failed to get memory usage from system.metrics: %w", err)
+	}
+	var memoryUsed uint64
+	if memoryUsedInt64 < 0 {
+		return nil, fmt.Errorf("memory usage value is negative: %d", memoryUsedInt64)
+	}
+	memoryUsed = uint64(memoryUsedInt64)
+
+	// Get max memory from settings
+	maxMemoryQuery := `
+		SELECT 
+			value
+		FROM system.settings
+		WHERE name = 'max_memory_usage'
+		LIMIT 1
+	`
+
+	var maxMemoryStr string
+	row3 := clickhouseConn.QueryRow(ctx, maxMemoryQuery)
+	if err := row3.Scan(&maxMemoryStr); err != nil {
+		return nil, fmt.Errorf("failed to get max_memory_usage setting: %w", err)
+	}
+
+	maxMemory, err := strconv.ParseUint(maxMemoryStr, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse max_memory_usage value '%s': %w", maxMemoryStr, err)
+	}
+	if maxMemory == 0 {
+		return nil, fmt.Errorf("max_memory_usage is 0, which is invalid")
+	}
+
+	return &MemoryInfo{
+		CurrentRSS: memoryUsed,
+		MaxMemory:  maxMemory,
+		MemoryUsed: memoryUsed,
+		MemoryFree: maxMemory - memoryUsed,
+	}, nil
+}
+
+func WaitForMemoryAvailability(clickhouseConn driver.Conn, requiredMemoryBytes uint64, maxWaitTime time.Duration) error {
+	startTime := time.Now()
+	checkInterval := 10 * time.Second
+	requiredFreeMemory := requiredMemoryBytes * 120 / 100 // 20% safety margin
+
+	log.Printf("Waiting for memory availability (need ~%d bytes free, max wait: %v)...", requiredFreeMemory, maxWaitTime)
+
+	for time.Since(startTime) < maxWaitTime {
+		memInfo, err := GetClickHouseMemoryUsage(clickhouseConn)
+		if err != nil {
+			log.Printf("Warning: Failed to check memory usage: %v, continuing anyway...", err)
+			time.Sleep(checkInterval)
+			continue
+		}
+
+		availableMemory := memInfo.MaxMemory - memInfo.MemoryUsed
+
+		if availableMemory >= requiredFreeMemory {
+			log.Printf("✓ Memory available: %d bytes free (need %d bytes)", availableMemory, requiredFreeMemory)
+			return nil
+		}
+
+		usedPercent := float64(memInfo.MemoryUsed) / float64(memInfo.MaxMemory) * 100
+		log.Printf("Memory usage: %.1f%% (%.2f GiB / %.2f GiB), waiting %v...",
+			usedPercent,
+			float64(memInfo.MemoryUsed)/(1024*1024*1024),
+			float64(memInfo.MaxMemory)/(1024*1024*1024),
+			checkInterval)
+
+		time.Sleep(checkInterval)
+	}
+
+	return fmt.Errorf("timeout waiting for memory availability after %v", maxWaitTime)
+}
+
+func CheckMemoryBeforeOptimize(clickhouseConn driver.Conn, partitionSizeBytes uint64) (bool, error) {
+	memInfo, err := GetClickHouseMemoryUsage(clickhouseConn)
+	if err != nil {
+		log.Printf("Warning: Could not check memory usage: %v, proceeding with optimization", err)
+		return true, nil
+	}
+
+	availableMemory := memInfo.MaxMemory - memInfo.MemoryUsed
+	minFreeMemory := memInfo.MaxMemory * 20 / 100 // need at least 20% of max memory free
+
+	if availableMemory < minFreeMemory {
+		usedPercent := float64(memInfo.MemoryUsed) / float64(memInfo.MaxMemory) * 100
+		log.Printf("⚠️  Memory usage too high: %.1f%% (%.2f GiB / %.2f GiB), need at least %.2f GiB free",
+			usedPercent,
+			float64(memInfo.MemoryUsed)/(1024*1024*1024),
+			float64(memInfo.MaxMemory)/(1024*1024*1024),
+			float64(minFreeMemory)/(1024*1024*1024))
+		return false, nil
+	}
+
+	return true, nil
+}
+
 func OptimizeTablePartition(clickhouseConn driver.Conn, tableName, partitionValue string, dbConfig Config, errorLogFile string) error {
+	return OptimizeTablePartitionWithSize(clickhouseConn, tableName, partitionValue, 0, dbConfig, errorLogFile)
+}
+
+func OptimizeTablePartitionWithSize(clickhouseConn driver.Conn, tableName, partitionValue string, partitionSizeBytes uint64, dbConfig Config, errorLogFile string) error {
 	fullTableName := GetTableNameWithDB(tableName, dbConfig)
 	formattedPartition := formatPartitionValue(partitionValue)
 	query := fmt.Sprintf("OPTIMIZE TABLE %s PARTITION %s SETTINGS mutations_sync = 0", fullTableName, formattedPartition)
@@ -418,17 +545,61 @@ func OptimizeTablePartition(clickhouseConn driver.Conn, tableName, partitionValu
 		return err
 	}
 
+	if partitionSizeBytes > 0 {
+		canOptimize, err := CheckMemoryBeforeOptimize(clickhouseConn, partitionSizeBytes)
+		if err != nil {
+			log.Printf("Warning: Memory check failed: %v, proceeding anyway...", err)
+		} else if !canOptimize {
+			if waitErr := WaitForMemoryAvailability(clickhouseConn, partitionSizeBytes, 5*time.Minute); waitErr != nil {
+				errMsg := fmt.Errorf("insufficient memory for OPTIMIZE %s PARTITION %s: %w", tableName, partitionValue, waitErr)
+				logErrorToFile("Optimize Partition", errMsg, errorLogFile)
+				logOptimizeToFile("ERROR", "Optimize Partition", fmt.Sprintf("Insufficient memory for OPTIMIZE %s PARTITION %s: %v", tableName, partitionValue, waitErr))
+				return errMsg
+			}
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	execCtx, execCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	err := clickhouseConn.Exec(execCtx, query)
-	execCancel()
+	maxRetries := 3
+	var execErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if attempt > 1 {
+			waitTime := time.Duration(attempt) * 30 * time.Second
+			log.Printf("Retry attempt %d/%d: Waiting %v for memory to free up...", attempt, maxRetries, waitTime)
+			logOptimizeToFile("INFO", "Optimize Partition", fmt.Sprintf("Retry attempt %d/%d for %s PARTITION %s: waiting %v", attempt, maxRetries, tableName, partitionValue, waitTime))
+			time.Sleep(waitTime)
+			if partitionSizeBytes > 0 {
+				if waitErr := WaitForMemoryAvailability(clickhouseConn, partitionSizeBytes, 2*time.Minute); waitErr != nil {
+					log.Printf("Warning: Memory still not available: %v, attempting anyway...", waitErr)
+				}
+			}
+		}
 
-	if err != nil {
-		errMsg := fmt.Errorf("OPTIMIZE failed to start for %s PARTITION %s: %w", tableName, partitionValue, err)
+		execCtx, execCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		execErr = clickhouseConn.Exec(execCtx, query)
+		execCancel()
+
+		if execErr == nil {
+			break
+		}
+		errStr := execErr.Error()
+		if strings.Contains(errStr, "memory limit exceeded") || strings.Contains(errStr, "MEMORY_LIMIT_EXCEEDED") {
+			log.Printf("⚠️  Memory limit error on attempt %d/%d: %v", attempt, maxRetries, execErr)
+			logOptimizeToFile("WARNING", "Optimize Partition", fmt.Sprintf("Memory limit error on attempt %d/%d for %s PARTITION %s: %v", attempt, maxRetries, tableName, partitionValue, execErr))
+			if attempt < maxRetries {
+				continue // Retry
+			}
+		} else {
+			break
+		}
+	}
+
+	if execErr != nil {
+		errMsg := fmt.Errorf("OPTIMIZE failed to start for %s PARTITION %s: %w", tableName, partitionValue, execErr)
 		logErrorToFile("Optimize Partition", errMsg, errorLogFile)
-		logOptimizeToFile("ERROR", "Optimize Partition", fmt.Sprintf("OPTIMIZE failed to start for %s PARTITION %s: %v", tableName, partitionValue, err))
+		logOptimizeToFile("ERROR", "Optimize Partition", fmt.Sprintf("OPTIMIZE failed to start for %s PARTITION %s: %v", tableName, partitionValue, execErr))
 		return errMsg
 	}
 
@@ -436,13 +607,13 @@ func OptimizeTablePartition(clickhouseConn driver.Conn, tableName, partitionValu
 	logOptimizeToFile("INFO", "Optimize Partition", fmt.Sprintf("OPTIMIZE started in async mode for %s PARTITION %s, monitoring completion", tableName, partitionValue))
 
 	startTime := time.Now()
-	err = waitForOptimizeCompletion(clickhouseConn, dbConfig, fullTableName, formattedPartition, ctx)
+	waitErr := waitForOptimizeCompletion(clickhouseConn, dbConfig, fullTableName, formattedPartition, ctx)
 	duration := time.Since(startTime)
 
-	if err != nil {
-		errMsg := fmt.Errorf("OPTIMIZE failed for %s PARTITION %s after %v: %w", tableName, partitionValue, duration, err)
+	if waitErr != nil {
+		errMsg := fmt.Errorf("OPTIMIZE failed for %s PARTITION %s after %v: %w", tableName, partitionValue, duration, waitErr)
 		logErrorToFile("Optimize Partition", errMsg, errorLogFile)
-		logOptimizeToFile("ERROR", "Optimize Partition", fmt.Sprintf("OPTIMIZE failed for %s PARTITION %s after %v: %v", tableName, partitionValue, duration, err))
+		logOptimizeToFile("ERROR", "Optimize Partition", fmt.Sprintf("OPTIMIZE failed for %s PARTITION %s after %v: %v", tableName, partitionValue, duration, waitErr))
 		return errMsg
 	}
 
@@ -584,6 +755,23 @@ func OptimizeTablePartitions(clickhouseConn driver.Conn, optimizeConfig TableOpt
 	logOptimizeToFile("INFO", "Optimize Table", priorityMsg)
 	log.Println("")
 
+	sort.Slice(normalPartitions, func(i, j int) bool {
+		var sizeI, sizeJ uint64
+		for _, part := range partitionInfos {
+			if part.Partition == normalPartitions[i] {
+				sizeI = part.BytesOnDisk
+				break
+			}
+		}
+		for _, part := range partitionInfos {
+			if part.Partition == normalPartitions[j] {
+				sizeJ = part.BytesOnDisk
+				break
+			}
+		}
+		return sizeI < sizeJ
+	})
+
 	partitionsToOptimize := append(priorityPartitions, normalPartitions...)
 
 	for i, partition := range partitionsToOptimize {
@@ -610,7 +798,11 @@ func OptimizeTablePartitions(clickhouseConn driver.Conn, optimizeConfig TableOpt
 		}
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-		optimizeErr := OptimizeTablePartition(clickhouseConn, optimizeConfig.TempTableName, partition, dbConfig, errorLogFile)
+		var partitionSizeBytes uint64
+		if partInfo != nil {
+			partitionSizeBytes = partInfo.BytesOnDisk
+		}
+		optimizeErr := OptimizeTablePartitionWithSize(clickhouseConn, optimizeConfig.TempTableName, partition, partitionSizeBytes, dbConfig, errorLogFile)
 
 		if optimizeErr != nil {
 			errMsg := fmt.Errorf("failed to optimize partition %s for %s: %w", partition, optimizeConfig.TableName, optimizeErr)
@@ -622,6 +814,17 @@ func OptimizeTablePartitions(clickhouseConn driver.Conn, optimizeConfig TableOpt
 			successMsg := fmt.Sprintf("Successfully optimized partition %s for %s", partition, optimizeConfig.TableName)
 			log.Printf("✓ %s", successMsg)
 			logOptimizeToFile("SUCCESS", "Optimize Table", successMsg)
+		}
+
+		if i < len(partitionsToOptimize)-1 {
+			delay := 15 * time.Second
+			if partInfo != nil {
+				if partInfo.BytesOnDisk > 1024*1024*1024 {
+					delay = 30 * time.Second
+				}
+			}
+			log.Printf("Waiting %v before next optimization to allow memory cleanup...", delay)
+			time.Sleep(delay)
 		}
 		log.Println("")
 	}
@@ -731,19 +934,19 @@ func setupNativeProtocolConnectionForOptimize(config Config) (driver.Conn, error
 		},
 		Protocol: clickhouse.Native,
 		Settings: clickhouse.Settings{
-			"max_execution_time": 900,     
-			"max_block_size":     1000000, 
-			"mutations_sync":     0,       
-			"receive_timeout":    900,     
-			"send_timeout":       900,     
+			"max_execution_time": 900,
+			"max_block_size":     1000000,
+			"mutations_sync":     0,
+			"receive_timeout":    900,
+			"send_timeout":       900,
 		},
 		Compression: &clickhouse.Compression{
 			Method: clickhouse.CompressionLZ4,
 		},
 		MaxOpenConns:     50,
 		MaxIdleConns:     25,
-		DialTimeout:      900 * time.Second, 
-		ReadTimeout:      900 * time.Second, 
+		DialTimeout:      900 * time.Second,
+		ReadTimeout:      900 * time.Second,
 		ConnOpenStrategy: clickhouse.ConnOpenInOrder,
 		Debug:            false,
 	})

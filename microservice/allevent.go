@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"seeders/shared"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -670,7 +671,7 @@ type alleventRecord struct {
 }
 
 func buildalleventMigrationData(db *sql.DB, table string, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
-	query := fmt.Sprintf("SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, country, published, status, event_audience, functionality, brand_id, created FROM %s WHERE id >= %d AND id <= %d ORDER BY id, created LIMIT %d", table, startID, endID, batchSize)
+	query := fmt.Sprintf("SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, country, published, status, event_audience, functionality, brand_id, created FROM %s WHERE id >= %d AND id <= %d ORDER BY id, end_date LIMIT %d", table, startID, endID, batchSize)
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -1052,10 +1053,11 @@ func fetchEditionsByEditionIDsBatch(db *sql.DB, editionIDs []int64) []map[string
 			event, id as edition_id, city as edition_city, 
 			company_id, venue as venue_id, website as edition_website, 
 			created as edition_created, start_date as edition_start_date,
+			end_date as edition_end_date,
 			exhibitors_total, online_event as is_online
 		FROM event_edition 
 		WHERE id IN (%s)
-		ORDER BY created`, strings.Join(placeholders, ","))
+		ORDER BY end_date`, strings.Join(placeholders, ","))
 
 	editionRows, err := db.Query(editionQuery, args...)
 	if err != nil {
@@ -1169,7 +1171,7 @@ func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]int
 			event_edition as current_edition_id
 		FROM event 
 		WHERE id IN (%s)
-		ORDER BY created`, strings.Join(placeholders, ","))
+		ORDER BY end_date`, strings.Join(placeholders, ","))
 
 	currentEditionRows, err := db.Query(currentEditionQuery, args...)
 	if err != nil {
@@ -1195,10 +1197,11 @@ func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]int
 			event, id as edition_id, city as edition_city, 
 			company_id, venue as venue_id, website as edition_website, 
 			created as edition_created, start_date as edition_start_date,
+			end_date as edition_end_date,
 			exhibitors_total, online_event as is_online
 		FROM event_edition 
 		WHERE event IN (%s)
-		ORDER BY created`, strings.Join(placeholders, ","))
+		ORDER BY end_date`, strings.Join(placeholders, ","))
 
 	editionRows, err := db.Query(editionQuery, args...)
 	if err != nil {
@@ -1269,7 +1272,7 @@ func fetchalleventEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]i
 		FROM event e
 		LEFT JOIN event_brands eb ON e.brand_id = eb.id
 		WHERE e.id IN (%s)
-		ORDER BY e.created`, strings.Join(placeholders, ","))
+		ORDER BY e.end_date`, strings.Join(placeholders, ","))
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -2187,12 +2190,85 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					log.Printf("allevent chunk %d: Retrieved timing data for %d event-edition combinations in %v", chunkNum, len(timingDataMap), timingTime)
 				}
 
-				for eventID, editions := range allevents {
+				// Sort eventIDs by end_date to maintain insertion order
+				sortedEventIDs := make([]int64, 0, len(allevents))
+				for eventID := range allevents {
+					sortedEventIDs = append(sortedEventIDs, eventID)
+				}
+
+				// Sort by end_date from eventDataLookup
+				sort.Slice(sortedEventIDs, func(i, j int) bool {
+					eventIDI := sortedEventIDs[i]
+					eventIDJ := sortedEventIDs[j]
+
+					eventDataI := eventDataLookup[eventIDI]
+					eventDataJ := eventDataLookup[eventIDJ]
+
+					if eventDataI == nil || eventDataJ == nil {
+						// If event data is missing, maintain original order
+						return eventIDI < eventIDJ
+					}
+
+					endDateI := shared.ConvertToString(eventDataI["end_date"])
+					endDateJ := shared.ConvertToString(eventDataJ["end_date"])
+
+					if endDateI == "" || endDateJ == "" {
+						// If end_date is missing, maintain original order
+						return eventIDI < eventIDJ
+					}
+
+					// Parse dates and compare
+					dateI, errI := time.Parse("2006-01-02", endDateI)
+					dateJ, errJ := time.Parse("2006-01-02", endDateJ)
+
+					if errI != nil || errJ != nil {
+						// If parsing fails, maintain original order
+						return eventIDI < eventIDJ
+					}
+
+					// Sort by end_date ascending (earliest first)
+					if dateI.Equal(dateJ) {
+						// If same end_date, sort by eventID for consistency
+						return eventIDI < eventIDJ
+					}
+					return dateI.Before(dateJ)
+				})
+
+				for _, eventID := range sortedEventIDs {
+					editions := allevents[eventID]
 					eventData := eventDataLookup[eventID]
 
 					economicData := processedEconomicData[eventID]
 
 					if eventData != nil {
+						// Sort editions within this event by edition_end_date to ensure correct order
+						sort.Slice(editions, func(i, j int) bool {
+							editionI := editions[i]
+							editionJ := editions[j]
+
+							endDateIStr := shared.SafeConvertToString(editionI["edition_end_date"])
+							endDateJStr := shared.SafeConvertToString(editionJ["edition_end_date"])
+
+							if endDateIStr == "" || endDateJStr == "" {
+								// If end_date is missing, maintain original order
+								return false
+							}
+
+							dateI, errI := time.Parse("2006-01-02", endDateIStr)
+							dateJ, errJ := time.Parse("2006-01-02", endDateJStr)
+
+							if errI != nil || errJ != nil {
+								return false
+							}
+
+							if dateI.Equal(dateJ) {
+								editionIDI := shared.ConvertToUInt32(editionI["edition_id"])
+								editionIDJ := shared.ConvertToUInt32(editionJ["edition_id"])
+								return editionIDI < editionIDJ
+							}
+							return dateI.Before(dateJ)
+						})
+
 						for _, edition := range editions {
 							company, venue, city, companyCity, venueCity := resolveRelatedDataForEdition(
 								edition,
@@ -5807,6 +5883,13 @@ func retryFailedBatchesAfterCompletion(
 		totalFailed := 0
 
 		for chunkNum, jsonFiles := range chunkFiles {
+			// Sort JSON files by batch number to ensure correct processing order
+			sort.Slice(jsonFiles, func(i, j int) bool {
+				batchNumI := extractBatchNumFromJSONFilename(jsonFiles[i])
+				batchNumJ := extractBatchNumFromJSONFilename(jsonFiles[j])
+				return batchNumI < batchNumJ
+			})
+
 			logToFile("")
 			logToFile("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			logToFile("Processing chunk %d: %d JSON file(s)", chunkNum, len(jsonFiles))
@@ -5837,6 +5920,27 @@ func retryFailedBatchesAfterCompletion(
 				}
 
 				logToFile("    Loaded %d records from JSON", len(records))
+
+				// Sort records by end_date to ensure correct insertion order (safety measure)
+				sort.Slice(records, func(i, j int) bool {
+					recordI := records[i]
+					recordJ := records[j]
+
+					endDateIStr := shared.SafeConvertToString(recordI["end_date"])
+					endDateJStr := shared.SafeConvertToString(recordJ["end_date"])
+
+					if endDateIStr == "" || endDateJStr == "" {
+						return false
+					}
+
+					dateI, errI := time.Parse("2006-01-02", endDateIStr)
+					dateJ, errJ := time.Parse("2006-01-02", endDateJStr)
+
+					if errI != nil || errJ != nil {
+						return false
+					}
+					return dateI.Before(dateJ)
+				})
 
 				checkPairs := make([]EventEditionPair, 0, len(records))
 				for _, record := range records {
