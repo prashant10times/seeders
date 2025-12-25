@@ -525,8 +525,34 @@ func OptimizeTablePartition(clickhouseConn driver.Conn, tableName, partitionValu
 
 func OptimizeTablePartitionWithSize(clickhouseConn driver.Conn, tableName, partitionValue string, partitionSizeBytes uint64, dbConfig Config, errorLogFile string) error {
 	fullTableName := GetTableNameWithDB(tableName, dbConfig)
-	formattedPartition := formatPartitionValue(partitionValue)
-	query := fmt.Sprintf("OPTIMIZE TABLE %s PARTITION %s SETTINGS mutations_sync = 0", fullTableName, formattedPartition)
+
+	var query string
+	var formattedPartition string
+	isUnpartitionedTable := false
+
+	if partitionValue == "tuple()" {
+		createStatement, err := GetTableCreateStatement(clickhouseConn, tableName, dbConfig)
+		if err == nil {
+			_, extractErr := ExtractPartitionExpression(createStatement)
+			if extractErr != nil {
+				isUnpartitionedTable = true
+				query = fmt.Sprintf("OPTIMIZE TABLE %s SETTINGS mutations_sync = 0", fullTableName)
+				formattedPartition = ""
+				log.Printf("Table %s has no PARTITION BY clause, optimizing without PARTITION clause", tableName)
+			} else {
+				formattedPartition = formatPartitionValue(partitionValue)
+				query = fmt.Sprintf("OPTIMIZE TABLE %s PARTITION %s SETTINGS mutations_sync = 0", fullTableName, formattedPartition)
+			}
+		} else {
+			isUnpartitionedTable = true
+			query = fmt.Sprintf("OPTIMIZE TABLE %s SETTINGS mutations_sync = 0", fullTableName)
+			formattedPartition = ""
+			log.Printf("Warning: Could not get CREATE statement for %s, assuming unpartitioned table", tableName)
+		}
+	} else {
+		formattedPartition = formatPartitionValue(partitionValue)
+		query = fmt.Sprintf("OPTIMIZE TABLE %s PARTITION %s SETTINGS mutations_sync = 0", fullTableName, formattedPartition)
+	}
 
 	log.Printf("Starting OPTIMIZE for %s PARTITION %s", tableName, partitionValue)
 	log.Printf("Query: %s", query)
@@ -607,7 +633,7 @@ func OptimizeTablePartitionWithSize(clickhouseConn driver.Conn, tableName, parti
 	logOptimizeToFile("INFO", "Optimize Partition", fmt.Sprintf("OPTIMIZE started in async mode for %s PARTITION %s, monitoring completion", tableName, partitionValue))
 
 	startTime := time.Now()
-	waitErr := waitForOptimizeCompletion(clickhouseConn, dbConfig, fullTableName, formattedPartition, ctx)
+	waitErr := waitForOptimizeCompletion(clickhouseConn, dbConfig, fullTableName, formattedPartition, isUnpartitionedTable, ctx)
 	duration := time.Since(startTime)
 
 	if waitErr != nil {
@@ -623,24 +649,37 @@ func OptimizeTablePartitionWithSize(clickhouseConn driver.Conn, tableName, parti
 	return nil
 }
 
-func waitForOptimizeCompletion(clickhouseConn driver.Conn, dbConfig Config, fullTableName, formattedPartition string, ctx context.Context) error {
+func waitForOptimizeCompletion(clickhouseConn driver.Conn, dbConfig Config, fullTableName, formattedPartition string, isUnpartitionedTable bool, ctx context.Context) error {
 	tableParts := strings.Split(fullTableName, ".")
 	tableNameOnly := tableParts[len(tableParts)-1]
 	tableNameOnly = strings.Trim(tableNameOnly, "`")
 
-	escapedPartition := strings.ReplaceAll(formattedPartition, "'", "''")
-	escapedPartition = strings.ReplaceAll(escapedPartition, "\\", "\\\\")
-	escapedPartition = strings.ReplaceAll(escapedPartition, "%", "\\%")
-	escapedPartition = strings.ReplaceAll(escapedPartition, "_", "\\_")
+	var checkQuery string
+	if isUnpartitionedTable {
+		checkQuery = fmt.Sprintf(`
+			SELECT count() 
+			FROM system.mutations 
+			WHERE database = '%s' 
+				AND table = '%s' 
+				AND is_done = 0
+				AND command LIKE '%%OPTIMIZE%%'
+				AND command NOT LIKE '%%PARTITION%%'
+		`, dbConfig.ClickhouseDB, tableNameOnly)
+	} else {
+		escapedPartition := strings.ReplaceAll(formattedPartition, "'", "''")
+		escapedPartition = strings.ReplaceAll(escapedPartition, "\\", "\\\\")
+		escapedPartition = strings.ReplaceAll(escapedPartition, "%", "\\%")
+		escapedPartition = strings.ReplaceAll(escapedPartition, "_", "\\_")
 
-	checkQuery := fmt.Sprintf(`
-		SELECT count() 
-		FROM system.mutations 
-		WHERE database = '%s' 
-			AND table = '%s' 
-			AND is_done = 0
-			AND command LIKE '%%OPTIMIZE%%PARTITION%%%s%%'
-	`, dbConfig.ClickhouseDB, tableNameOnly, escapedPartition)
+		checkQuery = fmt.Sprintf(`
+			SELECT count() 
+			FROM system.mutations 
+			WHERE database = '%s' 
+				AND table = '%s' 
+				AND is_done = 0
+				AND command LIKE '%%OPTIMIZE%%PARTITION%%%s%%'
+		`, dbConfig.ClickhouseDB, tableNameOnly, escapedPartition)
+	}
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
