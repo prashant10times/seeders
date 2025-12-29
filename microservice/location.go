@@ -185,18 +185,18 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 		now := time.Now()
 
 		for _, row := range batchData {
-			iso := shared.SafeConvertToString(row["id"])
+			countryID := shared.SafeConvertToString(row["id_10x"])
 			created := shared.SafeConvertToString(row["created"])
 
-			if iso == "" || created == "" {
+			if countryID == "" || created == "" {
 				continue
 			}
 
-			normalizedISO := normalizeNFC(strings.TrimSpace(iso))
-			isoUpper := strings.ToUpper(normalizedISO)
+			normalizedID := normalizeNFC(strings.TrimSpace(countryID))
+			isoUpper := strings.ToUpper(normalizedID)
 
 			id10x := fmt.Sprintf("country-%s", isoUpper)
-			idInputString := fmt.Sprintf("%s-%s", strings.ToUpper(id10x), created)
+			idInputString := fmt.Sprintf("%s-%s", strings.ToUpper(countryID), created)
 			idUUID := shared.GenerateUUIDFromString(idInputString)
 
 			name := shared.SafeConvertToNullableString(row["name"])
@@ -276,7 +276,7 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 func fetchCountryBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
         SELECT 
-            c.id,
+            c.id as id_10x,
             c.name,
             c.shortname as alias,
             c.phonecode,
