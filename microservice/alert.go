@@ -1427,7 +1427,7 @@ func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJS
 
 	alertEventTypeUUID := "37bb8e91-4fc8-45de-a072-be24fbca2a64"
 	alertEventTypeName := "Alert"
-	alertEventTypeSlug := "alert"
+	alertEventTypeSlug := "alerts"
 	alertEventGroupType := "UNSCHEDULED"
 
 	now := time.Now()
