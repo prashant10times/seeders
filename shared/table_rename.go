@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	// "regexp"
 	"strings"
 	"time"
 
@@ -682,6 +683,12 @@ func CreateTempTableFromOriginal(clickhouseConn driver.Conn, originalTable, temp
 		createStatement = strings.Replace(createStatement, originalTable, tempTable, -1)
 		log.Printf("Replaced table name directly (fallback)")
 	}
+
+	// uuidPattern := regexp.MustCompile(`(?i)\s+UUID\s+(?:['"][a-f0-9-]+['"]|\(['"]?[a-f0-9-]+['"]?\))`)
+	// if uuidPattern.MatchString(createStatement) {
+	// 	createStatement = uuidPattern.ReplaceAllString(createStatement, "")
+	// 	log.Printf("Removed UUID from CREATE statement to allow ClickHouse to generate a new one")
+	// }
 
 	log.Printf("TEMP CREATE TABLE statement: %s", createStatement)
 
