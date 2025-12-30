@@ -2090,6 +2090,15 @@ func main() {
 		}
 		utils.ProcessEventDesignationOnly(mysqlDB, clickhouseDB, utilsConfig)
 
+		log.Println("Optimizing event_designation_ch table...")
+		if err := shared.OptimizeSingleTable(clickhouseDB, "event_designation_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Event Designation Optimization", err)
+			log.Printf("⚠️  Error optimizing event_designation_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ event_designation_ch optimized successfully")
+		}
+
 		// Swap table after processing
 		log.Println("Swapping event_designation_ch table...")
 		if err := shared.SwapSingleTable(clickhouseDB, "event_designation_ch", config, errorLogFile); err != nil {

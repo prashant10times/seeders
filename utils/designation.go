@@ -479,12 +479,12 @@ func ProcessEventDesignationChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 func BuildEventDesignationMigrationData(mysqlDB *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT
-			id,
-			event,
-			edition,
-			designation_id,
-			created
-		FROM event_visitor ev
+			ev.id,
+			ev.event,
+			ev.edition,
+			ev.designation_id,
+			d.created
+		FROM event_visitor ev JOIN designation d ON ev.designation_id = d.id
 		WHERE
 			ev.evisitor = 0
 			AND ev.published = 1
