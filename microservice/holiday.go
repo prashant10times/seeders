@@ -874,7 +874,7 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 					EventAvgRating:                  nil,
 					StartDate:                       startDateStr,
 					EndDate:                         endDateStr,
-					EditionID:                       0,
+					EditionID:                       currentEventID,
 					EditionCountry:                  locationInfo.CountryISO,
 					EditionCity:                     locationInfo.CityID,
 					EditionCityName:                 locationInfo.CityName,
