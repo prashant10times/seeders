@@ -692,21 +692,24 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config shared.Config, 
 		var visitorRecords []VisitorRecord
 		now := time.Now().Format("2006-01-02 15:04:05")
 		for _, visitor := range batchData {
-			var userName, userCompany interface{}
+			var userName, userCompany, userCompanyID interface{}
 			if userID, ok := visitor["user"].(int64); ok && userData != nil && userID > 0 {
 				if user, exists := userData[userID]; exists {
 					userName = user["name"]
 					userCompany = user["user_company"]
+					userCompanyID = user["company"] // company_id from user table
 					if userName == nil || shared.ConvertToString(userName) == "" {
 						userName = "-----DEFAULT USER NAME-----"
 					}
 				} else {
 					userName = "-----DEFAULT USER NAME-----"
 					userCompany = visitor["visitor_company"]
+					userCompanyID = nil
 				}
 			} else {
 				userName = "-----DEFAULT USER NAME-----"
 				userCompany = visitor["visitor_company"]
+				userCompanyID = nil
 			}
 
 			var userCityName *string
@@ -742,11 +745,21 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config shared.Config, 
 
 			convertedUserName := shared.ConvertToString(userName)
 
+			// Convert company_id to *uint32
+			var userCompanyIDPtr *uint32
+			if userCompanyID != nil {
+				if companyID, ok := userCompanyID.(int64); ok && companyID > 0 {
+					companyIDUint32 := uint32(companyID)
+					userCompanyIDPtr = &companyIDUint32
+				}
+			}
+
 			visitorRecord := VisitorRecord{
 				UserID:          userID,
 				EventID:         eventID,
 				EditionID:       editionID,
 				UserName:        convertedUserName,
+				UserCompanyID:   userCompanyIDPtr,
 				UserCompany:     shared.ConvertToStringPtr(userCompany),
 				UserDesignation: shared.ConvertToStringPtr(visitor["visitor_designation"]),
 				UserCity:        shared.ConvertToUInt32Ptr(visitor["visitor_city"]),
@@ -915,7 +928,7 @@ func fetchVisitorsUserData(db *sql.DB, userIDs []int64) map[int64]map[string]int
 
 		query := fmt.Sprintf(`
 			SELECT 
-				id, name, user_company
+				id, name, user_company, company
 			FROM user 
 			WHERE id IN (%s)`, strings.Join(placeholders, ","))
 
@@ -1090,7 +1103,7 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_visitors_temp (
-			user_id, event_id, edition_id, user_name, user_company,
+			user_id, event_id, edition_id, user_name, user_company_id, user_company,
 			user_designation, user_city, user_city_name, user_country, user_state_id, user_state, version, last_updated_at
 		)
 	`)
@@ -1107,6 +1120,7 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 			record.EventID,         // event_id: UInt32 NOT NULL
 			record.EditionID,       // edition_id: UInt32 NOT NULL
 			record.UserName,        // user_name: String NOT NULL
+			record.UserCompanyID,   // user_company_id: Nullable(UInt32)
 			record.UserCompany,     // user_company: Nullable(String)
 			record.UserDesignation, // user_designation: Nullable(String)
 			record.UserCity,        // user_city: Nullable(UInt32)
@@ -1267,7 +1281,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 		now := time.Now().Format("2006-01-02 15:04:05")
 		for _, speaker := range batchData {
 			// Get user data for this speaker
-			var userName, userCompany, userDesignation, userCity, userCountry interface{}
+			var userName, userCompany, userDesignation, userCity, userCountry, userCompanyID interface{}
 			if userID, ok := speaker["user_id"].(int64); ok && userData != nil {
 				if user, exists := userData[userID]; exists {
 					userName = speaker["speaker_name"] // Use speaker_name from speaker table
@@ -1275,6 +1289,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 					userDesignation = user["designation"]
 					userCity = user["city"]
 					userCountry = strings.ToUpper(shared.SafeConvertToString(user["country"]))
+					userCompanyID = user["company"] // company_id from user table
 				}
 			}
 
@@ -1314,11 +1329,21 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 			eventID := shared.ConvertToUInt32(speaker["event"])
 			editionID := shared.ConvertToUInt32(speaker["edition"])
 
+			// Convert company_id to *uint32
+			var userCompanyIDPtr *uint32
+			if userCompanyID != nil {
+				if companyID, ok := userCompanyID.(int64); ok && companyID > 0 {
+					companyIDUint32 := uint32(companyID)
+					userCompanyIDPtr = &companyIDUint32
+				}
+			}
+
 			speakerRecord := SpeakerRecord{
 				UserID:          userID,
 				EventID:         eventID,
 				EditionID:       editionID,
 				UserName:        shared.ConvertToString(userName),
+				UserCompanyID:   userCompanyIDPtr,
 				UserCompany:     shared.ConvertToStringPtr(userCompany),
 				UserDesignation: shared.ConvertToStringPtr(userDesignation),
 				UserState:       userStateID,
@@ -1454,7 +1479,7 @@ func fetchSpeakersUserData(db *sql.DB, userIDs []int64) map[int64]map[string]int
 
 		query := fmt.Sprintf(`
 			SELECT 
-				id, user_company, designation, city, country
+				id, user_company, designation, city, country, company
 			FROM user 
 			WHERE id IN (%s)`, strings.Join(placeholders, ","))
 
@@ -1566,7 +1591,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_speaker_temp (
-			user_id, event_id, edition_id, user_name, user_company,
+			user_id, event_id, edition_id, user_name, user_company_id, user_company,
 			user_designation, user_state, user_state_name, user_city, user_city_name, user_country, version, last_updated_at
 		)
 	`)
@@ -1580,6 +1605,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 			record.EventID,         // event_id: UInt32 NOT NULL
 			record.EditionID,       // edition_id: UInt32 NOT NULL
 			record.UserName,        // user_name: String NOT NULL
+			record.UserCompanyID,   // user_company_id: Nullable(UInt32)
 			record.UserCompany,     // user_company: Nullable(String)
 			record.UserDesignation, // user_designation: Nullable(String)
 			record.UserState,       // user_state: Nullable(UInt32)
@@ -1609,6 +1635,7 @@ type SpeakerRecord struct {
 	EventID         uint32  `ch:"event_id"`
 	EditionID       uint32  `ch:"edition_id"`
 	UserName        string  `ch:"user_name"`
+	UserCompanyID   *uint32 `ch:"user_company_id"`
 	UserCompany     *string `ch:"user_company"`
 	UserDesignation *string `ch:"user_designation"`
 	UserState       *uint32 `ch:"user_state"`
@@ -1626,6 +1653,7 @@ type VisitorRecord struct {
 	EventID         uint32  `ch:"event_id"`
 	EditionID       uint32  `ch:"edition_id"`
 	UserName        string  `ch:"user_name"`
+	UserCompanyID   *uint32 `ch:"user_company_id"`
 	UserCompany     *string `ch:"user_company"`
 	UserDesignation *string `ch:"user_designation"`
 	UserCity        *uint32 `ch:"user_city"`
@@ -1977,6 +2005,15 @@ func main() {
 
 		processVisitorsOnly(mysqlDB, clickhouseDB, config)
 
+		log.Println("Optimizing event_visitors_ch table...")
+		if err := shared.OptimizeSingleTable(clickhouseDB, "event_visitors_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Visitors Optimization", err)
+			log.Printf("⚠️  Error optimizing event_visitors_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ event_visitors_ch optimized successfully")
+		}
+
 		// Swap table after processing
 		log.Println("Swapping event_visitors_ch table...")
 		if err := shared.SwapSingleTable(clickhouseDB, "event_visitors_ch", config, errorLogFile); err != nil {
@@ -1992,6 +2029,15 @@ func main() {
 		}
 
 		processSpeakersOnly(mysqlDB, clickhouseDB, config)
+
+		log.Println("Optimizing event_speaker_ch table...")
+		if err := shared.OptimizeSingleTable(clickhouseDB, "event_speaker_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Speakers Optimization", err)
+			log.Printf("⚠️  Error optimizing event_speaker_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ event_speaker_ch optimized successfully")
+		}
 
 		// Swap table after processing
 		log.Println("Swapping event_speaker_ch table...")
