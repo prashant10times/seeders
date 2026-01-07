@@ -900,7 +900,7 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 					Published:                       4,
 					Status:                          "A",
 					EditionsAudianceType:            0,
-					EditionFunctionality:            "",
+					EditionFunctionality:            "open",
 					EditionWebsite:                  nil,
 					EditionDomain:                   nil,
 					EditionType:                     "current_edition",
