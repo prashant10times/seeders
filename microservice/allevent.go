@@ -499,70 +499,103 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 			}
 			return shared.SafeConvertToUInt16(record["editions_audiance_type"])
 		}(),
-		EditionFunctionality:            decodeStr("edition_functionality"),
-		EditionWebsite:                  decodeNullableStr("edition_website"),
-		EditionDomain:                   decodeNullableStr("edition_domain"),
-		EditionType:                     *shared.SafeConvertToNullableString(record["edition_type"]),
-		EventEditions:                   shared.SafeConvertToNullableUInt32(record["event_editions"]),
-		EventFollowers:                  shared.SafeConvertToNullableUInt32(record["event_followers"]),
-		EditionFollowers:                shared.SafeConvertToNullableUInt32(record["edition_followers"]),
-		EventExhibitor:                  shared.SafeConvertToNullableUInt32(record["event_exhibitor"]),
-		EditionExhibitor:                shared.SafeConvertToNullableUInt32(record["edition_exhibitor"]),
-		ExhibitorsUpperBound:            shared.SafeConvertToNullableUInt32(record["exhibitors_upper_bound"]),
-		ExhibitorsLowerBound:            shared.SafeConvertToNullableUInt32(record["exhibitors_lower_bound"]),
-		ExhibitorsMean:                  shared.SafeConvertToNullableUInt32(record["exhibitors_mean"]),
-		EventSponsor:                    shared.SafeConvertToNullableUInt32(record["event_sponsor"]),
-		EditionSponsor:                  shared.SafeConvertToNullableUInt32(record["edition_sponsor"]),
-		EventSpeaker:                    shared.SafeConvertToNullableUInt32(record["event_speaker"]),
-		EditionSpeaker:                  shared.SafeConvertToNullableUInt32(record["edition_speaker"]),
-		EventCreated:                    decodeBase64DateTime(record["event_created"]),
-		EventUpdated:                    decodeBase64DateTime(record["event_updated"]),
-		EditionCreated:                  decodeBase64DateTime(record["edition_created"]),
-		EventHybrid:                     shared.SafeConvertToNullableUInt8(record["event_hybrid"]),
-		EventFormat:                     decodeNullableStr("event_format"),
-		IsBranded:                       shared.SafeConvertToNullableUInt32(record["isBranded"]),
-		EventBrandId:                    decodeNullableStr("eventBrandId"),
-		EventSeriesId:                   decodeNullableStr("eventSeriesId"),
-		Maturity:                        decodeNullableStr("maturity"),
-		EventPricing:                    decodeNullableStr("event_pricing"),
-		EventLogo:                       decodeNullableStr("event_logo"),
-		EventEstimatedVisitors:          decodeNullableStr("event_estimatedVisitors"),
-		EstimatedVisitorsMean:           shared.SafeConvertToNullableUInt32(record["estimatedVisitorsMean"]),
-		EstimatedSize:                   decodeNullableStr("estimatedSize"),
-		EventFrequency:                  decodeNullableStr("event_frequency"),
-		ImpactScore:                     shared.SafeConvertToNullableUInt32(record["impactScore"]),
-		InboundScore:                    shared.SafeConvertToNullableUInt32(record["inboundScore"]),
-		InternationalScore:              shared.SafeConvertToNullableUInt32(record["internationalScore"]),
-		RepeatSentimentChangePercentage: shared.SafeConvertToNullableFloat64(record["repeatSentimentChangePercentage"]),
-		RepeatSentiment:                 shared.SafeConvertToNullableUInt32(record["repeatSentiment"]),
-		ReputationChangePercentage:      shared.SafeConvertToNullableFloat64(record["reputationChangePercentage"]),
-		AudienceZone:                    decodeNullableStr("audienceZone"),
-		InboundPercentage:               shared.SafeConvertToUInt32(record["inboundPercentage"]),
-		InboundAttendance:               shared.SafeConvertToUInt32(record["inboundAttendance"]),
-		InternationalPercentage:         shared.SafeConvertToUInt32(record["internationalPercentage"]),
-		InternationalAttendance:         shared.SafeConvertToUInt32(record["internationalAttendance"]),
-		EventEconomicFoodAndBevarage:    shared.SafeConvertToNullableFloat64(record["event_economic_FoodAndBevarage"]),
-		EventEconomicTransportation:     shared.SafeConvertToNullableFloat64(record["event_economic_Transportation"]),
-		EventEconomicAccomodation:       shared.SafeConvertToNullableFloat64(record["event_economic_Accomodation"]),
-		EventEconomicUtilities:          shared.SafeConvertToNullableFloat64(record["event_economic_Utilities"]),
-		EventEconomicFlights:            shared.SafeConvertToNullableFloat64(record["event_economic_flights"]),
-		EventEconomicValue:              shared.SafeConvertToNullableFloat64(record["event_economic_value"]),
-		EventEconomicDayWiseImpact:      decodeStr("event_economic_dayWiseEconomicImpact"),
-		EventEconomicBreakdown:          decodeStr("event_economic_breakdown"),
-		EventEconomicImpact:             decodeStr("event_economic_impact"),
-		EventAvgRating:                  shared.SafeConvertFloat64ToDecimalString(record["event_avgRating"]),
-		TenTimesEventPageUrl:            decodeNullableStr("10timesEventPageUrl"),
-		Keywords:                        shared.ConvertToStringArray(record["keywords"]),
-		Tickets:                         shared.ConvertToStringArray(record["tickets"]),
-		Timings:                         shared.ConvertToStringArray(record["timings"]),
-		EventScore:                      shared.SafeConvertToNullableInt32(record["event_score"]),
-		YoYGrowth:                       shared.SafeConvertToNullableUInt32(record["yoyGrowth"]),
-		FutureExpectedStartDate:         decodeBase64NullableDate(record["futureExpexctedStartDate"]),
-		FutureExpectedEndDate:           decodeBase64NullableDate(record["futureExpexctedEndDate"]),
-		PrimaryEventType:                decodeNullableStr("PrimaryEventType"),
-		VerifiedOn:                      decodeBase64NullableDate(record["verifiedOn"]),
-		LastUpdatedAt:                   decodeBase64DateTime(record["last_updated_at"]),
-		Version:                         shared.SafeConvertToUInt32(record["version"]),
+		EditionFunctionality:   decodeStr("edition_functionality"),
+		EditionWebsite:         decodeNullableStr("edition_website"),
+		EditionDomain:          decodeNullableStr("edition_domain"),
+		EditionType:            *shared.SafeConvertToNullableString(record["edition_type"]),
+		EventEditions:          shared.SafeConvertToNullableUInt32(record["event_editions"]),
+		EventFollowers:         shared.SafeConvertToNullableUInt32(record["event_followers"]),
+		EditionFollowers:       shared.SafeConvertToNullableUInt32(record["edition_followers"]),
+		EventExhibitor:         shared.SafeConvertToNullableUInt32(record["event_exhibitor"]),
+		EditionExhibitor:       shared.SafeConvertToNullableUInt32(record["edition_exhibitor"]),
+		ExhibitorsUpperBound:   shared.SafeConvertToNullableUInt32(record["exhibitors_upper_bound"]),
+		ExhibitorsLowerBound:   shared.SafeConvertToNullableUInt32(record["exhibitors_lower_bound"]),
+		ExhibitorsMean:         shared.SafeConvertToNullableUInt32(record["exhibitors_mean"]),
+		EventSponsor:           shared.SafeConvertToNullableUInt32(record["event_sponsor"]),
+		EditionSponsor:         shared.SafeConvertToNullableUInt32(record["edition_sponsor"]),
+		EventSpeaker:           shared.SafeConvertToNullableUInt32(record["event_speaker"]),
+		EditionSpeaker:         shared.SafeConvertToNullableUInt32(record["edition_speaker"]),
+		EventCreated:           decodeBase64DateTime(record["event_created"]),
+		EventUpdated:           decodeBase64DateTime(record["event_updated"]),
+		EditionCreated:         decodeBase64DateTime(record["edition_created"]),
+		EventHybrid:            shared.SafeConvertToNullableUInt8(record["event_hybrid"]),
+		EventFormat:            decodeNullableStr("event_format"),
+		IsBranded:              shared.SafeConvertToNullableUInt32(record["isBranded"]),
+		EventBrandId:           decodeNullableStr("eventBrandId"),
+		EventSeriesId:          decodeNullableStr("eventSeriesId"),
+		Maturity:               decodeNullableStr("maturity"),
+		EventPricing:           decodeNullableStr("event_pricing"),
+		EventLogo:              decodeNullableStr("event_logo"),
+		EventEstimatedVisitors: decodeNullableStr("event_estimatedVisitors"),
+		EstimatedVisitorsMean:  shared.SafeConvertToNullableUInt32(record["estimatedVisitorsMean"]),
+		EstimatedSize:          decodeNullableStr("estimatedSize"),
+		EventFrequency:         decodeNullableStr("event_frequency"),
+		ImpactScore:            shared.SafeConvertToNullableUInt32(record["impactScore"]),
+		InboundScore:           shared.SafeConvertToNullableUInt32(record["inboundScore"]),
+		InternationalScore:     shared.SafeConvertToNullableUInt32(record["internationalScore"]),
+		RepeatSentimentChangePercentage: func() *float64 {
+			val := shared.SafeConvertToNullableFloat64(record["repeatSentimentChangePercentage"])
+			if val == nil {
+				// Default to 0 if nil
+				zero := float64(0.0)
+				return &zero
+			}
+			// If value is 0.0, return 0.0
+			return val
+		}(),
+		RepeatSentiment:              shared.SafeConvertToNullableUInt32(record["repeatSentiment"]),
+		ReputationChangePercentage:   shared.SafeConvertToNullableFloat64(record["reputationChangePercentage"]),
+		AudienceZone:                 decodeNullableStr("audienceZone"),
+		InboundPercentage:            shared.SafeConvertToUInt32(record["inboundPercentage"]),
+		InboundAttendance:            shared.SafeConvertToUInt32(record["inboundAttendance"]),
+		InternationalPercentage:      shared.SafeConvertToUInt32(record["internationalPercentage"]),
+		InternationalAttendance:      shared.SafeConvertToUInt32(record["internationalAttendance"]),
+		EventEconomicFoodAndBevarage: shared.SafeConvertToNullableFloat64(record["event_economic_FoodAndBevarage"]),
+		EventEconomicTransportation:  shared.SafeConvertToNullableFloat64(record["event_economic_Transportation"]),
+		EventEconomicAccomodation:    shared.SafeConvertToNullableFloat64(record["event_economic_Accomodation"]),
+		EventEconomicUtilities:       shared.SafeConvertToNullableFloat64(record["event_economic_Utilities"]),
+		EventEconomicFlights:         shared.SafeConvertToNullableFloat64(record["event_economic_flights"]),
+		EventEconomicValue:           shared.SafeConvertToNullableFloat64(record["event_economic_value"]),
+		EventEconomicDayWiseImpact:   decodeStr("event_economic_dayWiseEconomicImpact"),
+		EventEconomicBreakdown:       decodeStr("event_economic_breakdown"),
+		EventEconomicImpact:          decodeStr("event_economic_impact"),
+		EventAvgRating:               shared.SafeConvertFloat64ToDecimalString(record["event_avgRating"]),
+		TenTimesEventPageUrl:         decodeNullableStr("10timesEventPageUrl"),
+		Keywords:                     shared.ConvertToStringArray(record["keywords"]),
+		Tickets:                      shared.ConvertToStringArray(record["tickets"]),
+		Timings:                      shared.ConvertToStringArray(record["timings"]),
+		EventScore:                   shared.SafeConvertToNullableInt32(record["event_score"]),
+		YoYGrowth:                    shared.SafeConvertToNullableUInt32(record["yoyGrowth"]),
+		FutureExpectedStartDate:      decodeBase64NullableDate(record["futureExpexctedStartDate"]),
+		FutureExpectedEndDate:        decodeBase64NullableDate(record["futureExpexctedEndDate"]),
+		PredictionScore: func() *int32 {
+			if val, exists := record["predictionScore"]; exists && val != nil {
+				if scoreInt32, ok := val.(int32); ok {
+					return &scoreInt32
+				} else if scoreInt, ok := val.(int); ok {
+					scoreInt32 := int32(scoreInt)
+					return &scoreInt32
+				} else if scoreInt64, ok := val.(int64); ok {
+					scoreInt32 := int32(scoreInt64)
+					return &scoreInt32
+				} else if scoreFloat, ok := val.(float64); ok {
+					scoreInt32 := int32(scoreFloat)
+					return &scoreInt32
+				} else if scoreStr, ok := val.(string); ok && scoreStr != "" {
+					if scoreVal, err := strconv.ParseInt(scoreStr, 10, 32); err == nil {
+						scoreInt32 := int32(scoreVal)
+						return &scoreInt32
+					}
+				}
+			}
+			// Default to 0
+			scoreInt32 := int32(0)
+			return &scoreInt32
+		}(),
+		PrimaryEventType: decodeNullableStr("PrimaryEventType"),
+		VerifiedOn:       decodeBase64NullableDate(record["verifiedOn"]),
+		LastUpdatedAt:    decodeBase64DateTime(record["last_updated_at"]),
+		Version:          shared.SafeConvertToUInt32(record["version"]),
 	}
 }
 
@@ -664,6 +697,7 @@ type alleventRecord struct {
 	YoYGrowth                       *uint32  `ch:"yoyGrowth"`                            // Nullable(UInt32)
 	FutureExpectedStartDate         *string  `ch:"futureExpexctedStartDate"`             // Nullable(Date)
 	FutureExpectedEndDate           *string  `ch:"futureExpexctedEndDate"`               // Nullable(Date)
+	PredictionScore                 *int32   `ch:"predictionScore"`                      // Nullable(Int32) DEFAULT 0
 	PrimaryEventType                *string  `ch:"PrimaryEventType"`                     // Nullable(UUID)
 	VerifiedOn                      *string  `ch:"verifiedOn"`                           // Nullable(Date)
 	LastUpdatedAt                   string   `ch:"last_updated_at"`                      // DateTime NOT NULL
@@ -1308,6 +1342,71 @@ func fetchalleventEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]i
 			}
 		}
 		results = append(results, row)
+	}
+
+	return results
+}
+
+func fetchalleventPredictedDatesForBatch(db *sql.DB, eventIDs []int64) map[int64]map[string]interface{} {
+	if len(eventIDs) == 0 {
+		return nil
+	}
+
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := fmt.Sprintf(`
+		SELECT 
+			ee.id,
+			ee.event,
+			ee.start_date,
+			ee.end_date,
+			100 AS score
+		FROM event_edition ee
+		JOIN (
+			SELECT 
+				ee.event,
+				MIN(ee.id) AS min_id
+			FROM event_edition ee
+			JOIN event e ON ee.event = e.id
+			WHERE ee.id > e.event_edition 
+			AND ee.event IN (%s)
+			AND ee.start_date > e.start_date
+			AND ee.end_date >= NOW()
+			GROUP BY ee.event
+		) x ON ee.event = x.event AND ee.id = x.min_id`, strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("Error fetching predicted dates data: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	results := make(map[int64]map[string]interface{})
+	for rows.Next() {
+		var editionID int64
+		var eventID int64
+		var startDate sql.NullString
+		var endDate sql.NullString
+		var score int
+
+		if err := rows.Scan(&editionID, &eventID, &startDate, &endDate, &score); err != nil {
+			log.Printf("Error scanning predicted dates row: %v", err)
+			continue
+		}
+
+		if startDate.Valid && endDate.Valid {
+			results[eventID] = map[string]interface{}{
+				"start_date": startDate.String,
+				"end_date":   endDate.String,
+				"score":      score,
+			}
+		}
 	}
 
 	return results
@@ -2129,8 +2228,10 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 				}
 
 				estimateDataMap := make(map[int64]estimateData)
+				predictedDatesMap := make(map[int64]map[string]interface{})
 				if len(eventIDsForEditions) > 0 {
 					estimateDataMap = fetchalleventEstimateDataForBatch(mysqlDB, eventIDsForEditions)
+					predictedDatesMap = fetchalleventPredictedDatesForBatch(mysqlDB, eventIDsForEditions)
 				}
 
 				eventTypesMap := make(map[int64][]uint32)
@@ -2350,6 +2451,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								venueCityLocationChID,
 								editionCityStateLocationChID,
 								venueLocationChID,
+								predictedDatesMap[eventID],
 							)
 
 							clickHouseRecords = append(clickHouseRecords, record)
@@ -3225,7 +3327,7 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 			},
 		},
 		"size":    len(eventIDs),
-		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "impactScore", "inboundScore", "internationalScore", "repeatSentimentChangePercentage", "repeatSentiment", "reputationSentiment", "audienceZone", "yoyGrowth", "futureExpexctedStartDate", "futureExpexctedEndDate", "finalEstimate", "highEstimate", "lowEstimate"},
+		"_source": []string{"id", "description", "exhibitors", "speakers", "totalSponsor", "following", "punchline", "frequency", "city", "hybrid", "logo", "pricing", "total_edition", "avg_rating", "eventEstimatedTag", "impactScore", "inboundScore", "internationalScore", "repeatSentimentChangePercentage", "repeatSentiment", "reputationSentiment", "audienceZone", "yoyGrowth", "pred_startDate", "pred_endDate", "pred_score", "finalEstimate", "highEstimate", "lowEstimate"},
 	}
 
 	queryJSON, _ := json.Marshal(query)
@@ -3398,8 +3500,9 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 			"reputationChangePercentage":      convertToFloat64("reputationSentiment"),
 			"audienceZone":                    shared.ConvertToString(source["audienceZone"]),
 			"yoyGrowth":                       convertStringToUInt32("yoyGrowth"),
-			"futureExpexctedStartDate":        source["futureExpexctedStartDate"],
-			"futureExpexctedEndDate":          source["futureExpexctedEndDate"],
+			"pred_startDate":                  source["pred_startDate"],
+			"pred_endDate":                    source["pred_endDate"],
+			"pred_score":                      source["pred_score"],
 			"finalEstimate":                   source["finalEstimate"],
 			"highEstimate":                    source["highEstimate"],
 			"lowEstimate":                     source["lowEstimate"],
@@ -3605,7 +3708,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			event_pricing, tickets, timings, event_logo, event_estimatedVisitors, estimatedVisitorsMean, estimatedSize, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, repeatSentiment, reputationChangePercentage, audienceZone,
 			inboundPercentage, inboundAttendance, internationalPercentage, internationalAttendance,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
-			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, futureExpexctedStartDate, futureExpexctedEndDate, PrimaryEventType, verifiedOn, last_updated_at, version
+			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, futureExpexctedStartDate, futureExpexctedEndDate, predictionScore, PrimaryEventType, verifiedOn, last_updated_at, version
 		)
 	`
 
@@ -3749,6 +3852,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.YoYGrowth,                       // yoyGrowth: Nullable(UInt32)
 			alleventRecord.FutureExpectedStartDate,         // futureExpexctedStartDate: Nullable(Date)
 			alleventRecord.FutureExpectedEndDate,           // futureExpexctedEndDate: Nullable(Date)
+			alleventRecord.PredictionScore,                 // predictionScore: Nullable(Int32) DEFAULT 0
 			alleventRecord.PrimaryEventType,                // PrimaryEventType: Nullable(UUID)
 			alleventRecord.VerifiedOn,                      // verifiedOn: Nullable(Date)
 			alleventRecord.LastUpdatedAt,                   // last_updated_at: DateTime NOT NULL
@@ -4600,6 +4704,7 @@ func rebuildRecordsForFailedBatch(
 	estimateDataMap := fetchalleventEstimateDataForBatch(mysqlDB, actualEventIDs)
 	eventTypesMap := fetchalleventEventTypesForBatch(mysqlDB, actualEventIDs)
 	categoryNamesMap := fetchalleventCategoryNamesForEvents(mysqlDB, actualEventIDs)
+	predictedDatesMap := fetchalleventPredictedDatesForBatch(mysqlDB, actualEventIDs)
 	rawTicketData := fetchalleventTicketDataForBatch(mysqlDB, actualEventIDs)
 	ticketDataMap := processalleventTicketData(rawTicketData)
 	ticketTypeMap := make(map[int64]string)
@@ -4746,6 +4851,7 @@ func rebuildRecordsForFailedBatch(
 			venueCityLocationChID,
 			editionCityStateLocationChID,
 			venueLocationChID,
+			predictedDatesMap[actualEventID],
 		)
 
 		records = append(records, record)
@@ -4978,6 +5084,7 @@ func buildAlleventRecord(
 	venueCityLocationChID *uint32,
 	editionCityStateLocationChID *uint32,
 	venueLocationChID *uint32,
+	dbPredictedDates map[string]interface{},
 ) map[string]interface{} {
 	record := map[string]interface{}{
 		"event_id":          eventData["id"],
@@ -5231,8 +5338,124 @@ func buildAlleventRecord(
 		"keywords":                        []string{},
 		"event_score":                     eventData["score"],
 		"yoyGrowth":                       esInfoMap["yoyGrowth"],
-		"futureExpexctedStartDate":        decodeBase64NullableDate(esInfoMap["futureExpexctedStartDate"]),
-		"futureExpexctedEndDate":          decodeBase64NullableDate(esInfoMap["futureExpexctedEndDate"]),
+		"futureExpexctedStartDate": func() *string {
+			// Get current edition dates from record
+			startDateStr := decodeBase64Date(eventData["start_date"])
+			endDateStr := decodeBase64Date(eventData["end_date"])
+			// Parse ES predictions
+			esPredStartDate := decodeBase64NullableDate(esInfoMap["pred_startDate"])
+			esPredEndDate := decodeBase64NullableDate(esInfoMap["pred_endDate"])
+			// CASE 1: Check if ES predictions are invalidated
+			// Conditions: actual start > ES pred start AND actual end > ES pred end AND ES pred end <= now
+			if esPredStartDate != nil && esPredEndDate != nil {
+				startDate, err1 := time.Parse("2006-01-02", startDateStr)
+				endDate, err2 := time.Parse("2006-01-02", endDateStr)
+				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
+				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
+					now := time.Now()
+					if startDate.After(predStartDate) && endDate.After(predEndDate) && predEndDate.Before(now) || predEndDate.Equal(now) {
+						// ES predictions were wrong - invalidate them
+						return nil
+					}
+				}
+			}
+			// CASE 2: Database prediction exists - USE IT (highest priority)
+			if dbPredictedDates != nil {
+				if dbStartDate, ok := dbPredictedDates["start_date"].(string); ok && dbStartDate != "" {
+					return &dbStartDate
+				}
+			}
+			// CASE 3: Use ES predictions if valid
+			return esPredStartDate
+		}(),
+		"futureExpexctedEndDate": func() *string {
+			// Decision logic for future expected dates
+			// Get current edition dates from record
+			startDateStr := decodeBase64Date(eventData["start_date"])
+			endDateStr := decodeBase64Date(eventData["end_date"])
+			// Parse ES predictions
+			esPredStartDate := decodeBase64NullableDate(esInfoMap["pred_startDate"])
+			esPredEndDate := decodeBase64NullableDate(esInfoMap["pred_endDate"])
+			// CASE 1: Check if ES predictions are invalidated
+			// Conditions: actual start > ES pred start AND actual end > ES pred end AND ES pred end <= now
+			if esPredStartDate != nil && esPredEndDate != nil {
+				startDate, err1 := time.Parse("2006-01-02", startDateStr)
+				endDate, err2 := time.Parse("2006-01-02", endDateStr)
+				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
+				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
+					now := time.Now()
+					if startDate.After(predStartDate) && endDate.After(predEndDate) && (predEndDate.Before(now) || predEndDate.Equal(now)) {
+						// ES predictions were wrong - invalidate them
+						return nil
+					}
+				}
+			}
+			// CASE 2: Database prediction exists - USE IT (highest priority)
+			if dbPredictedDates != nil {
+				if dbEndDate, ok := dbPredictedDates["end_date"].(string); ok && dbEndDate != "" {
+					return &dbEndDate
+				}
+			}
+			// CASE 3: Use ES predictions if valid
+			return esPredEndDate
+		}(),
+		"predictionScore": func() *int32 {
+			// Decision logic for prediction score
+			// Get current edition dates from record
+			startDateStr := decodeBase64Date(eventData["start_date"])
+			endDateStr := decodeBase64Date(eventData["end_date"])
+			// Parse ES predictions
+			esPredStartDate := decodeBase64NullableDate(esInfoMap["pred_startDate"])
+			esPredEndDate := decodeBase64NullableDate(esInfoMap["pred_endDate"])
+			esPredScore := esInfoMap["pred_score"]
+			// CASE 1: Check if ES predictions are invalidated
+			// Conditions: actual start > ES pred start AND actual end > ES pred end AND ES pred end <= now
+			if esPredStartDate != nil && esPredEndDate != nil {
+				startDate, err1 := time.Parse("2006-01-02", startDateStr)
+				endDate, err2 := time.Parse("2006-01-02", endDateStr)
+				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
+				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
+					now := time.Now()
+					if startDate.After(predStartDate) && endDate.After(predEndDate) && (predEndDate.Before(now) || predEndDate.Equal(now)) {
+						// ES predictions were wrong - explicitly set to 0
+						score := int32(0)
+						return &score
+					}
+				}
+			}
+			// CASE 2: Database prediction exists - USE IT (score = 100)
+			if dbPredictedDates != nil {
+				if dbScore, ok := dbPredictedDates["score"].(int); ok {
+					score := int32(dbScore)
+					return &score
+				}
+			}
+			// CASE 3: Use ES score if valid, otherwise default to 0
+			if esPredScore != nil {
+				if scoreFloat, ok := esPredScore.(float64); ok {
+					score := int32(scoreFloat)
+					return &score
+				} else if scoreInt, ok := esPredScore.(int); ok {
+					score := int32(scoreInt)
+					return &score
+				} else if scoreInt64, ok := esPredScore.(int64); ok {
+					score := int32(scoreInt64)
+					return &score
+				} else if scoreStr, ok := esPredScore.(string); ok && scoreStr != "" {
+					if scoreVal, err := strconv.ParseInt(scoreStr, 10, 32); err == nil {
+						score := int32(scoreVal)
+						return &score
+					}
+				}
+			}
+
+			// Default to 0
+			score := int32(0)
+			return &score
+		}(),
 		"PrimaryEventType": func() *string {
 			eventTypes := eventTypesMap[eventID]
 			eventAudience := shared.SafeConvertToUInt16(eventData["event_audience"])
