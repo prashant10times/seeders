@@ -1373,10 +1373,9 @@ func fetchalleventPredictedDatesForBatch(db *sql.DB, eventIDs []int64) map[int64
 				MIN(ee.id) AS min_id
 			FROM event_edition ee
 			JOIN event e ON ee.event = e.id
-			WHERE ee.id > e.event_edition 
-			AND ee.event IN (%s)
+			WHERE ee.event IN (%s)
 			AND ee.start_date > e.start_date
-			AND ee.end_date >= NOW()
+			AND ee.start_date > NOW()
 			GROUP BY ee.event
 		) x ON ee.event = x.event AND ee.id = x.min_id`, strings.Join(placeholders, ","))
 
