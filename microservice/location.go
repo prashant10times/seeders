@@ -544,8 +544,8 @@ func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 			}
 			seenStates[id10x] = true
 			
-			uuidInputString := fmt.Sprintf("%d-%s", stateId, countryISOUpper)
-			idUUID := shared.GenerateUUIDFromString(normalizeNFC(uuidInputString))
+			// uuidInputString := fmt.Sprintf("%d-%s", stateId, countryISOUpper) OLD LOGIC
+			idUUID := shared.GenerateUUIDFromString(normalizeNFC(id10x))
 
 			name := shared.SafeConvertToNullableString(row["name"])
 			alias := shared.SafeConvertToNullableString(row["alias"])
