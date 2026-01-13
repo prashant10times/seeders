@@ -290,6 +290,8 @@ func fetchCountryBatch(db *sql.DB, offset, limit int) ([]map[string]interface{},
         ORDER BY c.id
         LIMIT %d OFFSET %d`, limit, offset)
 
+	log.Println("Country Fetch Query", query)
+
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -472,6 +474,7 @@ func buildCountryLookup(clickhouseConn driver.Conn) (map[string]string, map[stri
 
 	ctx := context.Background()
 	query := `SELECT id_uuid, id_10x, name FROM location_ch WHERE location_type = 'COUNTRY'`
+	log.Println("Country Build Query", query)
 	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to query ClickHouse for country lookup: %w", err)
@@ -543,10 +546,10 @@ func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				continue
 			}
 			seenStates[id10x] = true
-			
+
 			// uuidInputString := fmt.Sprintf("%d-%s", stateId, countryISOUpper) OLD LOGIC
 			idUUID := shared.GenerateUUIDFromString(normalizeNFC(id10x))
-
+			log.Printf(`stateId: %d, countryISOUpper: %s, id10x: %s, idUUID: %s`, stateId, countryISOUpper, id10x, idUUID)
 			name := shared.SafeConvertToNullableString(row["name"])
 			alias := shared.SafeConvertToNullableString(row["alias"])
 			slug := shared.SafeConvertToNullableString(row["slug"])
@@ -641,6 +644,8 @@ func fetchStateBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, e
         GROUP BY area_values.name, area_values.country
         ORDER BY area_values.id
         LIMIT %d`, offset, limit)
+
+	log.Println("State Fetch Query", query)
 
 	rows, err := db.Query(query)
 	if err != nil {
@@ -985,7 +990,7 @@ func fetchCityBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, er
         WHERE city.id > %d
         ORDER BY city.id
         LIMIT %d`, offset, limit)
-
+	log.Println("City Fetch Query", query)
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -1197,6 +1202,11 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 		log.Fatalf("Failed to build city lookup: %v", err)
 	}
 
+	stateUUIDLookup, err := buildStateLookup(clickhouseConn)
+	if err != nil {
+		log.Fatalf("Failed to build state lookup: %v", err)
+	}
+
 	offset := 0
 	batchSize := config.BatchSize
 	if batchSize <= 0 {
@@ -1265,15 +1275,17 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 				}
 			}
 
-			// Generate State UUID using same formula as when creating state records: "state-{stateId}-{COUNTRY_ISO}"
+			// Lookup State UUID from existing state records using id_10x format: "state-{stateId}-{COUNTRY_ISO}"
 			var stateUUID *string
 			if stateName != nil && *stateName != "" && countrySourceID != "" {
 				stateId := shared.SafeConvertToUInt32(row["state_id"])
 				if stateId > 0 {
 					countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
 					id10x := fmt.Sprintf("state-%d-%s", stateId, countryISOUpper)
-					uuid := shared.GenerateUUIDFromString(normalizeNFC(id10x))
-					stateUUID = &uuid
+					lookupKey := strings.TrimPrefix(id10x, "state-")
+					if uuid, ok := stateUUIDLookup[lookupKey]; ok {
+						stateUUID = &uuid
+					}
 				}
 			}
 
