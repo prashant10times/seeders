@@ -5392,7 +5392,7 @@ func buildAlleventRecord(
 			esPredEndDate := decodeBase64NullableDate(esInfoMap["pred_endDate"])
 
 			// if (db_pred_data_exist is None AND ES predictions are invalidated)
-			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil {
+			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
 				startDate, err1 := time.Parse("2006-01-02", startDateStr)
 				endDate, err2 := time.Parse("2006-01-02", endDateStr)
 				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
@@ -5411,8 +5411,22 @@ func buildAlleventRecord(
 					return &dbStartDate
 				}
 			}
-			// else (keep ES prediction)
-			return esPredStartDate
+			// elif db_pred_data_exist is None AND ES predictions are valid future predictions
+			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
+				startDate, err1 := time.Parse("2006-01-02", startDateStr)
+				endDate, err2 := time.Parse("2006-01-02", endDateStr)
+				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
+				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
+					now := time.Now()
+					if startDate.Before(predStartDate) && endDate.Before(predEndDate) && (predEndDate.After(now) || predEndDate.Equal(now)) {
+						// Keep ES prediction: pred_start_date = pred_start_date
+						return esPredStartDate
+					}
+				}
+			}
+			// else (set to None)
+			return nil
 		}(),
 		"futureExpexctedEndDate": func() *string {
 			startDateStr := decodeBase64Date(edition["edition_start_date"])
@@ -5422,7 +5436,7 @@ func buildAlleventRecord(
 			esPredEndDate := decodeBase64NullableDate(esInfoMap["pred_endDate"])
 
 			// if (db_pred_data_exist is None AND ES predictions are invalidated)
-			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil {
+			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
 				startDate, err1 := time.Parse("2006-01-02", startDateStr)
 				endDate, err2 := time.Parse("2006-01-02", endDateStr)
 				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
@@ -5441,8 +5455,22 @@ func buildAlleventRecord(
 					return &dbEndDate
 				}
 			}
-			// else (keep ES prediction: pred_end_date = pred_end_date)
-			return esPredEndDate
+			// elif db_pred_data_exist is None AND ES predictions are valid future predictions
+			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
+				startDate, err1 := time.Parse("2006-01-02", startDateStr)
+				endDate, err2 := time.Parse("2006-01-02", endDateStr)
+				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
+				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
+					now := time.Now()
+					if startDate.Before(predStartDate) && endDate.Before(predEndDate) && (predEndDate.After(now) || predEndDate.Equal(now)) {
+						// Keep ES prediction: pred_end_date = pred_end_date
+						return esPredEndDate
+					}
+				}
+			}
+			// else (set to None)
+			return nil
 		}(),
 		"predictionScore": func() *int32 {
 			// Decision logic for prediction score
@@ -5454,7 +5482,7 @@ func buildAlleventRecord(
 			esPredScore := esInfoMap["pred_score"]
 
 			// if (db_pred_data_exist is None AND ES predictions are invalidated)
-			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil {
+			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
 				startDate, err1 := time.Parse("2006-01-02", startDateStr)
 				endDate, err2 := time.Parse("2006-01-02", endDateStr)
 				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
@@ -5475,26 +5503,39 @@ func buildAlleventRecord(
 					return &score
 				}
 			}
-			// else (keep ES prediction: pred_score = pred_score)
-			if esPredScore != nil {
-				if scoreFloat, ok := esPredScore.(float64); ok {
-					score := int32(scoreFloat)
-					return &score
-				} else if scoreInt, ok := esPredScore.(int); ok {
-					score := int32(scoreInt)
-					return &score
-				} else if scoreInt64, ok := esPredScore.(int64); ok {
-					score := int32(scoreInt64)
-					return &score
-				} else if scoreStr, ok := esPredScore.(string); ok && scoreStr != "" {
-					if scoreVal, err := strconv.ParseInt(scoreStr, 10, 32); err == nil {
-						score := int32(scoreVal)
-						return &score
+			// elif db_pred_data_exist is None AND ES predictions are valid future predictions
+			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
+				startDate, err1 := time.Parse("2006-01-02", startDateStr)
+				endDate, err2 := time.Parse("2006-01-02", endDateStr)
+				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
+				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
+					now := time.Now()
+					if startDate.Before(predStartDate) && endDate.Before(predEndDate) && (predEndDate.After(now) || predEndDate.Equal(now)) {
+						// Keep ES prediction: pred_score = pred_score
+						if esPredScore != nil {
+							if scoreFloat, ok := esPredScore.(float64); ok {
+								score := int32(scoreFloat)
+								return &score
+							} else if scoreInt, ok := esPredScore.(int); ok {
+								score := int32(scoreInt)
+								return &score
+							} else if scoreInt64, ok := esPredScore.(int64); ok {
+								score := int32(scoreInt64)
+								return &score
+							} else if scoreStr, ok := esPredScore.(string); ok && scoreStr != "" {
+								if scoreVal, err := strconv.ParseInt(scoreStr, 10, 32); err == nil {
+									score := int32(scoreVal)
+									return &score
+								}
+							}
+						}
 					}
 				}
 			}
-			// Default to None if ES score is not available
-			return nil
+			// else (set to 0)
+			score := int32(0)
+			return &score
 		}(),
 		"PrimaryEventType": func() *string {
 			eventTypes := eventTypesMap[eventID]
