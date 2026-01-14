@@ -601,23 +601,13 @@ func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 		}
 
 		if len(records) > 0 {
-			if err := insertLocationStatesCh(clickhouseConn, records, config.ClickHouseWorkers); err != nil {
+			if err := insertLocationStatesCh(clickhouseConn, records, 1); err != nil {
 				log.Fatalf("Failed inserting states into location_ch: %v", err)
 			}
 			log.Printf("Inserted %d state records into location_ch (offset=%d)", len(records), offset)
 		}
 
-		if len(batchData) > 0 {
-			if lastID, ok := batchData[len(batchData)-1]["id"].(int64); ok {
-				offset = int(lastID)
-			} else if lastID, ok := batchData[len(batchData)-1]["id"].(int); ok {
-				offset = lastID
-			} else {
-				offset += len(batchData)
-			}
-		} else {
-			offset += batchSize
-		}
+		offset += len(batchData)
 
 		if len(batchData) < batchSize {
 			break
@@ -640,10 +630,10 @@ func fetchStateBatch(db *sql.DB, offset, limit int) ([]map[string]interface{}, e
             area_values.geometry,
             area_values.published
         FROM area_values 
-        WHERE type_value != 'subregion' AND area_values.id > %d
+        WHERE type_value != 'subregion'
         GROUP BY area_values.name, area_values.country
         ORDER BY area_values.id
-        LIMIT %d`, offset, limit)
+        LIMIT %d OFFSET %d`, limit, offset)
 
 	log.Println("State Fetch Query", query)
 

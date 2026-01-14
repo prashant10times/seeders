@@ -3472,6 +3472,54 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 			return nil
 		}
 
+		// Check if pred_endDate is less than 3 months from now
+		// If so, set pred_startDate, pred_endDate, and pred_score to nil
+		var predStartDate interface{}
+		var predEndDate interface{}
+		var predScore interface{}
+
+		now := time.Now()
+		threeMonthsFromNow := now.AddDate(0, 3, 0)
+
+		if predEndDateRaw := source["pred_endDate"]; predEndDateRaw != nil {
+			var predEndDateParsed time.Time
+			var err error
+			var dateStr string
+
+			// Try to parse pred_endDate from various formats
+			if predEndDateStr, ok := predEndDateRaw.(string); ok && predEndDateStr != "" {
+				dateStr = predEndDateStr
+				predEndDateParsed, err = time.Parse("2006-01-02", dateStr)
+				if err != nil {
+					predEndDate = predEndDateRaw
+					predStartDate = source["pred_startDate"]
+					predScore = source["pred_score"]
+				} else {
+					// Check if pred_endDate is less than 3 months from now
+					if predEndDateParsed.Before(threeMonthsFromNow) {
+						// Set all three to nil
+						predStartDate = nil
+						predEndDate = nil
+						predScore = nil
+					} else {
+						// Keep original values
+						predStartDate = source["pred_startDate"]
+						predEndDate = predEndDateRaw
+						predScore = source["pred_score"]
+					}
+				}
+			} else {
+				// If pred_endDate is not a string or is empty, keep original values
+				predStartDate = source["pred_startDate"]
+				predEndDate = predEndDateRaw
+				predScore = source["pred_score"]
+			}
+		} else {
+			predStartDate = source["pred_startDate"]
+			predEndDate = source["pred_endDate"]
+			predScore = source["pred_score"]
+		}
+
 		results[eventIDInt] = map[string]interface{}{
 			"event_description":               shared.ConvertToString(source["description"]),
 			"event_exhibitors":                convertStringToUInt32("exhibitors"),
@@ -3499,9 +3547,9 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 			"reputationChangePercentage":      convertToFloat64("reputationSentiment"),
 			"audienceZone":                    shared.ConvertToString(source["audienceZone"]),
 			"yoyGrowth":                       convertStringToUInt32("yoyGrowth"),
-			"pred_startDate":                  source["pred_startDate"],
-			"pred_endDate":                    source["pred_endDate"],
-			"pred_score":                      source["pred_score"],
+			"pred_startDate":                  predStartDate,
+			"pred_endDate":                    predEndDate,
+			"pred_score":                      predScore,
 			"finalEstimate":                   source["finalEstimate"],
 			"highEstimate":                    source["highEstimate"],
 			"lowEstimate":                     source["lowEstimate"],
@@ -5054,7 +5102,6 @@ func extractDomainsForEdition(
 }
 
 // buildAlleventRecord builds a complete allevent record from all the necessary data
-// This is a reusable function that can be called from both processalleventChunk and rebuildRecordsForFailedBatch
 func buildAlleventRecord(
 	eventData map[string]interface{},
 	edition map[string]interface{},
@@ -5338,47 +5385,14 @@ func buildAlleventRecord(
 		"event_score":                     eventData["score"],
 		"yoyGrowth":                       esInfoMap["yoyGrowth"],
 		"futureExpexctedStartDate": func() *string {
-			// Get current edition dates from record
-			startDateStr := decodeBase64Date(eventData["start_date"])
-			endDateStr := decodeBase64Date(eventData["end_date"])
+			startDateStr := decodeBase64Date(edition["edition_start_date"])
+			endDateStr := decodeBase64Date(edition["edition_end_date"])
 			// Parse ES predictions
 			esPredStartDate := decodeBase64NullableDate(esInfoMap["pred_startDate"])
 			esPredEndDate := decodeBase64NullableDate(esInfoMap["pred_endDate"])
-			// CASE 1: Check if ES predictions are invalidated
-			// Conditions: actual start > ES pred start AND actual end > ES pred end AND ES pred end <= now
-			if esPredStartDate != nil && esPredEndDate != nil {
-				startDate, err1 := time.Parse("2006-01-02", startDateStr)
-				endDate, err2 := time.Parse("2006-01-02", endDateStr)
-				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
-				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
-				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
-					now := time.Now()
-					if startDate.After(predStartDate) && endDate.After(predEndDate) && predEndDate.Before(now) || predEndDate.Equal(now) {
-						// ES predictions were wrong - invalidate them
-						return nil
-					}
-				}
-			}
-			// CASE 2: Database prediction exists - USE IT (highest priority)
-			if dbPredictedDates != nil {
-				if dbStartDate, ok := dbPredictedDates["start_date"].(string); ok && dbStartDate != "" {
-					return &dbStartDate
-				}
-			}
-			// CASE 3: Use ES predictions if valid
-			return esPredStartDate
-		}(),
-		"futureExpexctedEndDate": func() *string {
-			// Decision logic for future expected dates
-			// Get current edition dates from record
-			startDateStr := decodeBase64Date(eventData["start_date"])
-			endDateStr := decodeBase64Date(eventData["end_date"])
-			// Parse ES predictions
-			esPredStartDate := decodeBase64NullableDate(esInfoMap["pred_startDate"])
-			esPredEndDate := decodeBase64NullableDate(esInfoMap["pred_endDate"])
-			// CASE 1: Check if ES predictions are invalidated
-			// Conditions: actual start > ES pred start AND actual end > ES pred end AND ES pred end <= now
-			if esPredStartDate != nil && esPredEndDate != nil {
+
+			// if (db_pred_data_exist is None AND ES predictions are invalidated)
+			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil {
 				startDate, err1 := time.Parse("2006-01-02", startDateStr)
 				endDate, err2 := time.Parse("2006-01-02", endDateStr)
 				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
@@ -5391,27 +5405,56 @@ func buildAlleventRecord(
 					}
 				}
 			}
-			// CASE 2: Database prediction exists - USE IT (highest priority)
+			// elif db_pred_data_exist is not None (use DB prediction - highest priority)
+			if dbPredictedDates != nil {
+				if dbStartDate, ok := dbPredictedDates["start_date"].(string); ok && dbStartDate != "" {
+					return &dbStartDate
+				}
+			}
+			// else (keep ES prediction)
+			return esPredStartDate
+		}(),
+		"futureExpexctedEndDate": func() *string {
+			startDateStr := decodeBase64Date(edition["edition_start_date"])
+			endDateStr := decodeBase64Date(edition["edition_end_date"])
+			// Parse ES predictions
+			esPredStartDate := decodeBase64NullableDate(esInfoMap["pred_startDate"])
+			esPredEndDate := decodeBase64NullableDate(esInfoMap["pred_endDate"])
+
+			// if (db_pred_data_exist is None AND ES predictions are invalidated)
+			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil {
+				startDate, err1 := time.Parse("2006-01-02", startDateStr)
+				endDate, err2 := time.Parse("2006-01-02", endDateStr)
+				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
+				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
+					now := time.Now()
+					if startDate.After(predStartDate) && endDate.After(predEndDate) && (predEndDate.Before(now) || predEndDate.Equal(now)) {
+						// ES predictions were wrong - invalidate them
+						return nil
+					}
+				}
+			}
+			// elif db_pred_data_exist is not None (use DB prediction - highest priority)
 			if dbPredictedDates != nil {
 				if dbEndDate, ok := dbPredictedDates["end_date"].(string); ok && dbEndDate != "" {
 					return &dbEndDate
 				}
 			}
-			// CASE 3: Use ES predictions if valid
+			// else (keep ES prediction: pred_end_date = pred_end_date)
 			return esPredEndDate
 		}(),
 		"predictionScore": func() *int32 {
 			// Decision logic for prediction score
-			// Get current edition dates from record
-			startDateStr := decodeBase64Date(eventData["start_date"])
-			endDateStr := decodeBase64Date(eventData["end_date"])
+			startDateStr := decodeBase64Date(edition["edition_start_date"])
+			endDateStr := decodeBase64Date(edition["edition_end_date"])
 			// Parse ES predictions
 			esPredStartDate := decodeBase64NullableDate(esInfoMap["pred_startDate"])
 			esPredEndDate := decodeBase64NullableDate(esInfoMap["pred_endDate"])
 			esPredScore := esInfoMap["pred_score"]
-			// CASE 1: Check if ES predictions are invalidated
-			// Conditions: actual start > ES pred start AND actual end > ES pred end AND ES pred end <= now
-			if esPredStartDate != nil && esPredEndDate != nil {
+
+			// if (db_pred_data_exist is None AND ES predictions are invalidated)
+			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil {
 				startDate, err1 := time.Parse("2006-01-02", startDateStr)
 				endDate, err2 := time.Parse("2006-01-02", endDateStr)
 				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
@@ -5425,14 +5468,14 @@ func buildAlleventRecord(
 					}
 				}
 			}
-			// CASE 2: Database prediction exists - USE IT (score = 100)
+			// elif db_pred_data_exist is not None (use DB prediction, score = 100 - highest priority)
 			if dbPredictedDates != nil {
 				if dbScore, ok := dbPredictedDates["score"].(int); ok {
 					score := int32(dbScore)
 					return &score
 				}
 			}
-			// CASE 3: Use ES score if valid, otherwise default to 0
+			// else (keep ES prediction: pred_score = pred_score)
 			if esPredScore != nil {
 				if scoreFloat, ok := esPredScore.(float64); ok {
 					score := int32(scoreFloat)
@@ -5450,10 +5493,8 @@ func buildAlleventRecord(
 					}
 				}
 			}
-
-			// Default to 0
-			score := int32(0)
-			return &score
+			// Default to None if ES score is not available
+			return nil
 		}(),
 		"PrimaryEventType": func() *string {
 			eventTypes := eventTypesMap[eventID]
