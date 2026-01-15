@@ -273,6 +273,20 @@ func decodeBase64NullableDate(value interface{}) *string {
 	if value == nil {
 		return nil
 	}
+	if strPtr, ok := value.(*string); ok {
+		if strPtr == nil || *strPtr == "" {
+			return nil
+		}
+		decoded, err := base64.StdEncoding.DecodeString(*strPtr)
+		if err == nil {
+			decodedStr := string(decoded)
+			if matched, _ := regexp.MatchString(`^\d{4}-\d{2}-\d{2}$`, decodedStr); matched {
+				return &decodedStr
+			}
+			return &decodedStr
+		}
+		return strPtr
+	}
 	str := shared.SafeConvertToString(value)
 	if str == "" {
 		return nil
@@ -570,6 +584,27 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		FutureExpectedEndDate:        decodeBase64NullableDate(record["futureExpexctedEndDate"]),
 		PredictionScore: func() *int32 {
 			if val, exists := record["predictionScore"]; exists && val != nil {
+				if scoreInt32Ptr, ok := val.(*int32); ok {
+					return scoreInt32Ptr
+				}
+				if scoreIntPtr, ok := val.(*int); ok {
+					scoreInt32 := int32(*scoreIntPtr)
+					return &scoreInt32
+				}
+				if scoreInt64Ptr, ok := val.(*int64); ok {
+					scoreInt32 := int32(*scoreInt64Ptr)
+					return &scoreInt32
+				}
+				if scoreFloatPtr, ok := val.(*float64); ok {
+					scoreInt32 := int32(*scoreFloatPtr)
+					return &scoreInt32
+				}
+				if scoreStrPtr, ok := val.(*string); ok && *scoreStrPtr != "" {
+					if scoreVal, err := strconv.ParseInt(*scoreStrPtr, 10, 32); err == nil {
+						scoreInt32 := int32(scoreVal)
+						return &scoreInt32
+					}
+				}
 				if scoreInt32, ok := val.(int32); ok {
 					return &scoreInt32
 				} else if scoreInt, ok := val.(int); ok {
@@ -5387,7 +5422,6 @@ func buildAlleventRecord(
 		"futureExpexctedStartDate": func() *string {
 			startDateStr := decodeBase64Date(edition["edition_start_date"])
 			endDateStr := decodeBase64Date(edition["edition_end_date"])
-			// Parse ES predictions
 			esPredStartDate := decodeBase64NullableDate(esInfoMap["pred_startDate"])
 			esPredEndDate := decodeBase64NullableDate(esInfoMap["pred_endDate"])
 
