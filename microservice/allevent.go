@@ -575,7 +575,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EventUpdated:           decodeBase64DateTime(record["event_updated"]),
 		EditionCreated:         decodeBase64DateTime(record["edition_created"]),
 		EventHybrid:            shared.SafeConvertToNullableUInt8(record["event_hybrid"]),
-		EventFormat:            decodeNullableStr("event_format"),
+		EventFormat:            shared.SafeConvertToNullableString(record["event_format"]),
 		IsBranded:              shared.SafeConvertToNullableUInt32(record["isBranded"]),
 		EventBrandId:           decodeNullableStr("eventBrandId"),
 		EventSeriesId:          decodeNullableStr("eventSeriesId"),
@@ -5926,7 +5926,17 @@ func buildAlleventRecord(
 		}
 	}
 
-	record["event_format"] = &eventFormat
+	// Validate event_format - only allow OFFLINE, ONLINE, or HYBRID
+	validFormats := map[string]bool{
+		"OFFLINE": true,
+		"ONLINE":  true,
+		"HYBRID":  true,
+	}
+	if !validFormats[eventFormat] {
+		record["event_format"] = nil
+	} else {
+		record["event_format"] = &eventFormat
+	}
 
 	// Add economic impact data
 	if economicData != nil {
