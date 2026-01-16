@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"seeders/utils"
 
@@ -323,24 +324,38 @@ func decodeBase64StringIfNeeded(value interface{}) string {
 	if str == "" {
 		return ""
 	}
-	if len(str) < 4 || (!strings.HasSuffix(str, "=") && !strings.HasSuffix(str, "==")) {
+
+	hasPadding := strings.HasSuffix(str, "=") || strings.HasSuffix(str, "==")
+	isMultipleOf4 := len(str)%4 == 0
+	if !hasPadding || !isMultipleOf4 || len(str) < 16 {
 		return str
 	}
+
 	decoded, err := base64.StdEncoding.DecodeString(str)
-	if err == nil {
-		decodedStr := string(decoded)
-		if len(decodedStr) > 0 {
-			printableCount := 0
-			for _, r := range decodedStr {
-				if r >= 32 && r <= 126 {
-					printableCount++
-				}
-			}
-			if len(decodedStr) > 0 && float64(printableCount)/float64(len(decodedStr)) >= 0.8 {
-				return decodedStr
-			}
+	if err != nil {
+		return str
+	}
+
+	if !utf8.Valid(decoded) {
+		return str
+	}
+
+	decodedStr := string(decoded)
+	if len(decodedStr) == 0 {
+		return str
+	}
+
+	printableCount := 0
+	for _, r := range decodedStr {
+		if r >= 32 && r <= 126 {
+			printableCount++
 		}
 	}
+
+	if float64(printableCount)/float64(len(decodedStr)) >= 0.8 {
+		return decodedStr
+	}
+
 	return str
 }
 
@@ -352,23 +367,36 @@ func decodeBase64NullableStringIfNeeded(value interface{}) *string {
 	if str == "" {
 		return nil
 	}
-	if len(str) < 4 || (!strings.HasSuffix(str, "=") && !strings.HasSuffix(str, "==")) {
+
+	hasPadding := strings.HasSuffix(str, "=") || strings.HasSuffix(str, "==")
+	isMultipleOf4 := len(str)%4 == 0
+	if !hasPadding || !isMultipleOf4 || len(str) < 16 {
 		return &str
 	}
+
 	decoded, err := base64.StdEncoding.DecodeString(str)
-	if err == nil {
-		decodedStr := string(decoded)
-		if len(decodedStr) > 0 {
-			printableCount := 0
-			for _, r := range decodedStr {
-				if r >= 32 && r <= 126 {
-					printableCount++
-				}
-			}
-			if float64(printableCount)/float64(len(decodedStr)) >= 0.8 {
-				return &decodedStr
-			}
+	if err != nil {
+		return &str
+	}
+
+	if !utf8.Valid(decoded) {
+		return &str
+	}
+
+	decodedStr := string(decoded)
+	if len(decodedStr) == 0 {
+		return &str
+	}
+
+	printableCount := 0
+	for _, r := range decodedStr {
+		if r >= 32 && r <= 126 {
+			printableCount++
 		}
+	}
+
+	if float64(printableCount)/float64(len(decodedStr)) >= 0.8 {
+		return &decodedStr
 	}
 	return &str
 }
@@ -395,48 +423,62 @@ func decodeValueWithBase64Support(value interface{}, fieldType string) interface
 		return decodeBase64NullableDate(value)
 	}
 
-	// Try to decode base64 - check for padding first (common case), then try without padding
-	// Base64 strings are typically longer than 4 chars and contain only base64 characters
-	if len(str) >= 4 {
-		// Check if it looks like base64 (contains only base64 characters)
-		isBase64Like := true
-		base64Chars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
-		for _, r := range str {
-			if !strings.ContainsRune(base64Chars, r) {
-				isBase64Like = false
-				break
-			}
-		}
+	hasPadding := strings.HasSuffix(str, "=") || strings.HasSuffix(str, "==")
+	isMultipleOf4 := len(str)%4 == 0
 
-		if isBase64Like {
-			// Try decoding - first with original string, then with padding if needed
-			decoded, err := base64.StdEncoding.DecodeString(str)
-			if err != nil {
-				// If decoding failed, try adding padding
-				// Base64 padding is needed when length is not multiple of 4
-				missingPadding := (4 - len(str)%4) % 4
-				if missingPadding > 0 {
-					paddedStr := str + strings.Repeat("=", missingPadding)
-					decoded, err = base64.StdEncoding.DecodeString(paddedStr)
-				}
-			}
-
-			if err == nil {
-				decodedStr := string(decoded)
-				if len(decodedStr) > 0 {
-					printableCount := 0
-					for _, r := range decodedStr {
-						if r >= 32 && r <= 126 {
-							printableCount++
-						}
-					}
-					// Only return decoded if it's mostly printable (80% threshold)
-					if float64(printableCount)/float64(len(decodedStr)) >= 0.8 {
-						return decodedStr
-					}
-				}
-			}
+	if len(str) < 16 {
+		if !hasPadding || !isMultipleOf4 {
+			return value
 		}
+	} else {
+		if !hasPadding && !isMultipleOf4 {
+			return value
+		}
+	}
+
+	base64Chars := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+	isBase64Like := true
+	for _, r := range str {
+		if !strings.ContainsRune(base64Chars, r) {
+			isBase64Like = false
+			break
+		}
+	}
+
+	if !isBase64Like {
+		return value
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(str)
+	if err != nil {
+		missingPadding := (4 - len(str)%4) % 4
+		if missingPadding > 0 {
+			paddedStr := str + strings.Repeat("=", missingPadding)
+			decoded, err = base64.StdEncoding.DecodeString(paddedStr)
+		}
+		if err != nil {
+			return value
+		}
+	}
+
+	if !utf8.Valid(decoded) {
+		return value
+	}
+
+	decodedStr := string(decoded)
+	if len(decodedStr) == 0 {
+		return value
+	}
+
+	printableCount := 0
+	for _, r := range decodedStr {
+		if r >= 32 && r <= 126 {
+			printableCount++
+		}
+	}
+
+	if float64(printableCount)/float64(len(decodedStr)) >= 0.8 {
+		return decodedStr
 	}
 
 	return value
