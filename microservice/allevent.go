@@ -2210,25 +2210,69 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 
 			if len(editionData) > 0 {
 				locationTableName := shared.GetClickHouseTableName("location_ch", config)
-				log.Printf("allevent chunk %d: Building location lookups from %s for cities, states, and venues", chunkNum, locationTableName)
+				log.Printf("allevent chunk %d: Building location lookups from %s using id_10x for cities, states, and venues", chunkNum, locationTableName)
 				startTime := time.Now()
-				cityIDLookup, err := buildalleventCityIDLookupFromLocationCh(clickhouseConn, locationTableName)
+				cityIDLookup, err := buildCityIDLookupFromId10x(clickhouseConn, locationTableName)
 				if err != nil {
 					log.Printf("allevent chunk %d: WARNING - Failed to build city ID lookup: %v", chunkNum, err)
 					cityIDLookup = make(map[string]uint32)
 				}
-				stateIDLookup, err := buildalleventStateIDLookupFromLocationCh(clickhouseConn, locationTableName)
+				stateIDLookup, err := buildStateIDLookupFromId10x(clickhouseConn, locationTableName)
 				if err != nil {
 					log.Printf("allevent chunk %d: WARNING - Failed to build state ID lookup: %v", chunkNum, err)
 					stateIDLookup = make(map[string]uint32)
 				}
-				venueIDLookup, err := buildalleventVenueIDLookupFromLocationCh(clickhouseConn, locationTableName)
+				// Build state UUID lookup for direct state_uuid to id mapping
+				stateUUIDLookup, err := buildStateIDLookupFromUUID(clickhouseConn, locationTableName)
+				if err != nil {
+					log.Printf("allevent chunk %d: WARNING - Failed to build state UUID lookup: %v", chunkNum, err)
+					stateUUIDLookup = make(map[string]uint32)
+				}
+				// Build city to state_uuid lookup
+				cityStateUUIDLookup, err := buildCityStateUUIDLookup(clickhouseConn, locationTableName)
+				if err != nil {
+					log.Printf("allevent chunk %d: WARNING - Failed to build city state UUID lookup: %v", chunkNum, err)
+					cityStateUUIDLookup = make(map[string]string)
+				}
+				venueIDLookup, err := buildVenueIDLookupFromId10x(clickhouseConn, locationTableName)
 				if err != nil {
 					log.Printf("allevent chunk %d: WARNING - Failed to build venue ID lookup: %v", chunkNum, err)
 					venueIDLookup = make(map[string]uint32)
 				}
 				lookupTime := time.Since(startTime)
-				log.Printf("allevent chunk %d: Built location lookups from %s in %v (cities: %d, states: %d, venues: %d)", chunkNum, locationTableName, lookupTime, len(cityIDLookup), len(stateIDLookup), len(venueIDLookup))
+				log.Printf("allevent chunk %d: Built location lookups from %s in %v (cities: %d, states: %d, stateUUIDs: %d, cityStateUUIDs: %d, venues: %d)", chunkNum, locationTableName, lookupTime, len(cityIDLookup), len(stateIDLookup), len(stateUUIDLookup), len(cityStateUUIDLookup), len(venueIDLookup))
+
+				// Debug: Print one example value from each lookup map
+				if len(cityIDLookup) > 0 {
+					for k, v := range cityIDLookup {
+						log.Printf("allevent chunk %d: City lookup example - id_10x: %s -> location_id: %d", chunkNum, k, v)
+						break
+					}
+				}
+				if len(stateIDLookup) > 0 {
+					for k, v := range stateIDLookup {
+						log.Printf("allevent chunk %d: State lookup example - id_10x: %s -> location_id: %d", chunkNum, k, v)
+						break
+					}
+				}
+				if len(stateUUIDLookup) > 0 {
+					for k, v := range stateUUIDLookup {
+						log.Printf("allevent chunk %d: State UUID lookup example - state_uuid: %s -> location_id: %d", chunkNum, k, v)
+						break
+					}
+				}
+				if len(cityStateUUIDLookup) > 0 {
+					for k, v := range cityStateUUIDLookup {
+						log.Printf("allevent chunk %d: City state UUID lookup example - city_id_10x: %s -> state_uuid: %s", chunkNum, k, v)
+						break
+					}
+				}
+				if len(venueIDLookup) > 0 {
+					for k, v := range venueIDLookup {
+						log.Printf("allevent chunk %d: Venue lookup example - id_10x: %s -> location_id: %d", chunkNum, k, v)
+						break
+					}
+				}
 
 				companyLookup := make(map[int64]map[string]interface{})
 				if len(companyData) > 0 {
@@ -2489,13 +2533,14 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							editionCityLocationChID, companyCityLocationChID, venueCityLocationChID,
 								editionCityStateLocationChID, venueLocationChID := computeAllLocationIDs(
 								city,
-								company,
 								companyCity,
 								venue,
 								venueCity,
 								editionCountryISO,
 								cityIDLookup,
 								stateIDLookup,
+								stateUUIDLookup,
+								cityStateUUIDLookup,
 								venueIDLookup,
 							)
 
@@ -2969,6 +3014,291 @@ func buildalleventVenueIDLookupFromLocationCh(clickhouseConn driver.Conn, locati
 	}
 
 	log.Printf("Built venue ID lookup: %d venues mapped from %s", len(lookup), locationTableName)
+	return lookup, nil
+}
+
+// buildCityIDLookupFromId10x builds a lookup map from id_10x (format: "city-{id}") to ClickHouse location id
+func buildCityIDLookupFromId10x(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
+	log.Printf("Building city ID lookup from id_10x in %s", locationTableName)
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+	)
+	if connectionCheckErr != nil {
+		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, id_10x
+		FROM %s
+		WHERE location_type = 'CITY' AND id_10x IS NOT NULL
+	`, locationTableName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var rows driver.Rows
+	var err error
+	queryErr := shared.RetryWithBackoff(
+		func() error {
+			rows, err = clickhouseConn.Query(ctx, query)
+			if err != nil {
+				return fmt.Errorf("failed to query %s for cities: %v", locationTableName, err)
+			}
+			return nil
+		},
+		3,
+	)
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	defer rows.Close()
+
+	lookup := make(map[string]uint32)
+	for rows.Next() {
+		var locationChID uint32
+		var id10x *string
+		if err := rows.Scan(&locationChID, &id10x); err != nil {
+			log.Printf("Warning: Failed to scan city row: %v", err)
+			continue
+		}
+
+		if id10x != nil && *id10x != "" {
+			lookup[*id10x] = locationChID
+		}
+	}
+
+	log.Printf("Built city ID lookup from id_10x: %d cities mapped from %s", len(lookup), locationTableName)
+	return lookup, nil
+}
+
+// buildStateIDLookupFromId10x builds a lookup map from id_10x (format: "state-{id}-{ISO}") to ClickHouse location id
+func buildStateIDLookupFromId10x(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
+	log.Printf("Building state ID lookup from id_10x in %s", locationTableName)
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+	)
+	if connectionCheckErr != nil {
+		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, id_10x
+		FROM %s
+		WHERE location_type = 'STATE' AND id_10x IS NOT NULL
+	`, locationTableName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var rows driver.Rows
+	var err error
+	queryErr := shared.RetryWithBackoff(
+		func() error {
+			rows, err = clickhouseConn.Query(ctx, query)
+			if err != nil {
+				return fmt.Errorf("failed to query %s for states: %v", locationTableName, err)
+			}
+			return nil
+		},
+		3,
+	)
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	defer rows.Close()
+
+	lookup := make(map[string]uint32)
+	for rows.Next() {
+		var locationChID uint32
+		var id10x *string
+		if err := rows.Scan(&locationChID, &id10x); err != nil {
+			log.Printf("Warning: Failed to scan state row: %v", err)
+			continue
+		}
+
+		if id10x != nil && *id10x != "" {
+			lookup[*id10x] = locationChID
+		}
+	}
+
+	log.Printf("Built state ID lookup from id_10x: %d states mapped from %s", len(lookup), locationTableName)
+	return lookup, nil
+}
+
+// buildStateIDLookupFromUUID builds a lookup map from state_uuid to ClickHouse location id
+func buildStateIDLookupFromUUID(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
+	log.Printf("Building state ID lookup from state_uuid in %s", locationTableName)
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+	)
+	if connectionCheckErr != nil {
+		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, id_uuid
+		FROM %s
+		WHERE location_type = 'STATE' AND id_uuid IS NOT NULL
+	`, locationTableName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var rows driver.Rows
+	var err error
+	queryErr := shared.RetryWithBackoff(
+		func() error {
+			rows, err = clickhouseConn.Query(ctx, query)
+			if err != nil {
+				return fmt.Errorf("failed to query %s for states: %v", locationTableName, err)
+			}
+			return nil
+		},
+		3,
+	)
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	defer rows.Close()
+
+	lookup := make(map[string]uint32)
+	for rows.Next() {
+		var locationChID uint32
+		var stateUUID *string
+		if err := rows.Scan(&locationChID, &stateUUID); err != nil {
+			log.Printf("Warning: Failed to scan state row: %v", err)
+			continue
+		}
+
+		if stateUUID != nil && *stateUUID != "" {
+			lookup[*stateUUID] = locationChID
+		}
+	}
+
+	log.Printf("Built state ID lookup from state_uuid: %d states mapped from %s", len(lookup), locationTableName)
+	return lookup, nil
+}
+
+// buildCityStateUUIDLookup builds a lookup map from city id_10x to state_uuid
+func buildCityStateUUIDLookup(clickhouseConn driver.Conn, locationTableName string) (map[string]string, error) {
+	log.Printf("Building city to state_uuid lookup in %s", locationTableName)
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+	)
+	if connectionCheckErr != nil {
+		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id_10x, state_uuid
+		FROM %s
+		WHERE location_type = 'CITY' AND id_10x IS NOT NULL AND state_uuid IS NOT NULL
+	`, locationTableName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var rows driver.Rows
+	var err error
+	queryErr := shared.RetryWithBackoff(
+		func() error {
+			rows, err = clickhouseConn.Query(ctx, query)
+			if err != nil {
+				return fmt.Errorf("failed to query %s for city state_uuid: %v", locationTableName, err)
+			}
+			return nil
+		},
+		3,
+	)
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	defer rows.Close()
+
+	lookup := make(map[string]string)
+	for rows.Next() {
+		var cityID10x *string
+		var stateUUID *string
+		if err := rows.Scan(&cityID10x, &stateUUID); err != nil {
+			log.Printf("Warning: Failed to scan city state_uuid row: %v", err)
+			continue
+		}
+
+		if cityID10x != nil && *cityID10x != "" && stateUUID != nil && *stateUUID != "" {
+			lookup[*cityID10x] = *stateUUID
+		}
+	}
+
+	log.Printf("Built city to state_uuid lookup: %d cities mapped from %s", len(lookup), locationTableName)
+	return lookup, nil
+}
+
+// buildVenueIDLookupFromId10x builds a lookup map from id_10x (format: "venue-{id}") to ClickHouse location id
+func buildVenueIDLookupFromId10x(clickhouseConn driver.Conn, locationTableName string) (map[string]uint32, error) {
+	log.Printf("Building venue ID lookup from id_10x in %s", locationTableName)
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+	)
+	if connectionCheckErr != nil {
+		return nil, fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT id, id_10x
+		FROM %s
+		WHERE location_type = 'VENUE' AND id_10x IS NOT NULL
+	`, locationTableName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var rows driver.Rows
+	var err error
+	queryErr := shared.RetryWithBackoff(
+		func() error {
+			rows, err = clickhouseConn.Query(ctx, query)
+			if err != nil {
+				return fmt.Errorf("failed to query %s for venues: %v", locationTableName, err)
+			}
+			return nil
+		},
+		3,
+	)
+	if queryErr != nil {
+		return nil, queryErr
+	}
+	defer rows.Close()
+
+	lookup := make(map[string]uint32)
+	for rows.Next() {
+		var locationChID uint32
+		var id10x *string
+		if err := rows.Scan(&locationChID, &id10x); err != nil {
+			log.Printf("Warning: Failed to scan venue row: %v", err)
+			continue
+		}
+
+		if id10x != nil && *id10x != "" {
+			lookup[*id10x] = locationChID
+		}
+	}
+
+	log.Printf("Built venue ID lookup from id_10x: %d venues mapped from %s", len(lookup), locationTableName)
 	return lookup, nil
 }
 
@@ -4780,17 +5110,29 @@ func rebuildRecordsForFailedBatch(
 	esData := fetchalleventElasticsearchDataForEvents(esClient, config.ElasticsearchIndex, actualEventIDs)
 
 	locationTableName := shared.GetClickHouseTableName("location_ch", config)
-	cityIDLookup, err := buildalleventCityIDLookupFromLocationCh(clickhouseConn, locationTableName)
+	cityIDLookup, err := buildCityIDLookupFromId10x(clickhouseConn, locationTableName)
 	if err != nil {
 		log.Printf("WARNING - Failed to build city ID lookup: %v", err)
 		cityIDLookup = make(map[string]uint32)
 	}
-	stateIDLookup, err := buildalleventStateIDLookupFromLocationCh(clickhouseConn, locationTableName)
+	stateIDLookup, err := buildStateIDLookupFromId10x(clickhouseConn, locationTableName)
 	if err != nil {
 		log.Printf("WARNING - Failed to build state ID lookup: %v", err)
 		stateIDLookup = make(map[string]uint32)
 	}
-	venueIDLookup, err := buildalleventVenueIDLookupFromLocationCh(clickhouseConn, locationTableName)
+	// Build state UUID lookup for direct state_uuid to id mapping
+	stateUUIDLookup, err := buildStateIDLookupFromUUID(clickhouseConn, locationTableName)
+	if err != nil {
+		log.Printf("WARNING - Failed to build state UUID lookup: %v", err)
+		stateUUIDLookup = make(map[string]uint32)
+	}
+	// Build city to state_uuid lookup
+	cityStateUUIDLookup, err := buildCityStateUUIDLookup(clickhouseConn, locationTableName)
+	if err != nil {
+		log.Printf("WARNING - Failed to build city state UUID lookup: %v", err)
+		cityStateUUIDLookup = make(map[string]string)
+	}
+	venueIDLookup, err := buildVenueIDLookupFromId10x(clickhouseConn, locationTableName)
 	if err != nil {
 		log.Printf("WARNING - Failed to build venue ID lookup: %v", err)
 		venueIDLookup = make(map[string]uint32)
@@ -4937,13 +5279,14 @@ func rebuildRecordsForFailedBatch(
 		editionCityLocationChID, companyCityLocationChID, venueCityLocationChID,
 			editionCityStateLocationChID, venueLocationChID := computeAllLocationIDs(
 			city,
-			company,
 			companyCity,
 			venue,
 			venueCity,
 			editionCountryISO,
 			cityIDLookup,
 			stateIDLookup,
+			stateUUIDLookup,
+			cityStateUUIDLookup,
 			venueIDLookup,
 		)
 
@@ -5040,13 +5383,14 @@ func resolveRelatedDataForEdition(
 
 func computeAllLocationIDs(
 	city map[string]interface{},
-	company map[string]interface{},
 	companyCity map[string]interface{},
 	venue map[string]interface{},
 	venueCity map[string]interface{},
 	editionCountryISO string,
 	cityIDLookup map[string]uint32,
 	stateIDLookup map[string]uint32,
+	stateUUIDLookup map[string]uint32,
+	cityStateUUIDLookup map[string]string,
 	venueIDLookup map[string]uint32,
 ) (
 	editionCityLocationChID *uint32,
@@ -5055,104 +5399,72 @@ func computeAllLocationIDs(
 	editionCityStateLocationChID *uint32,
 	venueLocationChID *uint32,
 ) {
-	if city != nil && city["name"] != nil {
-		cityName := shared.ConvertToString(city["name"])
-		if cityName != "" {
-			cityNameStr := strings.TrimSpace(cityName)
-			if editionCountryISO != "" && editionCountryISO != "NAN" {
-				cityKeyWithISO := fmt.Sprintf("%s|%s", cityNameStr, editionCountryISO)
-				if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
-					editionCityLocationChID = &locationChID
-				}
-			}
-			if editionCityLocationChID == nil {
-				cityKeyWithoutISO := cityNameStr
-				if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
-					editionCityLocationChID = &locationChID
+	// Edition city location ID - using id_10x format: "city-{id}"
+	if city != nil && city["id"] != nil {
+		if cityID, ok := city["id"].(int64); ok && cityID > 0 {
+			id10x := fmt.Sprintf("city-%d", cityID)
+			if locationChID, exists := cityIDLookup[id10x]; exists {
+				editionCityLocationChID = &locationChID
+
+				// Edition city state location ID - using state_uuid from city record
+				if stateUUID, exists := cityStateUUIDLookup[id10x]; exists && stateUUID != "" {
+					if locationChID, exists := stateUUIDLookup[stateUUID]; exists {
+						editionCityStateLocationChID = &locationChID
+					}
 				}
 			}
 		}
 	}
 
-	// Company city location ID
-	if companyCity != nil && companyCity["name"] != nil {
-		companyCityName := shared.ConvertToString(companyCity["name"])
-		companyCountryISO := strings.ToUpper(shared.ConvertToString(company["company_country"]))
-		if companyCityName != "" {
-			companyCityNameStr := strings.TrimSpace(companyCityName)
-			if companyCountryISO != "" && companyCountryISO != "NAN" {
-				cityKeyWithISO := fmt.Sprintf("%s|%s", companyCityNameStr, companyCountryISO)
-				if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
-					companyCityLocationChID = &locationChID
-				}
-			}
-			if companyCityLocationChID == nil {
-				cityKeyWithoutISO := companyCityNameStr
-				if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
-					companyCityLocationChID = &locationChID
-				}
+	// Company city location ID - using id_10x format: "city-{id}"
+	if companyCity != nil && companyCity["id"] != nil {
+		if companyCityID, ok := companyCity["id"].(int64); ok && companyCityID > 0 {
+			id10x := fmt.Sprintf("city-%d", companyCityID)
+			if locationChID, exists := cityIDLookup[id10x]; exists {
+				companyCityLocationChID = &locationChID
 			}
 		}
 	}
 
-	// Venue city location ID
-	if venueCity != nil && venueCity["name"] != nil {
-		venueCityName := shared.ConvertToString(venueCity["name"])
-		venueCountryISO := strings.ToUpper(shared.ConvertToString(venue["venue_country"]))
-		if venueCityName != "" {
-			venueCityNameStr := strings.TrimSpace(venueCityName)
-			if venueCountryISO != "" && venueCountryISO != "NAN" {
-				cityKeyWithISO := fmt.Sprintf("%s|%s", venueCityNameStr, venueCountryISO)
-				if locationChID, exists := cityIDLookup[cityKeyWithISO]; exists {
-					venueCityLocationChID = &locationChID
-				}
-			}
-			if venueCityLocationChID == nil {
-				cityKeyWithoutISO := venueCityNameStr
-				if locationChID, exists := cityIDLookup[cityKeyWithoutISO]; exists {
-					venueCityLocationChID = &locationChID
-				}
+	// Venue city location ID - using id_10x format: "city-{id}"
+	if venueCity != nil && venueCity["id"] != nil {
+		if venueCityID, ok := venueCity["id"].(int64); ok && venueCityID > 0 {
+			id10x := fmt.Sprintf("city-%d", venueCityID)
+			if locationChID, exists := cityIDLookup[id10x]; exists {
+				venueCityLocationChID = &locationChID
 			}
 		}
 	}
 
-	// Edition city state location ID
-	if city != nil && city["state"] != nil {
-		stateName := shared.ConvertToString(city["state"])
-		if stateName != "" {
-			stateNameStr := strings.TrimSpace(stateName)
-			if editionCountryISO != "" && editionCountryISO != "NAN" {
-				stateKeyWithISO := fmt.Sprintf("%s|%s", stateNameStr, editionCountryISO)
-				if locationChID, exists := stateIDLookup[stateKeyWithISO]; exists {
-					editionCityStateLocationChID = &locationChID
-				}
-			}
-			if editionCityStateLocationChID == nil {
-				stateKeyWithoutISO := stateNameStr
-				if locationChID, exists := stateIDLookup[stateKeyWithoutISO]; exists {
-					editionCityStateLocationChID = &locationChID
-				}
+	// Fallback: Edition city state location ID - using id_10x format: "state-{id}-{ISO}" (if state_uuid lookup failed)
+	if editionCityStateLocationChID == nil && city != nil && city["state_id"] != nil && editionCountryISO != "" && editionCountryISO != "NAN" {
+		if stateID, ok := city["state_id"].(int64); ok && stateID > 0 {
+			countryISOUpper := strings.ToUpper(strings.TrimSpace(editionCountryISO))
+			id10x := fmt.Sprintf("state-%d-%s", stateID, countryISOUpper)
+			if locationChID, exists := stateIDLookup[id10x]; exists {
+				editionCityStateLocationChID = &locationChID
 			}
 		}
 	}
 
-	// Venue location ID
-	if venue != nil && venue["venue_name"] != nil {
-		venueName := shared.ConvertToString(venue["venue_name"])
-		venueCountryISO := strings.ToUpper(shared.ConvertToString(venue["venue_country"]))
-		if venueName != "" {
-			venueNameStr := strings.TrimSpace(venueName)
-			if venueCountryISO != "" && venueCountryISO != "NAN" {
-				venueKeyWithISO := fmt.Sprintf("%s|%s", venueNameStr, venueCountryISO)
-				if locationChID, exists := venueIDLookup[venueKeyWithISO]; exists {
-					venueLocationChID = &locationChID
-				}
-			}
-			if venueLocationChID == nil {
-				venueKeyWithoutISO := venueNameStr
-				if locationChID, exists := venueIDLookup[venueKeyWithoutISO]; exists {
-					venueLocationChID = &locationChID
-				}
+	// Venue location ID - using id_10x format: "venue-{id}"
+	if venue != nil {
+		// Try to get venue ID from different possible fields
+		var venueID int64
+		var found bool
+
+		if venueIDVal, ok := venue["id"].(int64); ok && venueIDVal > 0 {
+			venueID = venueIDVal
+			found = true
+		} else if venueIDVal, ok := venue["venue_id"].(int64); ok && venueIDVal > 0 {
+			venueID = venueIDVal
+			found = true
+		}
+
+		if found {
+			id10x := fmt.Sprintf("venue-%d", venueID)
+			if locationChID, exists := venueIDLookup[id10x]; exists {
+				venueLocationChID = &locationChID
 			}
 		}
 	}
