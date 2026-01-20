@@ -124,6 +124,7 @@ var eventTypePriority = map[uint32]int8{
 	6:  6,
 	12: 7,
 	13: 8,
+	14: 9,
 }
 
 var eventTypeGroups = map[uint32][]string{
@@ -135,7 +136,7 @@ var eventTypeGroups = map[uint32][]string{
 	7:  {"social", "attended"},
 	12: {"social", "attended"},
 	13: {"social", "attended"},
-	14: {"social"},
+	14: {"social", "attended"},
 }
 
 func getPriority(eventTypeID uint32) *int8 {

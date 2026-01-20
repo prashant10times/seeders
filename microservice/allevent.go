@@ -75,7 +75,7 @@ import (
 // }
 
 var eventTypeIDs map[uint32]string
-var allowedEventTypeIDs = []uint32{1, 2, 3, 5, 6, 7, 12, 13}
+var allowedEventTypeIDs = []uint32{1, 2, 3, 5, 6, 7, 12, 13, 14}
 
 // Event type priority and group mapping
 type eventTypePriorityInfo struct {
@@ -92,9 +92,10 @@ var eventTypePriority = map[uint32]eventTypePriorityInfo{
 	6:  {Priority: 6, Group: "B2C"},
 	12: {Priority: 7, Group: "B2C"},
 	13: {Priority: 8, Group: "B2C"},
+	14: {Priority: 9, Group: "B2C"},
 }
 
-var allowedEventTypes = []uint32{1, 2, 3, 5, 6, 7, 12, 13}
+var allowedEventTypes = []uint32{1, 2, 3, 5, 6, 7, 12, 13, 14}
 
 // attendance_range_tag maps event type ID to a map of range strings to size labels
 // Example: 1 -> {"0-1000": "NANO", "1000-5000": "MICRO", "50000+": "ULTRA"}
@@ -171,6 +172,15 @@ var attendanceRangeTag = map[uint32]map[string]string{
 		"2000-5000":  "LARGE",
 		"5000-10000": "MEGA",
 		"10000+":     "ULTRA",
+	},
+	14: {
+		"0-1000":       "NANO",
+		"1000-5000":    "MICRO",
+		"5000-10000":   "SMALL",
+		"10000-20000":  "MEDIUM",
+		"20000-50000":  "LARGE",
+		"50000-100000": "MEGA",
+		"100000+":      "ULTRA",
 	},
 }
 
