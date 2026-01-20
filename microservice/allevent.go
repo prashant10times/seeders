@@ -593,12 +593,19 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EventPricing:           decodeNullableStr("event_pricing"),
 		EventLogo:              decodeNullableStr("event_logo"),
 		EventEstimatedVisitors: decodeNullableStr("event_estimatedVisitors"),
-		EstimatedVisitorsMean:  shared.SafeConvertToNullableUInt32(record["estimatedVisitorsMean"]),
-		EstimatedSize:          decodeNullableStr("estimatedSize"),
-		EventFrequency:         decodeNullableStr("event_frequency"),
-		ImpactScore:            shared.SafeConvertToNullableUInt32(record["impactScore"]),
-		InboundScore:           shared.SafeConvertToNullableUInt32(record["inboundScore"]),
-		InternationalScore:     shared.SafeConvertToNullableUInt32(record["internationalScore"]),
+		EstimatedVisitorsMean: func() *uint32 {
+			val := shared.SafeConvertToNullableUInt32(record["estimatedVisitorsMean"])
+			if val == nil {
+				zero := uint32(0)
+				return &zero
+			}
+			return val
+		}(),
+		EstimatedSize:      decodeNullableStr("estimatedSize"),
+		EventFrequency:     decodeNullableStr("event_frequency"),
+		ImpactScore:        shared.SafeConvertToNullableUInt32(record["impactScore"]),
+		InboundScore:       shared.SafeConvertToNullableUInt32(record["inboundScore"]),
+		InternationalScore: shared.SafeConvertToNullableUInt32(record["internationalScore"]),
 		RepeatSentimentChangePercentage: func() *float64 {
 			val := shared.SafeConvertToNullableFloat64(record["repeatSentimentChangePercentage"])
 			if val == nil {
@@ -5953,24 +5960,74 @@ func buildAlleventRecord(
 			return nil
 		}(),
 		"estimatedVisitorsMean": func() *uint32 {
-			if finalEstimate := esInfoMap["finalEstimate"]; finalEstimate != nil {
-				if finalEstimateStr, ok := finalEstimate.(string); ok && finalEstimateStr != "" {
-					if finalEstimateFloat, err := strconv.ParseFloat(finalEstimateStr, 64); err == nil {
-						result := uint32(finalEstimateFloat)
-						return &result
+			if esInfoMap == nil {
+				zero := uint32(0)
+				return &zero
+			}
+
+			convertToUInt32 := func(val interface{}) (*uint32, bool) {
+				if val == nil {
+					return nil, false
+				}
+
+				switch v := val.(type) {
+				case uint32:
+					return &v, true
+				case uint64:
+					if v <= math.MaxUint32 {
+						result := uint32(v)
+						return &result, true
 					}
-				} else if finalEstimateFloat, ok := finalEstimate.(float64); ok {
-					result := uint32(finalEstimateFloat)
-					return &result
-				} else if finalEstimateInt, ok := finalEstimate.(int64); ok {
-					result := uint32(finalEstimateInt)
-					return &result
-				} else if finalEstimateInt, ok := finalEstimate.(int); ok {
-					result := uint32(finalEstimateInt)
-					return &result
+				case int64:
+					if v >= 0 && v <= math.MaxUint32 {
+						result := uint32(v)
+						return &result, true
+					}
+				case int:
+					if v >= 0 && v <= math.MaxUint32 {
+						result := uint32(v)
+						return &result, true
+					}
+				case int32:
+					if v >= 0 {
+						result := uint32(v)
+						return &result, true
+					}
+				case float64:
+					if v >= 0 && v <= math.MaxUint32 && v == math.Trunc(v) {
+						result := uint32(v)
+						return &result, true
+					}
+				case float32:
+					if v >= 0 && v <= math.MaxUint32 && float64(v) == math.Trunc(float64(v)) {
+						result := uint32(v)
+						return &result, true
+					}
+				case string:
+					if v != "" {
+						if floatVal, err := strconv.ParseFloat(v, 64); err == nil {
+							if floatVal >= 0 && floatVal <= math.MaxUint32 && floatVal == math.Trunc(floatVal) {
+								result := uint32(floatVal)
+								return &result, true
+							}
+						}
+						if uintVal, err := strconv.ParseUint(v, 10, 32); err == nil {
+							result := uint32(uintVal)
+							return &result, true
+						}
+					}
+				}
+				return nil, false
+			}
+
+			// Try finalEstimate first
+			if finalEstimate := esInfoMap["finalEstimate"]; finalEstimate != nil {
+				if result, ok := convertToUInt32(finalEstimate); ok {
+					return result
 				}
 			}
 
+			// Fallback to calculating mean from highEstimate and lowEstimate
 			highEstimate := esInfoMap["highEstimate"]
 			lowEstimate := esInfoMap["lowEstimate"]
 
@@ -5978,40 +6035,42 @@ func buildAlleventRecord(
 			highValid := false
 			lowValid := false
 
-			if highEstimate != nil {
-				if highStr, ok := highEstimate.(string); ok && highStr != "" {
-					if val, err := strconv.ParseFloat(highStr, 64); err == nil {
-						highVal = val
-						highValid = true
-					}
-				} else if val, ok := highEstimate.(float64); ok {
-					highVal = val
-					highValid = true
-				} else if val, ok := highEstimate.(int64); ok {
-					highVal = float64(val)
-					highValid = true
-				} else if val, ok := highEstimate.(int); ok {
-					highVal = float64(val)
-					highValid = true
+			convertToFloat64 := func(val interface{}) (float64, bool) {
+				if val == nil {
+					return 0, false
 				}
+
+				switch v := val.(type) {
+				case float64:
+					return v, true
+				case float32:
+					return float64(v), true
+				case int64:
+					return float64(v), true
+				case int:
+					return float64(v), true
+				case int32:
+					return float64(v), true
+				case uint32:
+					return float64(v), true
+				case uint64:
+					return float64(v), true
+				case string:
+					if v != "" {
+						if floatVal, err := strconv.ParseFloat(v, 64); err == nil {
+							return floatVal, true
+						}
+					}
+				}
+				return 0, false
 			}
 
-			if lowEstimate != nil {
-				if lowStr, ok := lowEstimate.(string); ok && lowStr != "" {
-					if val, err := strconv.ParseFloat(lowStr, 64); err == nil {
-						lowVal = val
-						lowValid = true
-					}
-				} else if val, ok := lowEstimate.(float64); ok {
-					lowVal = val
-					lowValid = true
-				} else if val, ok := lowEstimate.(int64); ok {
-					lowVal = float64(val)
-					lowValid = true
-				} else if val, ok := lowEstimate.(int); ok {
-					lowVal = float64(val)
-					lowValid = true
-				}
+			if highVal, highValid = convertToFloat64(highEstimate); !highValid {
+				highValid = false
+			}
+
+			if lowVal, lowValid = convertToFloat64(lowEstimate); !lowValid {
+				lowValid = false
 			}
 
 			if highValid && lowValid {
@@ -6019,7 +6078,9 @@ func buildAlleventRecord(
 				return &mean
 			}
 
-			return nil
+			// Default to 0 if no valid estimate found
+			zero := uint32(0)
+			return &zero
 		}(),
 		"estimatedSize": func() *string {
 			eventTypes := eventTypesMap[eventID]
