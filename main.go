@@ -1687,6 +1687,7 @@ func main() {
 	var locationAll bool
 	var eventRankingOnly bool
 	var eventDesignationOnly bool
+	var eventProductChOnly bool
 	var visitorSpreadOnly bool
 	var allEventOnly bool
 	var holidaysOnly bool
@@ -1705,6 +1706,7 @@ func main() {
 	flag.BoolVar(&eventEditionOnly, "event-edition", false, "Process only event edition data (default: false)")
 	flag.BoolVar(&eventTypeEventChOnly, "eventtype", false, "Process only eventtype data (default: false)")
 	flag.BoolVar(&eventCategoryEventChOnly, "eventcategory", false, "Process only eventcategory data (default: false)")
+	flag.BoolVar(&eventProductChOnly, "eventproduct", false, "Process only event_product data (default: false)")
 	flag.BoolVar(&locationCountriesOnly, "location-countries", false, "Process only location countries into location_ch (default: false)")
 	flag.BoolVar(&locationStatesOnly, "location-states", false, "Process only location states into location_ch (default: false)")
 	flag.BoolVar(&locationCitiesOnly, "location-cities", false, "Process only location cities into location_ch (default: false)")
@@ -1855,6 +1857,8 @@ func main() {
 		log.Printf("Mode: EVENT TYPE ONLY")
 	} else if eventCategoryEventChOnly {
 		log.Printf("Mode: EVENT CATEGORY ONLY")
+	} else if eventProductChOnly {
+		log.Printf("Mode: EVENT PRODUCT ONLY")
 	} else if eventRankingOnly {
 		log.Printf("Mode: EVENT RANKING ONLY")
 	} else if eventDesignationOnly {
@@ -1920,7 +1924,7 @@ func main() {
 		return
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly {
+	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -1941,6 +1945,8 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_type_ch processing)")
 		} else if eventCategoryEventChOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_category_ch processing)")
+		} else if eventProductChOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_product_ch processing)")
 		} else if eventRankingOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_ranking_ch processing)")
 		} else if eventDesignationOnly {
@@ -2099,6 +2105,36 @@ func main() {
 			log.Fatalf("Failed to swap event_category_ch: %v", err)
 		}
 		log.Println("✓ event_category_ch swapped successfully")
+	} else if eventProductChOnly {
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_product_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Event Product)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		utils.ProcessEventProductChOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		log.Println("Optimizing event_product_ch table...")
+		if err := shared.OptimizeSingleTable(clickhouseDB, "event_product_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Event Product Optimization", err)
+			log.Printf("⚠️  Error optimizing event_product_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ event_product_ch optimized successfully")
+		}
+
+		// Swap table after processing
+		log.Println("Swapping event_product_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_product_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Event Product Table Swap", err)
+			log.Fatalf("Failed to swap event_product_ch: %v", err)
+		}
+		log.Println("✓ event_product_ch swapped successfully")
 	} else if eventRankingOnly {
 		// Ensure temp table exists
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_ranking_ch", config, errorLogFile); err != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+
 	// "regexp"
 	"strings"
 	"time"
@@ -53,6 +54,7 @@ func GetAllTableMappings(config Config) []TableMapping {
 		{"event_category_ch", "event_category_temp", fmt.Sprintf("event_category_ch_backup_%s", timestamp)},
 		{"event_designation_ch", "event_designation_temp", fmt.Sprintf("event_designation_ch_backup_%s", timestamp)},
 		{"event_exhibitor_ch", "event_exhibitor_temp", fmt.Sprintf("event_exhibitor_ch_backup_%s", timestamp)},
+		{"event_product_ch", "event_product_temp", fmt.Sprintf("event_product_ch_backup_%s", timestamp)},
 		{"event_ranking_ch", "event_ranking_temp", fmt.Sprintf("event_ranking_ch_backup_%s", timestamp)},
 		{"event_speaker_ch", "event_speaker_temp", fmt.Sprintf("event_speaker_ch_backup_%s", timestamp)},
 		{"event_sponsors_ch", "event_sponsors_temp", fmt.Sprintf("event_sponsors_ch_backup_%s", timestamp)},
@@ -71,6 +73,7 @@ func GetMainTableNames() []string {
 		"event_category_ch",
 		"event_designation_ch",
 		"event_exhibitor_ch",
+		"event_product_ch",
 		"event_ranking_ch",
 		"event_speaker_ch",
 		"event_sponsors_ch",
