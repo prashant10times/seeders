@@ -3742,11 +3742,15 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 	}
 
 	results := make(map[int64]map[string]interface{})
+	eventIDStrings := make([]string, len(eventIDs))
+	for i, id := range eventIDs {
+		eventIDStrings[i] = strconv.FormatInt(id, 10)
+	}
 
 	query := map[string]interface{}{
 		"query": map[string]interface{}{
 			"terms": map[string]interface{}{
-				"id": eventIDs,
+				"id": eventIDStrings,
 			},
 		},
 		"size":    len(eventIDs),
@@ -6004,16 +6008,33 @@ func buildAlleventRecord(
 						return &result, true
 					}
 				case string:
+					v = strings.TrimSpace(v)
 					if v != "" {
+						if uintVal, err := strconv.ParseUint(v, 10, 32); err == nil {
+							result := uint32(uintVal)
+							return &result, true
+						}
 						if floatVal, err := strconv.ParseFloat(v, 64); err == nil {
 							if floatVal >= 0 && floatVal <= math.MaxUint32 && floatVal == math.Trunc(floatVal) {
 								result := uint32(floatVal)
 								return &result, true
 							}
 						}
-						if uintVal, err := strconv.ParseUint(v, 10, 32); err == nil {
-							result := uint32(uintVal)
-							return &result, true
+					}
+				case []byte:
+					if len(v) > 0 {
+						strVal := strings.TrimSpace(string(v))
+						if strVal != "" {
+							if uintVal, err := strconv.ParseUint(strVal, 10, 32); err == nil {
+								result := uint32(uintVal)
+								return &result, true
+							}
+							if floatVal, err := strconv.ParseFloat(strVal, 64); err == nil {
+								if floatVal >= 0 && floatVal <= math.MaxUint32 && floatVal == math.Trunc(floatVal) {
+									result := uint32(floatVal)
+									return &result, true
+								}
+							}
 						}
 					}
 				}
@@ -6056,9 +6077,26 @@ func buildAlleventRecord(
 				case uint64:
 					return float64(v), true
 				case string:
+					v = strings.TrimSpace(v)
 					if v != "" {
 						if floatVal, err := strconv.ParseFloat(v, 64); err == nil {
 							return floatVal, true
+						}
+						if uintVal, err := strconv.ParseUint(v, 10, 64); err == nil {
+							return float64(uintVal), true
+						}
+					}
+				case []byte:
+					// Handle byte arrays (sometimes JSON unmarshaling returns []byte for strings)
+					if len(v) > 0 {
+						strVal := strings.TrimSpace(string(v))
+						if strVal != "" {
+							if floatVal, err := strconv.ParseFloat(strVal, 64); err == nil {
+								return floatVal, true
+							}
+							if uintVal, err := strconv.ParseUint(strVal, 10, 64); err == nil {
+								return float64(uintVal), true
+							}
 						}
 					}
 				}

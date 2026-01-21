@@ -471,6 +471,9 @@ func SafeConvertToNullableUInt32(value interface{}) *uint32 {
 	if value == nil {
 		return nil
 	}
+	if num, ok := value.(*uint32); ok {
+		return num
+	}
 	if num, ok := value.(uint32); ok {
 		return &num
 	}
