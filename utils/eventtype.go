@@ -459,7 +459,8 @@ func buildEventTypeEventChMigrationData(db *sql.DB, startID, endID int, batchSiz
 			ee.created
 		FROM event_type_event ee
 		INNER JOIN event_type et ON ee.eventtype_id = et.id
-		WHERE ee.id >= %d AND ee.id <= %d 
+		INNER JOIN event e ON ee.event_id = e.id
+		WHERE ee.id >= %d AND ee.id <= %d AND e.event_audience = et.event_audience
 		ORDER BY ee.id 
 		LIMIT %d`, startID, endID, batchSize)
 
