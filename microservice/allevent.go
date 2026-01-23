@@ -411,6 +411,28 @@ func decodeBase64NullableStringIfNeeded(value interface{}) *string {
 	return &str
 }
 
+// normalizePricingValue normalizes pricing values: converts to lowercase and replaces "free-paid" with "free_and_paid"
+func normalizePricingValue(value interface{}) *string {
+	if value == nil {
+		return nil
+	}
+	decoded := decodeBase64NullableStringIfNeeded(value)
+	if decoded == nil {
+		return nil
+	}
+	str := *decoded
+	if str == "" {
+		return nil
+	}
+	str = strings.ToLower(str)
+	str = strings.ReplaceAll(str, "free-paid", "free_and_paid")
+	
+	if str == "not_available" {
+		return nil
+	}
+	return &str
+}
+
 func decodeValueWithBase64Support(value interface{}, fieldType string) interface{} {
 	if value == nil {
 		return nil
@@ -2395,25 +2417,12 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 				}
 
 				ticketDataMap := make(map[int64][]string)
-				ticketTypeMap := make(map[int64]string)
 				if len(eventIDsForEditions) > 0 {
 					log.Printf("allevent chunk %d: Fetching ticket data for %d events", chunkNum, len(eventIDsForEditions))
 					startTime = time.Now()
 					rawTicketData := fetchalleventTicketDataForBatch(mysqlDB, eventIDsForEditions)
 					if len(rawTicketData) > 0 {
 						ticketDataMap = processalleventTicketData(rawTicketData)
-						for _, ticket := range rawTicketData {
-							eventID, ok := ticket["event"].(int64)
-							if !ok {
-								continue
-							}
-							if _, exists := ticketTypeMap[eventID]; !exists {
-								ticketType := shared.SafeConvertToString(ticket["type"])
-								if ticketType != "" {
-									ticketTypeMap[eventID] = ticketType
-								}
-							}
-						}
 					}
 					ticketTime := time.Since(startTime)
 					log.Printf("allevent chunk %d: Retrieved ticket data for %d events in %v", chunkNum, len(ticketDataMap), ticketTime)
@@ -2575,7 +2584,6 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								eventTypesMap,
 								categoryNamesMap,
 								ticketDataMap,
-								ticketTypeMap,
 								timingDataMap,
 								eventID,
 								editionType,
@@ -5194,17 +5202,6 @@ func rebuildRecordsForFailedBatch(
 	predictedDatesMap := fetchalleventPredictedDatesForBatch(mysqlDB, actualEventIDs)
 	rawTicketData := fetchalleventTicketDataForBatch(mysqlDB, actualEventIDs)
 	ticketDataMap := processalleventTicketData(rawTicketData)
-	ticketTypeMap := make(map[int64]string)
-	for _, ticket := range rawTicketData {
-		if eventID, ok := ticket["event"].(int64); ok {
-			if _, exists := ticketTypeMap[eventID]; !exists {
-				ticketType := shared.SafeConvertToString(ticket["type"])
-				if ticketType != "" {
-					ticketTypeMap[eventID] = ticketType
-				}
-			}
-		}
-	}
 	timingDataMap := fetchalleventTimingDataForBatch(mysqlDB, filteredEditionData)
 	processedEconomicData := processalleventEconomicImpactDataParallel(estimateDataMap)
 
@@ -5325,7 +5322,6 @@ func rebuildRecordsForFailedBatch(
 			eventTypesMap,
 			categoryNamesMap,
 			ticketDataMap,
-			ticketTypeMap,
 			timingDataMap,
 			actualEventID,
 			editionType,
@@ -5526,7 +5522,6 @@ func buildAlleventRecord(
 	eventTypesMap map[int64][]uint32,
 	categoryNamesMap map[int64][]string,
 	ticketDataMap map[int64][]string,
-	ticketTypeMap map[int64]string,
 	timingDataMap map[uint64][]string,
 	eventID int64,
 	editionType *string,
@@ -5758,12 +5753,7 @@ func buildAlleventRecord(
 			return nil
 		}(),
 		"maturity": determinealleventMaturity(esInfoMap["total_edition"]),
-		"event_pricing": func() *string {
-			if ticketType, exists := ticketTypeMap[eventID]; exists && ticketType != "" {
-				return &ticketType
-			}
-			return nil
-		}(),
+		"event_pricing": normalizePricingValue(esInfoMap["event_pricing"]),
 		"tickets": func() []string {
 			if tickets, exists := ticketDataMap[eventID]; exists {
 				return tickets
