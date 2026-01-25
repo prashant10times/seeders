@@ -1972,8 +1972,8 @@ func cleanupOldLogFiles() {
 	}
 }
 
-func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
-	log.Println("=== Starting allevent ONLY Processing ===")
+func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, tableName string, config shared.Config) {
+	log.Printf("=== Starting allevent ONLY Processing for table: %s ===", tableName)
 
 	cleanupOldLogFiles()
 
@@ -2037,7 +2037,7 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 		semaphore <- struct{}{}
 		go func(chunkNum, start, end int) {
 			defer func() { <-semaphore }()
-			processalleventChunk(mysqlDB, clickhouseConn, esClient, config, start, end, chunkNum, results, globalUniqueRecords, &globalMutex, &totalRecordsProcessed, &totalRecordsSkipped, &totalRecordsInserted, &globalCountMutex)
+			processalleventChunk(mysqlDB, clickhouseConn, esClient, tableName, config, start, end, chunkNum, results, globalUniqueRecords, &globalMutex, &totalRecordsProcessed, &totalRecordsSkipped, &totalRecordsInserted, &globalCountMutex)
 		}(i+1, startID, endID)
 	}
 
@@ -2102,7 +2102,7 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 	log.Println("allevent processing completed!")
 
 	log.Println("=== Checking for failed batches to retry ===")
-	retryErr := retryFailedBatchesAfterCompletion(clickhouseConn, config)
+	retryErr := retryFailedBatchesAfterCompletion(clickhouseConn, tableName, config)
 	if retryErr != nil {
 		log.Printf("ERROR: Failed to retry failed batches: %v", retryErr)
 		log.Printf("⚠️  WARNING: Some batches still failed - optimization will be skipped")
@@ -2120,7 +2120,7 @@ func HasRemainingFailedBatches() bool {
 	return len(files) > 0
 }
 
-func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config, startID, endID int, chunkNum int, results chan<- string, globalUniqueRecords map[uint64]bool, globalMutex *sync.RWMutex, totalRecordsProcessed *int64, totalRecordsSkipped *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
+func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, tableName string, config shared.Config, startID, endID int, chunkNum int, results chan<- string, globalUniqueRecords map[uint64]bool, globalMutex *sync.RWMutex, totalRecordsProcessed *int64, totalRecordsSkipped *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
 	log.Printf("Processing allevent chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
 	totalRecords := endID - startID + 1
@@ -2637,7 +2637,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 				if len(clickHouseRecords) > 0 {
 					log.Printf("allevent chunk %d: Attempting to insert %d records into ClickHouse (will be split into chunks of max 10,000)...", chunkNum, len(clickHouseRecords))
 
-					insertErr := insertalleventDataIntoClickHouse(clickhouseConn, clickHouseRecords, config.ClickHouseWorkers, config)
+					insertErr := insertalleventDataIntoClickHouse(clickhouseConn, clickHouseRecords, tableName, config.ClickHouseWorkers, config)
 
 					if insertErr != nil {
 						log.Printf("allevent chunk %d: ClickHouse insertion failed for batch %d, checking which records already exist before writing to JSON: %v", chunkNum, batchNumber, insertErr)
@@ -2655,7 +2655,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 
 						// Check which records already exist in the database
 						// Use FINAL=true to see unmerged records (critical: some records may have been inserted but not merged yet)
-						existingPairs, err := checkExistenceInClickHouseWithRetry(clickhouseConn, checkPairs, config, true, nil)
+						existingPairs, err := checkExistenceInClickHouseWithRetry(clickhouseConn, checkPairs, tableName, config, true, nil)
 						if err != nil {
 							log.Printf("allevent chunk %d: WARNING - Failed to check existence before writing to JSON: %v, writing all records", chunkNum, err)
 							// If check fails, write all records (safer to retry than skip)
@@ -4083,13 +4083,13 @@ collectLoop:
 	return results
 }
 
-func insertalleventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[string]interface{}, numWorkers int, config shared.Config) error {
+func insertalleventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[string]interface{}, tableName string, numWorkers int, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
 	}
 
 	if numWorkers <= 1 {
-		return insertalleventDataSingleWorker(clickhouseConn, records, config)
+		return insertalleventDataSingleWorker(clickhouseConn, records, tableName, config)
 	}
 
 	batchSize := (len(records) + numWorkers - 1) / numWorkers
@@ -4117,7 +4117,7 @@ func insertalleventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[
 				wg.Done()
 			}()
 			batch := records[start:end]
-			err := insertalleventDataSingleWorker(clickhouseConn, batch, config)
+			err := insertalleventDataSingleWorker(clickhouseConn, batch, tableName, config)
 			results <- err
 		}(start, end)
 	}
@@ -4134,7 +4134,7 @@ func insertalleventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[
 	return nil
 }
 
-func insertalleventDataSingleWorker(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) error {
+func insertalleventDataSingleWorker(clickhouseConn driver.Conn, records []map[string]interface{}, tableName string, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -4147,18 +4147,18 @@ func insertalleventDataSingleWorker(clickhouseConn driver.Conn, records []map[st
 				end = len(records)
 			}
 			chunk := records[i:end]
-			log.Printf("Inserting chunk %d-%d (%d records)", i+1, end, len(chunk))
-			if err := insertalleventDataChunk(clickhouseConn, chunk, config); err != nil {
-				return fmt.Errorf("failed to insert chunk %d-%d: %v", i+1, end, err)
+			log.Printf("Inserting chunk %d-%d (%d records) into %s", i+1, end, len(chunk), tableName)
+			if err := insertalleventDataChunk(clickhouseConn, chunk, tableName, config); err != nil {
+				return fmt.Errorf("failed to insert chunk %d-%d into %s: %v", i+1, end, tableName, err)
 			}
 		}
 		return nil
 	}
 
-	return insertalleventDataChunk(clickhouseConn, records, config)
+	return insertalleventDataChunk(clickhouseConn, records, tableName, config)
 }
 
-func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) error {
+func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]interface{}, tableName string, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
 	}
@@ -4176,8 +4176,11 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second)
 	defer cancel()
 
-	insertSQL := `
-		INSERT INTO allevent_temp (
+	// Use temp table name if UseTempTables is true
+	actualTableName := shared.GetClickHouseTableName(tableName, config)
+	fullTableName := shared.GetTableNameWithDB(actualTableName, config)
+	insertSQL := fmt.Sprintf(`
+		INSERT INTO %s (
 			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating, 10timesEventPageUrl,
 			start_date, end_date,
 			edition_id, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
@@ -4193,14 +4196,14 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
 			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, futureExpexctedStartDate, futureExpexctedEndDate, predictionScore, PrimaryEventType, verifiedOn, last_updated_at, version
 		)
-	`
+	`, fullTableName)
 
 	var batch driver.Batch
 	var err error
 	maxRetries := 3
 	for retryCount := 0; retryCount < maxRetries; retryCount++ {
 		if retryCount > 0 {
-			log.Printf("Checking ClickHouse connection health before retry %d/%d", retryCount+1, maxRetries)
+			log.Printf("Checking ClickHouse connection health before retry %d/%d for table %s", retryCount+1, maxRetries, tableName)
 			connectionCheckErr := shared.RetryWithBackoff(
 				func() error {
 					return shared.CheckClickHouseConnectionAlive(clickhouseConn)
@@ -4218,7 +4221,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 		}
 
 		if retryCount < maxRetries-1 {
-			log.Printf("WARNING: ClickHouse PrepareBatch error (attempt %d/%d), rebuilding connection: %v", retryCount+1, maxRetries, err)
+			log.Printf("WARNING: ClickHouse PrepareBatch error (attempt %d/%d) for table %s, rebuilding connection: %v", retryCount+1, maxRetries, tableName, err)
 			newConn, connErr := utils.SetupNativeClickHouseConnection(config)
 			if connErr != nil {
 				log.Printf("ERROR: Failed to rebuild ClickHouse connection (attempt %d/%d): %v", retryCount+1, maxRetries, connErr)
@@ -4231,7 +4234,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 	}
 
 	if err != nil {
-		return fmt.Errorf("failed to prepare ClickHouse batch after %d retries: %v", maxRetries, err)
+		return fmt.Errorf("failed to prepare ClickHouse batch for table %s after %d retries: %v", tableName, maxRetries, err)
 	}
 
 	for _, record := range records {
@@ -4342,19 +4345,19 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
 		)
 		if err != nil {
-			log.Printf("ERROR: Failed to append record to batch: %v", err)
+			log.Printf("ERROR: Failed to append record to batch for table %s: %v", tableName, err)
 			log.Printf("Record data: EventID=%d, EventName=%s, EventAvgRating=%v",
 				alleventRecord.EventID, alleventRecord.EventName, alleventRecord.EventAvgRating)
-			return fmt.Errorf("failed to append record to batch: %v", err)
+			return fmt.Errorf("failed to append record to batch for table %s: %v", tableName, err)
 		}
 	}
 
 	if err := batch.Send(); err != nil {
-		log.Printf("ERROR: Failed to send ClickHouse batch: %v", err)
-		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
+		log.Printf("ERROR: Failed to send ClickHouse batch for table %s: %v", tableName, err)
+		return fmt.Errorf("failed to send ClickHouse batch for table %s: %v", tableName, err)
 	}
 
-	log.Printf("OK: Successfully inserted %d allevent records", len(records))
+	log.Printf("OK: Successfully inserted %d allevent records into %s", len(records), tableName)
 	return nil
 }
 
@@ -4781,16 +4784,18 @@ func logQueryToFile(query string, pairs []EventEditionPair, foundCount int) {
 	queryLogFile.WriteString("\n")
 }
 
-func checkExistenceInClickHouse(clickhouseConn driver.Conn, pairs []EventEditionPair, config shared.Config) (map[uint64]bool, error) {
-	return checkExistenceInClickHouseWithRetry(clickhouseConn, pairs, config, false, nil)
+func checkExistenceInClickHouse(clickhouseConn driver.Conn, pairs []EventEditionPair, tableName string, config shared.Config) (map[uint64]bool, error) {
+	return checkExistenceInClickHouseWithRetry(clickhouseConn, pairs, tableName, config, false, nil)
 }
 
-func checkExistenceInClickHouseWithRetry(clickhouseConn driver.Conn, pairs []EventEditionPair, config shared.Config, useFinal bool, logToFileFunc func(string, ...interface{})) (map[uint64]bool, error) {
+func checkExistenceInClickHouseWithRetry(clickhouseConn driver.Conn, pairs []EventEditionPair, tableName string, config shared.Config, useFinal bool, logToFileFunc func(string, ...interface{})) (map[uint64]bool, error) {
 	if len(pairs) == 0 {
 		return make(map[uint64]bool), nil
 	}
 
-	tableName := shared.GetTableNameWithDB("allevent_temp", config)
+	// Use temp table name if UseTempTables is true
+	actualTableName := shared.GetClickHouseTableName(tableName, config)
+	fullTableName := shared.GetTableNameWithDB(actualTableName, config)
 
 	batchSize := 500 // Reduced from 1000 to 500 for better FINAL query performance (FINAL forces merges which can be slow)
 	existingPairs := make(map[uint64]bool)
@@ -4816,7 +4821,7 @@ func checkExistenceInClickHouseWithRetry(clickhouseConn driver.Conn, pairs []Eve
 
 		query := fmt.Sprintf(
 			"SELECT event_id, edition_id FROM %s %s WHERE (event_id, edition_id) IN (%s)",
-			tableName,
+			fullTableName,
 			finalKeyword,
 			strings.Join(tuples, ","),
 		)
@@ -6445,6 +6450,7 @@ func buildAlleventRecord(
 func processFailedBatchInsert(
 	clickhouseConn driver.Conn,
 	records []map[string]interface{},
+	tableName string,
 	config shared.Config,
 	logToFile func(string, ...interface{}),
 ) (bool, []map[string]interface{}) {
@@ -6486,7 +6492,7 @@ func processFailedBatchInsert(
 				smallBatch := records[batchStart:batchEnd]
 				smallBatchNum := (batchStart / retryBatchSize) + 1
 				logToFile("          Inserting small batch %d/%d (%d records) on retry attempt 2...", smallBatchNum, totalSmallBatches, len(smallBatch))
-				smallBatchErr := insertalleventDataChunk(clickhouseConn, smallBatch, config)
+				smallBatchErr := insertalleventDataChunk(clickhouseConn, smallBatch, tableName, config)
 				if smallBatchErr != nil {
 					failedBatches++
 					insertErr = smallBatchErr
@@ -6520,7 +6526,7 @@ func processFailedBatchInsert(
 				smallBatch := records[batchStart:batchEnd]
 				smallBatchNum := (batchStart / lastRetryBatchSize) + 1
 				logToFile("          Inserting small batch %d/%d (%d records) on final retry attempt...", smallBatchNum, totalSmallBatches, len(smallBatch))
-				smallBatchErr := insertalleventDataChunk(clickhouseConn, smallBatch, config)
+				smallBatchErr := insertalleventDataChunk(clickhouseConn, smallBatch, tableName, config)
 				if smallBatchErr != nil {
 					failedBatches++
 					insertErr = smallBatchErr
@@ -6540,7 +6546,7 @@ func processFailedBatchInsert(
 				logToFile("          ✗ All %d small batches failed on final retry attempt", totalSmallBatches)
 			}
 		} else {
-			insertErr = insertalleventDataChunk(clickhouseConn, records, config)
+			insertErr = insertalleventDataChunk(clickhouseConn, records, tableName, config)
 		}
 
 		if insertErr == nil {
@@ -6559,7 +6565,7 @@ func processFailedBatchInsert(
 	logToFile("        ✓ Successfully inserted %d records", len(records))
 
 	// Verify inserted records
-	logToFile("        Double-checking: Verifying inserted records exist in allevent_temp...")
+	logToFile("        Double-checking: Verifying inserted records exist in %s...", tableName)
 	verifyPairs := make([]EventEditionPair, 0, len(records))
 	for _, record := range records {
 		eventID, ok1 := record["event_id"].(uint32)
@@ -6573,7 +6579,7 @@ func processFailedBatchInsert(
 	}
 
 	if len(verifyPairs) > 0 {
-		existingAfterInsert, err := checkExistenceInClickHouseWithRetry(clickhouseConn, verifyPairs, config, true, logToFile)
+		existingAfterInsert, err := checkExistenceInClickHouseWithRetry(clickhouseConn, verifyPairs, tableName, config, true, logToFile)
 		if err != nil {
 			logToFile("        WARNING: Failed to verify inserted records: %v", err)
 		} else {
@@ -6586,7 +6592,7 @@ func processFailedBatchInsert(
 				}
 			}
 			if missingAfterInsert == 0 {
-				logToFile("        ✓ Double-check passed: All %d records confirmed in allevent_temp", len(verifyPairs))
+				logToFile("        ✓ Double-check passed: All %d records confirmed in %s", len(verifyPairs), tableName)
 			} else {
 				logToFile("        ✗ WARNING: Double-check failed: %d/%d records missing after insert", missingAfterInsert, len(verifyPairs))
 				return false, records
@@ -6599,6 +6605,7 @@ func processFailedBatchInsert(
 
 func retryFailedBatchesAfterCompletion(
 	clickhouseConn driver.Conn,
+	tableName string,
 	config shared.Config,
 ) error {
 	logDir := "failed_batches"
@@ -6753,8 +6760,8 @@ func retryFailedBatchesAfterCompletion(
 					})
 				}
 
-				logToFile("    Checking existence in allevent_temp for %d records...", len(records))
-				existingPairs, err := checkExistenceInClickHouseWithRetry(clickhouseConn, checkPairs, config, true, logToFile)
+				logToFile("    Checking existence in %s for %d records...", tableName, len(records))
+				existingPairs, err := checkExistenceInClickHouseWithRetry(clickhouseConn, checkPairs, tableName, config, true, logToFile)
 				if err != nil {
 					logToFile("    ERROR: Failed to check existence: %v", err)
 					totalFailed += len(records)
@@ -6789,7 +6796,7 @@ func retryFailedBatchesAfterCompletion(
 					continue
 				}
 
-				insertSuccess, failedRecords := processFailedBatchInsert(clickhouseConn, missingRecords, config, logToFile)
+				insertSuccess, failedRecords := processFailedBatchInsert(clickhouseConn, missingRecords, tableName, config, logToFile)
 				if insertSuccess {
 					totalRetried += len(missingRecords)
 					if err := os.Remove(jsonFile); err != nil {

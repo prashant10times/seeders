@@ -30,6 +30,18 @@ func GetTableOptimizeConfigs() map[string]TableOptimizeConfig {
 			PartitionExpression:   "",
 			DuplicateCheckColumns: []string{"published", "status", "edition_type", "event_id", "edition_id"},
 		},
+		"allevent_v2": {
+			TableName:             "allevent_v2",
+			TempTableName:         "allevent_v2_temp",
+			PartitionExpression:   "",
+			DuplicateCheckColumns: []string{"published", "status", "edition_type", "event_id", "edition_id", "event_uuid"},
+		},
+		"allevent_v3": {
+			TableName:             "allevent_v3",
+			TempTableName:         "allevent_v3_temp",
+			PartitionExpression:   "",
+			DuplicateCheckColumns: []string{"published", "status", "edition_type", "event_uuid", "edition_id"},
+		},
 		"location_ch": {
 			TableName:             "location_ch",
 			TempTableName:         "location_temp",
@@ -861,17 +873,20 @@ func OptimizeTablePartitions(clickhouseConn driver.Conn, optimizeConfig TableOpt
 			logOptimizeToFile("SUCCESS", "Optimize Table", successMsg)
 		}
 
-		if i < len(partitionsToOptimize)-1 {
-			delay := 15 * time.Second
-			if partInfo != nil {
-				if partInfo.BytesOnDisk > 1024*1024*1024 {
-					delay = 30 * time.Second
-				}
-			}
-			log.Printf("Waiting %v before next optimization to allow memory cleanup...", delay)
-			time.Sleep(delay)
-		}
-		log.Println("")
+		// if i < len(partitionsToOptimize)-1 {
+		// 	// Sleep for 15 seconds (or 30 seconds for large partitions > 1GB) between partition optimizations
+		// 	// This delay allows ClickHouse to clean up memory and complete any pending operations
+		// 	// before starting the next partition optimization, preventing memory pressure issues
+		// 	delay := 15 * time.Second
+		// 	if partInfo != nil {
+		// 		if partInfo.BytesOnDisk > 1024*1024*1024 {
+		// 			delay = 30 * time.Second
+		// 		}
+		// 	}
+		// 	log.Printf("Waiting %v before next optimization to allow memory cleanup...", delay)
+		// 	time.Sleep(delay)
+		// }
+		// log.Println("")
 	}
 
 	completionMsg := fmt.Sprintf("Completed optimization for %s (%d partitions processed)", optimizeConfig.TableName, len(partitionsToOptimize))

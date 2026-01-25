@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-
-	// "regexp"
 	"strings"
 	"time"
 
@@ -30,6 +28,12 @@ func GetTableNameWithDB(tableName string, config Config) string {
 
 func GetClickHouseTableName(baseTableName string, config Config) string {
 	if config.UseTempTables {
+		// Use explicit mapping from config
+		mappingConfig := GetTableMappingConfig()
+		if tempTable, exists := mappingConfig[baseTableName]; exists {
+			return tempTable
+		}
+		// Fallback for backward compatibility
 		if strings.HasSuffix(baseTableName, "_ch") {
 			return strings.Replace(baseTableName, "_ch", "_temp", 1)
 		}
@@ -69,7 +73,8 @@ func GetAllTableMappings(config Config) []TableMapping {
 func GetMainTableNames() []string {
 	return []string{
 		"alerts_ch",
-		"allevent_ch",
+		// Note: allevent_ch, allevent_v2, allevent_v3 are handled separately in STEP 3
+		// to avoid creating temp tables twice
 		"event_category_ch",
 		"event_designation_ch",
 		"event_exhibitor_ch",
@@ -85,9 +90,45 @@ func GetMainTableNames() []string {
 	}
 }
 
+// GetTableMappingConfig returns explicit table mappings for all tables
+// This avoids fallback logic - each table has a defined mapping
+func GetTableMappingConfig() map[string]string {
+	return map[string]string{
+		"alerts_ch":              "alerts_temp",
+		"allevent_ch":            "allevent_temp",
+		"allevent_v2":            "allevent_v2_temp",
+		"allevent_v3":            "allevent_v3_temp",
+		"event_category_ch":      "event_category_temp",
+		"event_designation_ch":   "event_designation_temp",
+		"event_exhibitor_ch":     "event_exhibitor_temp",
+		"event_product_ch":       "event_product_temp",
+		"event_ranking_ch":       "event_ranking_temp",
+		"event_speaker_ch":       "event_speaker_temp",
+		"event_sponsors_ch":      "event_sponsors_temp",
+		"event_type_ch":          "event_type_temp",
+		"event_visitorSpread_ch": "event_visitorSpread_temp",
+		"event_visitors_ch":      "event_visitors_temp",
+		"location_polygons_ch":   "location_polygons_temp",
+		"location_ch":            "location_temp",
+	}
+}
+
 func GetTableMapping(originalTable string, config Config) TableMapping {
 	timestamp := GetHumanReadableTimestamp()
-	tempTable := strings.Replace(originalTable, "_ch", "_temp", 1)
+
+	// Get explicit mapping from config
+	mappingConfig := GetTableMappingConfig()
+	tempTable, exists := mappingConfig[originalTable]
+
+	// If not in config, fall back to derivation logic (for backward compatibility)
+	if !exists {
+		if strings.HasSuffix(originalTable, "_ch") {
+			tempTable = strings.Replace(originalTable, "_ch", "_temp", 1)
+		} else {
+			tempTable = originalTable + "_temp"
+		}
+	}
+
 	backupTable := fmt.Sprintf("%s_backup_%s", originalTable, timestamp)
 	return TableMapping{
 		Original: originalTable,
@@ -815,7 +856,18 @@ func EnsureTempTablesExist(clickhouseConn driver.Conn, config Config, errorLogFi
 }
 
 func EnsureSingleTempTableExists(clickhouseConn driver.Conn, mainTableName string, config Config, errorLogFile string) error {
-	tempTableName := strings.Replace(mainTableName, "_ch", "_temp", 1)
+	// Use explicit mapping from config
+	mappingConfig := GetTableMappingConfig()
+	tempTableName, exists := mappingConfig[mainTableName]
+
+	// Fallback for backward compatibility
+	if !exists {
+		if strings.HasSuffix(mainTableName, "_ch") {
+			tempTableName = strings.Replace(mainTableName, "_ch", "_temp", 1)
+		} else {
+			tempTableName = mainTableName + "_temp"
+		}
+	}
 
 	log.Printf("Checking if temp table %s exists for %s...", tempTableName, mainTableName)
 	exists, err := TableExists(clickhouseConn, tempTableName, config)
@@ -845,7 +897,21 @@ func EnsureSingleTempTableExists(clickhouseConn driver.Conn, mainTableName strin
 	}
 
 	if !originalExists {
-		return fmt.Errorf("original table %s does not exist, cannot create temp table", mainTableName)
+		// Check if temp table exists - if so, create original from temp (recovery from failed swap)
+		tempExists, err := TableExists(clickhouseConn, tempTableName, config)
+		if err != nil {
+			return fmt.Errorf("failed to check existence of temp table %s: %w", tempTableName, err)
+		}
+
+		if tempExists {
+			log.Printf("⚠ Original table %s does not exist, but temp table %s exists. Creating original from temp...", mainTableName, tempTableName)
+			if err := CreateTempTableFromOriginal(clickhouseConn, tempTableName, mainTableName, config, errorLogFile); err != nil {
+				return fmt.Errorf("failed to create original table %s from temp table %s: %w", mainTableName, tempTableName, err)
+			}
+			log.Printf("✓ Successfully created original table %s from temp table %s", mainTableName, tempTableName)
+		} else {
+			return fmt.Errorf("original table %s does not exist and temp table %s also does not exist, cannot proceed", mainTableName, tempTableName)
+		}
 	}
 
 	log.Printf("Creating temp table %s from original table %s...", tempTableName, mainTableName)

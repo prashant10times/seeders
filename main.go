@@ -143,17 +143,40 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				log.Println("STEP 3/14: PROCESSING ALL EVENT")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+				alleventTables := []string{"allevent_ch", "allevent_v2", "allevent_v3"}
+
+				log.Println("Ensuring temp tables exist for all allevent tables...")
+				for _, tableName := range alleventTables {
+					if err := shared.EnsureSingleTempTableExists(clickhouseDB, tableName, config, errorLogFile); err != nil {
+						logErrorToFile(fmt.Sprintf("Ensure Temp Table (All Event - %s)", tableName), err)
+						return fmt.Errorf("failed to ensure temp table exists for %s: %v", tableName, err)
+					}
+					log.Printf("✓ Temp table verified for %s", tableName)
+				}
+				log.Println("✓ All temp tables verified successfully")
+				log.Println("")
+
 				utilsConfig := config
 				utilsConfig.UseTempTables = true // When running -all, read from temp tables
-				microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 
-				if microservice.HasRemainingFailedBatches() {
+				for _, tableName := range alleventTables {
+					log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+					log.Printf("Processing allevent data for table: %s", tableName)
+					log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+					microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, tableName, utilsConfig)
+
+					if microservice.HasRemainingFailedBatches() {
+						log.Printf("⚠️  WARNING: Failed batches still remain for table %s after retry", tableName)
+						log.Println("⚠️  Please rerun the script to retry failed batches")
+						log.Println("⚠️  Optimization and swap will be skipped until all batches succeed")
+						log.Println("")
+						return fmt.Errorf("failed batches still remain for table %s - rerun script to retry", tableName)
+					}
+
+					log.Printf("✓ Completed processing for table: %s (data in temp table, will be swapped after Phase 1)", tableName)
 					log.Println("")
-					log.Println("⚠️  WARNING: Failed batches still remain after retry")
-					log.Println("⚠️  Please rerun the script to retry failed batches")
-					log.Println("⚠️  Optimization will be skipped until all batches succeed")
-					log.Println("")
-					return fmt.Errorf("failed batches still remain - rerun script to retry")
 				}
 
 				log.Println("✓ STEP 3/14 (ALL EVENT) COMPLETED SUCCESSFULLY")
@@ -442,7 +465,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			log.Println("")
 		}
 
-		if i == 10 {
+		if i == 11 {
 			log.Println("")
 			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 			log.Println("VALIDATION: Validating all first batch temp tables before swap")
@@ -452,6 +475,8 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				"location_ch",
 				"event_type_ch",
 				"allevent_ch",
+				"allevent_v2",
+				"allevent_v3",
 				"event_category_ch",
 				"event_product_ch",
 				"event_ranking_ch",
@@ -2234,44 +2259,55 @@ func main() {
 		}
 		log.Println("✓ event_visitorSpread_ch swapped successfully")
 	} else if allEventOnly {
-		// Ensure temp table exists
-		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
-			logErrorToFile("Ensure Temp Table (All Event)", err)
-			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		alleventTables := []string{"allevent_ch", "allevent_v2", "allevent_v3"}
+
+		for _, tableName := range alleventTables {
+			if err := shared.EnsureSingleTempTableExists(clickhouseDB, tableName, config, errorLogFile); err != nil {
+				logErrorToFile(fmt.Sprintf("Ensure Temp Table (All Event - %s)", tableName), err)
+				log.Fatalf("Failed to ensure temp table exists for %s: %v", tableName, err)
+			}
 		}
 
 		utilsConfig := config
-		utilsConfig.UseTempTables = false // When running individually, read from production _ch tables
-		microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
+		utilsConfig.UseTempTables = true // Insert into temp tables, then swap after processing
 
-		// Check if there are remaining failed batches before optimization
-		if microservice.HasRemainingFailedBatches() {
-			log.Println("")
+		for _, tableName := range alleventTables {
+			log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			log.Printf("Processing allevent data for table: %s (inserting into temp table)", tableName)
 			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			log.Println("⚠️  WARNING: Failed batches still remain - skipping optimization")
-			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			log.Println("Some batches failed to insert due to memory errors.")
-			log.Println("Please rerun the script to retry failed batches.")
-			log.Println("Optimization and table swap will be performed after all batches succeed.")
+
+			microservice.ProcessAllEventOnly(mysqlDB, clickhouseDB, esClient, tableName, utilsConfig)
+
+			// Check if there are remaining failed batches before optimization
+			if microservice.HasRemainingFailedBatches() {
+				log.Println("")
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				log.Printf("⚠️  WARNING: Failed batches still remain for table %s - skipping optimization", tableName)
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				log.Println("Some batches failed to insert due to memory errors.")
+				log.Println("Please rerun the script to retry failed batches.")
+				log.Println("Optimization and table swap will be performed after all batches succeed.")
+				log.Println("")
+				continue // Skip optimization for this table, continue with next
+			}
+
+			log.Printf("Optimizing %s temp table...", tableName)
+			if err := shared.OptimizeSingleTable(clickhouseDB, tableName, config, errorLogFile); err != nil {
+				logErrorToFile(fmt.Sprintf("All Event Optimization (%s)", tableName), err)
+				log.Printf("⚠️  Error optimizing %s table: %v", tableName, err)
+				log.Printf("⚠️  Continuing with table swap...")
+			} else {
+				log.Printf("✓ %s temp table optimized successfully", tableName)
+			}
+
+			log.Printf("Swapping %s table (temp -> production)...", tableName)
+			if err := shared.SwapSingleTable(clickhouseDB, tableName, config, errorLogFile); err != nil {
+				logErrorToFile(fmt.Sprintf("All Event Table Swap (%s)", tableName), err)
+				log.Fatalf("Failed to swap %s: %v", tableName, err)
+			}
+			log.Printf("✓ %s swapped successfully", tableName)
 			log.Println("")
-			return // Exit early, don't proceed with optimization
 		}
-
-		log.Println("Optimizing allevent_ch table...")
-		if err := shared.OptimizeSingleTable(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
-			logErrorToFile("All Event Optimization", err)
-			log.Printf("⚠️  Error optimizing allevent_ch table: %v", err)
-			log.Printf("⚠️  Continuing with table swap...")
-		} else {
-			log.Println("✓ allevent_ch optimized successfully")
-		}
-
-		log.Println("Swapping allevent_ch table...")
-		if err := shared.SwapSingleTable(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
-			logErrorToFile("All Event Table Swap", err)
-			log.Fatalf("Failed to swap allevent_ch: %v", err)
-		}
-		log.Println("✓ allevent_ch swapped successfully")
 	} else if locationCountriesOnly || locationStatesOnly || locationCitiesOnly || locationVenuesOnly || locationSubVenuesOnly {
 		// Individual location types - no temp table creation/dropping, just process directly
 		locConfig := shared.Config{
