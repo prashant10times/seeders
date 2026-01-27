@@ -186,10 +186,27 @@ func getMaxEventID(clickhouseConn driver.Conn) (uint32, error) {
 	return maxID, nil
 }
 
+func getHolidayTotalCount(mysqlDB *sql.DB, startDate string) (int, error) {
+	query := fmt.Sprintf(`
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM holiday
+			WHERE cluster_name IS NOT NULL AND start_date >= '%s'
+			GROUP BY cluster_name, start_date, end_date
+		) AS t
+	`, startDate)
+	var count int
+	err := mysqlDB.QueryRow(query).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get holiday total count: %v", err)
+	}
+	return count, nil
+}
+
 func fetchHolidays(mysqlDB *sql.DB, limit, offset int, startDate string) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
 			cluster_name, start_date, end_date,
+			MAX(country) as country,
 			GROUP_CONCAT(DISTINCT synonyms SEPARATOR ',') as synonyms,
 			GROUP_CONCAT(DISTINCT type_llm SEPARATOR ',') as types,
 			GROUP_CONCAT(DISTINCT sub_type_llm SEPARATOR ',') as subtypes
@@ -311,6 +328,19 @@ type HolidayLocationInfo struct {
 	CountryISO string
 }
 
+// select hs.id, hs.entity_id,hs.entity_type,hs.business_score,hs.social_score,hs.reason,c.state_id,CONCAT(av.name, '-', av.country) AS state_name_iso,av.country
+//     from holiday h
+//     left join holiday_score hs on h.id = hs.holiday_id
+//     left join city c on hs.entity_id=c.id and hs.entity_type='city'
+//     LEFT JOIN area_values av ON c.state_id = av.id
+//     where h.cluster_name = '{cluster_name}'
+//     and h.start_date = '{start_date}'
+//     and h.end_date = '{end_date}'
+//     and hs.id is not null
+//     and hs.id > {last_id}
+//     order by hs.id
+//     limit {limit}
+
 func fetchHolidayLocations(mysqlDB *sql.DB, clusterName, startDate, endDate string) ([]map[string]interface{}, error) {
 	query := `
 		SELECT hs.id, hs.entity_id, hs.entity_type
@@ -386,7 +416,7 @@ func getDistinctLocationSourceIDs(holidayLocations []map[string]interface{}) []s
 							stateNameISOStr := shared.SafeConvertToString(stateNameISO)
 							stateIDStr := shared.SafeConvertToString(stateID)
 							if stateNameISOStr != "" && stateIDStr != "" {
-								stateSourceID := fmt.Sprintf("state-%s-%s", stateNameISOStr, stateIDStr)
+								stateSourceID := fmt.Sprintf("state-%s-%s", stateIDStr, stateNameISOStr)
 								locationSourceIDs[stateSourceID] = true
 							}
 						}
@@ -521,7 +551,7 @@ func mapHolidayLocations(holidayLocations []map[string]interface{}, locationMap 
 		case "country":
 			if !countryFound {
 				if locationISO != nil {
-					locationInfo.CountryISO = *locationISO
+					locationInfo.CountryISO = strings.ToUpper(*locationISO)
 				}
 				countryFound = true
 			}
@@ -577,6 +607,8 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 		return nil
 	}
 
+	log.Printf("[allevent_ch] Inserting %d records into allevent_ch (table allevent_temp)...", len(records))
+
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
@@ -591,7 +623,7 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 	defer cancel()
 
 	insertSQL := `
-		INSERT INTO allevent_ch (
+		INSERT INTO allevent_temp (
 			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating,
 			start_date, end_date,
 			edition_id, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
@@ -701,7 +733,7 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
-	log.Printf("OK: Successfully inserted %d holiday records into allevent_ch", len(records))
+	log.Printf("[allevent_ch] Successfully inserted %d records into allevent_ch (table allevent_temp)", len(records))
 	return nil
 }
 
@@ -750,6 +782,13 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 	startDate := today.AddDate(0, 0, -366).Format("2006-01-02")
 	log.Printf("Fetching holidays with start_date >= %s", startDate)
 
+	totalAvailable, errCount := getHolidayTotalCount(mysqlDB, startDate)
+	if errCount != nil {
+		log.Printf("Warning: Could not get total holiday count: %v (continuing without total)", errCount)
+	} else {
+		log.Printf("[summary] Total holidays available in MySQL (start_date >= %s): %d", startDate, totalAvailable)
+	}
+
 	currentTime := time.Now()
 	createdStr := currentTime.Format("2006-01-02 15:04:05")
 
@@ -766,6 +805,9 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 
 	currentEventID := startEventID
 	totalHolidaysProcessed := 0
+	totalFetched := 0
+	totalInsertedAllevent := 0
+	totalInsertedEventType := 0
 
 	for {
 		holidays, err := fetchHolidays(mysqlDB, fetchLimit, offset, startDate)
@@ -777,7 +819,8 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 			break
 		}
 
-		log.Printf("Fetched %d holidays from MySQL (offset: %d)", len(holidays), offset)
+		totalFetched += len(holidays)
+		log.Printf("[fetch] Fetched %d holidays from MySQL (offset: %d, total fetched so far: %d)", len(holidays), offset, totalFetched)
 
 		for chunk := 0; chunk < len(holidays); chunk += insertLimit {
 			chunkEnd := chunk + insertLimit
@@ -786,7 +829,7 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 			}
 
 			chunkedHolidays := holidays[chunk:chunkEnd]
-			log.Printf("Processing chunk: %d holidays (indices %d-%d)", len(chunkedHolidays), chunk, chunkEnd-1)
+			log.Printf("[process] Processing chunk: %d holidays (indices %d-%d)", len(chunkedHolidays), chunk, chunkEnd-1)
 
 			allHolidayLocations, allLocationSourceIDs, err := fetchHolidayLocationsBatch(mysqlDB, chunkedHolidays, config.NumWorkers)
 			if err != nil {
@@ -864,6 +907,10 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 				}
 
 				primaryEventTypeUUID := "5b37e581-53f7-5dcf-8177-c6a43774b168"
+				editionCountry := locationInfo.CountryISO
+				if editionCountry == "" {
+					editionCountry = strings.ToUpper(shared.SafeConvertToString(holiday["country"]))
+				}
 				record := alleventRecord{
 					EventID:                         currentEventID,
 					EventUUID:                       eventUUID,
@@ -875,7 +922,7 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 					StartDate:                       startDateStr,
 					EndDate:                         endDateStr,
 					EditionID:                       currentEventID,
-					EditionCountry:                  locationInfo.CountryISO,
+					EditionCountry:                  editionCountry,
 					EditionCity:                     locationInfo.CityID,
 					EditionCityName:                 locationInfo.CityName,
 					EditionCityStateID:              locationInfo.StateID,
@@ -947,8 +994,12 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 				currentEventID++
 			}
 
+			processedInChunk := len(alleventRecords)
+			if processedInChunk > 0 {
+				log.Printf("[process] Chunk complete: %d holidays converted to %d allevent records (inserting into allevent_ch)", len(chunkedHolidays), processedInChunk)
+			}
 			if len(alleventRecords) > 0 {
-				log.Printf("Inserting %d holiday records into allevent_ch...", len(alleventRecords))
+				log.Printf("[insert] Inserting %d holiday records into allevent_ch...", processedInChunk)
 				attemptCount := 0
 				insertErr := shared.RetryWithBackoff(
 					func() error {
@@ -970,12 +1021,15 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 					return fmt.Errorf("failed to insert holidays after retries: %v", insertErr)
 				}
 
+				totalInsertedAllevent += processedInChunk
+
 				if len(chunkCache) > 0 {
-					log.Printf("Processing event type mappings for chunk (%d holidays)...", len(chunkCache))
-					mappingErr := ProcessHolidayEventTypeMappings(clickhouseConn, chunkCache, eventTypeLookup, config)
+					log.Printf("[insert] Processing event type mappings for chunk (%d holidays)...", len(chunkCache))
+					insertedMappings, mappingErr := ProcessHolidayEventTypeMappings(clickhouseConn, chunkCache, eventTypeLookup, config)
 					if mappingErr != nil {
 						return fmt.Errorf("failed to process holiday event type mappings for chunk: %v", mappingErr)
 					}
+					totalInsertedEventType += insertedMappings
 					totalHolidaysProcessed += len(chunkCache)
 					chunkCache = nil
 				}
@@ -988,7 +1042,33 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 		}
 	}
 
-	log.Printf("Total holidays processed: %d", totalHolidaysProcessed)
+	missedFetched := 0
+	if errCount == nil && totalAvailable > 0 {
+		missedFetched = totalAvailable - totalFetched
+	}
+	missedProcessed := totalFetched - totalHolidaysProcessed
+	missedAllevent := totalHolidaysProcessed - totalInsertedAllevent
+
+	log.Println("=== Holiday Processing Summary ===")
+	if errCount == nil {
+		log.Printf("[summary] Total data available (MySQL): %d", totalAvailable)
+	}
+	log.Printf("[summary] Total fetched from MySQL: %d", totalFetched)
+	log.Printf("[summary] Total processed (converted to records): %d", totalHolidaysProcessed)
+	log.Printf("[summary] Total inserted into allevent_ch: %d", totalInsertedAllevent)
+	log.Printf("[summary] Total inserted into event_type_ch: %d", totalInsertedEventType)
+	if missedFetched > 0 {
+		log.Printf("[summary] Missed (available but not fetched): %d", missedFetched)
+	}
+	if missedProcessed > 0 {
+		log.Printf("[summary] Missed (fetched but not processed): %d", missedProcessed)
+	}
+	if missedAllevent > 0 {
+		log.Printf("[summary] Missed (processed but not inserted into allevent_ch): %d", missedAllevent)
+	}
+	if missedFetched == 0 && missedProcessed == 0 && missedAllevent == 0 && totalFetched > 0 {
+		log.Printf("[summary] No data missed: all %d fetched records processed and inserted", totalFetched)
+	}
 	log.Println("=== Holiday Processing Completed Successfully ===")
 
 	return nil
@@ -1081,6 +1161,8 @@ func insertHolidayEventTypeMappingsSingleWorker(clickhouseConn driver.Conn, reco
 		return nil
 	}
 
+	log.Printf("[event_type_ch] Inserting %d records into event_type_ch (table event_type_temp)...", len(records))
+
 	connectionCheckErr := shared.RetryWithBackoff(
 		func() error {
 			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
@@ -1095,7 +1177,7 @@ func insertHolidayEventTypeMappingsSingleWorker(clickhouseConn driver.Conn, reco
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_type_ch (
+		INSERT INTO event_type_temp (
 			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version, last_updated_at
 		)
 	`)
@@ -1128,20 +1210,22 @@ func insertHolidayEventTypeMappingsSingleWorker(clickhouseConn driver.Conn, reco
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
-	log.Printf("OK: Successfully inserted %d holiday event type mapping records", len(records))
+	log.Printf("[event_type_ch] Successfully inserted %d records into event_type_ch (table event_type_temp)", len(records))
 	return nil
 }
 
-func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache map[string]HolidayCacheEntry, eventTypeLookup map[string]uint32, config shared.Config) error {
+func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache map[string]HolidayCacheEntry, eventTypeLookup map[string]uint32, config shared.Config) (int, error) {
 	log.Println("=== Starting Holiday Event Type Mapping Processing ===")
 
 	if len(holidayCache) == 0 {
 		log.Println("No holidays in cache to map event types")
-		return nil
+		return 0, nil
 	}
 
+	log.Printf("[event_type_ch] Total holidays in cache to map: %d", len(holidayCache))
+
 	if len(eventTypeLookup) == 0 {
-		return fmt.Errorf("event type lookup map is empty")
+		return 0, fmt.Errorf("event type lookup map is empty")
 	}
 
 	var baseHolidayUUID string
@@ -1152,13 +1236,13 @@ func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache ma
 			var exists bool
 			baseHolidayEventTypeID, exists = eventTypeLookup[baseHolidayUUID]
 			if !exists {
-				return fmt.Errorf("base holiday event type not found in lookup map (UUID: %s)", baseHolidayUUID)
+				return 0, fmt.Errorf("base holiday event type not found in lookup map (UUID: %s)", baseHolidayUUID)
 			}
 			break
 		}
 	}
 	if baseHolidayEventTypeID == 0 {
-		return fmt.Errorf("base holiday event type not found")
+		return 0, fmt.Errorf("base holiday event type not found")
 	}
 
 	log.Printf("Base holiday event type: UUID=%s, eventtype_id=%d", baseHolidayUUID, baseHolidayEventTypeID)
@@ -1276,10 +1360,10 @@ func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache ma
 
 	if len(mappingRecords) == 0 {
 		log.Println("No event type mappings to insert")
-		return nil
+		return 0, nil
 	}
 
-	log.Printf("Prepared %d event type mapping records for %d holidays", mappingCount, len(holidayCache))
+	log.Printf("[event_type_ch] Prepared %d event type mapping records for %d holidays (total to insert: %d)", mappingCount, len(holidayCache), len(mappingRecords))
 
 	batchSize := config.BatchSize
 	if batchSize <= 0 {
@@ -1293,7 +1377,7 @@ func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache ma
 		}
 
 		batch := mappingRecords[i:end]
-		log.Printf("Inserting batch of %d event type mappings (indices %d-%d)...", len(batch), i, end-1)
+		log.Printf("[event_type_ch] Inserting batch of %d event type mappings (indices %d-%d)...", len(batch), i, end-1)
 
 		attemptCount := 0
 		insertErr := shared.RetryWithBackoff(
@@ -1313,11 +1397,11 @@ func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache ma
 		)
 
 		if insertErr != nil {
-			return fmt.Errorf("failed to insert holiday event type mappings after retries: %v", insertErr)
+			return 0, fmt.Errorf("failed to insert holiday event type mappings after retries: %v", insertErr)
 		}
 	}
 
-	log.Printf("Successfully inserted %d event type mapping records", len(mappingRecords))
+	log.Printf("[event_type_ch] Successfully inserted %d event type mapping records (holidays: %d)", len(mappingRecords), len(holidayCache))
 	log.Println("=== Holiday Event Type Mapping Processing Completed Successfully ===")
-	return nil
+	return len(mappingRecords), nil
 }
