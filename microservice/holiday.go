@@ -43,6 +43,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -623,7 +624,7 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 	defer cancel()
 
 	insertSQL := `
-		INSERT INTO allevent_temp (
+		INSERT INTO allevent_ch (
 			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating,
 			start_date, end_date,
 			edition_id, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
@@ -808,6 +809,7 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 	totalFetched := 0
 	totalInsertedAllevent := 0
 	totalInsertedEventType := 0
+	eventsByCountry := make(map[string]int)
 
 	for {
 		holidays, err := fetchHolidays(mysqlDB, fetchLimit, offset, startDate)
@@ -896,6 +898,10 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 				holidayLocations := allHolidayLocations[holidayKey]
 				locationInfo := mapHolidayLocations(holidayLocations, locationMap)
 
+				if _, already := chunkCache[eventUUID]; already {
+					log.Printf("[process] Duplicate eventUUID in chunk (deduplicated for event_type mapping): cluster_name=%q, start_date=%s, end_date=%s, event_uuid=%s",
+						clusterName, startDateStr, endDateStr, eventUUID)
+				}
 				chunkCache[eventUUID] = HolidayCacheEntry{
 					ClusterName: clusterNameClean,
 					StartDate:   startDateStr,
@@ -996,6 +1002,9 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 
 			processedInChunk := len(alleventRecords)
 			if processedInChunk > 0 {
+				for _, r := range alleventRecords {
+					eventsByCountry[r.EditionCountry]++
+				}
 				log.Printf("[process] Chunk complete: %d holidays converted to %d allevent records (inserting into allevent_ch)", len(chunkedHolidays), processedInChunk)
 			}
 			if len(alleventRecords) > 0 {
@@ -1061,13 +1070,24 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 		log.Printf("[summary] Missed (available but not fetched): %d", missedFetched)
 	}
 	if missedProcessed > 0 {
-		log.Printf("[summary] Missed (fetched but not processed): %d", missedProcessed)
+		log.Printf("[summary] Missed (fetched but not processed): %d (rows that shared eventUUID with another row; see [process] Duplicate eventUUID logs above)", missedProcessed)
 	}
 	if missedAllevent > 0 {
 		log.Printf("[summary] Missed (processed but not inserted into allevent_ch): %d", missedAllevent)
 	}
 	if missedFetched == 0 && missedProcessed == 0 && missedAllevent == 0 && totalFetched > 0 {
 		log.Printf("[summary] No data missed: all %d fetched records processed and inserted", totalFetched)
+	}
+	if len(eventsByCountry) > 0 {
+		countries := make([]string, 0, len(eventsByCountry))
+		for c := range eventsByCountry {
+			countries = append(countries, c)
+		}
+		sort.Strings(countries)
+		log.Printf("[summary] Events per country (total: %d countries)", len(countries))
+		for _, c := range countries {
+			log.Printf("[summary]   %s: %d", c, eventsByCountry[c])
+		}
 	}
 	log.Println("=== Holiday Processing Completed Successfully ===")
 
@@ -1177,7 +1197,7 @@ func insertHolidayEventTypeMappingsSingleWorker(clickhouseConn driver.Conn, reco
 	defer cancel()
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_type_temp (
+		INSERT INTO event_type_ch (
 			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version, last_updated_at
 		)
 	`)

@@ -215,8 +215,8 @@ func buildEventProductChMigrationData(db *sql.DB, startID, endID int, batchSize 
 			p.created as product_created
 		FROM event_products ep
 		INNER JOIN product p ON ep.product = p.id
-		WHERE and ep.published in (0,1)
-		ep.id >= %d AND ep.id <= %d 
+		WHERE ep.published in (0,1)
+		and ep.id >= %d AND ep.id <= %d 
 		ORDER BY ep.id 
 		LIMIT %d`, startID, endID, batchSize)
 
