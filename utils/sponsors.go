@@ -28,10 +28,11 @@ type SponsorRecord struct {
 	CompanyCityName  *string `ch:"company_city_name"`
 	FacebookID       *string `ch:"facebook_id"`
 	LinkedinID       *string `ch:"linkedin_id"`
-	TwitterID        *string `ch:"twitter_id"`
-	Created          string  `ch:"created"`
-	Version          uint32  `ch:"version"`
-	LastUpdatedAt    string  `ch:"last_updated_at"`
+	TwitterID         *string `ch:"twitter_id"`
+	Created           string  `ch:"created"`
+	Version           uint32  `ch:"version"`
+	LastUpdatedAt     string  `ch:"last_updated_at"`
+	SponsorSourceID   uint32  `ch:"sponsorSourceId"`
 }
 
 func ProcessSponsorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
@@ -215,6 +216,8 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 			companyID := shared.ConvertToUInt32Ptr(sponsor["company_id"])
 			editionID := shared.ConvertToUInt32(sponsor["event_edition"])
 			eventID := shared.ConvertToUInt32(sponsor["event_id"])
+			// event_sponsors.id is the sponsorSourceId in ClickHouse
+			sponsorSourceID := shared.ConvertToUInt32(sponsor["id"])
 
 			sponsorRecord := SponsorRecord{
 				CompanyID:        companyID,
@@ -235,6 +238,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 				Created:          shared.SafeConvertToDateTimeString(sponsor["created"]),
 				Version:          1,
 				LastUpdatedAt:    now,
+				SponsorSourceID:  sponsorSourceID,
 			}
 
 			sponsorRecords = append(sponsorRecords, sponsorRecord)
@@ -471,7 +475,7 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 		INSERT INTO event_sponsors_temp (
 			company_id, company_uuid, company_id_name, edition_id, event_id, company_website,
 			company_domain, company_country, company_state, company_state_name, company_city, company_city_name, facebook_id,
-			linkedin_id, twitter_id, created, version, last_updated_at
+			linkedin_id, twitter_id, created, version, last_updated_at, sponsorSourceId
 		)
 	`)
 	if err != nil {
@@ -498,6 +502,7 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 			record.Created,          // created: DateTime
 			record.Version,          // version: UInt32 NOT NULL DEFAULT 1
 			record.LastUpdatedAt,    // last_updated_at: DateTime
+			record.SponsorSourceID,  // sponsorSourceId: UInt32
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)
