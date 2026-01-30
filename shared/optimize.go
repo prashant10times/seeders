@@ -76,7 +76,7 @@ func GetTableOptimizeConfigs() map[string]TableOptimizeConfig {
 			TableName:             "event_speaker_ch",
 			TempTableName:         "event_speaker_temp",
 			PartitionExpression:   "",
-			DuplicateCheckColumns: []string{"event_id", "edition_id", "user_id"},
+			DuplicateCheckColumns: []string{"event_id", "edition_id", "user_id", "speakerSourceId"},
 		},
 		"event_sponsors_ch": {
 			TableName:             "event_sponsors_ch",

@@ -1350,6 +1350,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 			userID := shared.ConvertToUInt32(speaker["user_id"])
 			eventID := shared.ConvertToUInt32(speaker["event"])
 			editionID := shared.ConvertToUInt32(speaker["edition"])
+			speakerSourceID := shared.ConvertToUInt32(speaker["id"])
 
 			// Convert company_id to *uint32
 			var userCompanyIDPtr *uint32
@@ -1375,6 +1376,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 				UserCountry:     shared.ToUpperNullableString(shared.ConvertToStringPtr(userCountry)),
 				Version:         1,
 				LastUpdatedAt:   now,
+				SpeakerSourceID: speakerSourceID,
 			}
 
 			speakerRecords = append(speakerRecords, speakerRecord)
@@ -1437,6 +1439,8 @@ func buildSpeakersMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 		WHERE id >= %d AND id <= %d 
 		ORDER BY id 
 		LIMIT %d`, startID, endID, batchSize)
+	
+	fmt.Printf("Executing query: %s\n", query)
 
 	rows, err := db.Query(query)
 	if err != nil {
@@ -1614,7 +1618,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_speaker_temp (
 			user_id, event_id, edition_id, user_name, user_company_id, user_company,
-			user_designation, user_state, user_state_name, user_city, user_city_name, user_country, version, last_updated_at
+			user_designation, user_state, user_state_name, user_city, user_city_name, user_country, version, last_updated_at, speakerSourceId
 		)
 	`)
 	if err != nil {
@@ -1625,18 +1629,19 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 		err := batch.Append(
 			record.UserID,          // user_id: UInt32 NOT NULL
 			record.EventID,         // event_id: UInt32 NOT NULL
-			record.EditionID,       // edition_id: UInt32 NOT NULL
-			record.UserName,        // user_name: String NOT NULL
-			record.UserCompanyID,   // user_company_id: Nullable(UInt32)
-			record.UserCompany,     // user_company: Nullable(String)
-			record.UserDesignation, // user_designation: Nullable(String)
-			record.UserState,       // user_state: Nullable(UInt32)
-			record.UserStateName,   // user_state_name: LowCardinality(Nullable(String))
-			record.UserCity,        // user_city: Nullable(UInt32)
-			record.UserCityName,    // user_city_name: LowCardinality(Nullable(String))
-			record.UserCountry,     // user_country: LowCardinality(Nullable(FixedString(2)))
-			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
-			record.LastUpdatedAt,   // last_updated_at: DateTime
+			record.EditionID,        // edition_id: UInt32 NOT NULL
+			record.UserName,         // user_name: String NOT NULL
+			record.UserCompanyID,    // user_company_id: Nullable(UInt32)
+			record.UserCompany,      // user_company: Nullable(String)
+			record.UserDesignation,  // user_designation: Nullable(String)
+			record.UserState,        // user_state: Nullable(UInt32)
+			record.UserStateName,    // user_state_name: LowCardinality(Nullable(String))
+			record.UserCity,         // user_city: Nullable(UInt32)
+			record.UserCityName,     // user_city_name: LowCardinality(Nullable(String))
+			record.UserCountry,      // user_country: LowCardinality(Nullable(FixedString(2)))
+			record.Version,          // version: UInt32 NOT NULL DEFAULT 1
+			record.LastUpdatedAt,    // last_updated_at: DateTime
+			record.SpeakerSourceID,  // speakerSourceId: UInt32
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)
@@ -1667,6 +1672,7 @@ type SpeakerRecord struct {
 	UserCountry     *string `ch:"user_country"`
 	Version         uint32  `ch:"version"`
 	LastUpdatedAt   string  `ch:"last_updated_at"`
+	SpeakerSourceID uint32  `ch:"speakerSourceId"`
 }
 
 // VisitorRecord represents a visitor record for ClickHouse insertion
