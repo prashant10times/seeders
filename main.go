@@ -1302,8 +1302,11 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 		var speakerRecords []SpeakerRecord
 		now := time.Now().Format("2006-01-02 15:04:05")
 		for _, speaker := range batchData {
+			// Get user_company_id from speaker table's company_id column
+			userCompanyID := speaker["company_id"]
+
 			// Get user data for this speaker
-			var userName, userCompany, userDesignation, userCity, userCountry, userCompanyID interface{}
+			var userName, userCompany, userDesignation, userCity, userCountry interface{}
 			if userID, ok := speaker["user_id"].(int64); ok && userData != nil {
 				if user, exists := userData[userID]; exists {
 					userName = speaker["speaker_name"] // Use speaker_name from speaker table
@@ -1311,7 +1314,6 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 					userDesignation = user["designation"]
 					userCity = user["city"]
 					userCountry = strings.ToUpper(shared.SafeConvertToString(user["country"]))
-					userCompanyID = user["company"] // company_id from user table
 				}
 			}
 
@@ -1434,7 +1436,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 func buildSpeakersMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
-			id, user_id, event, edition, speaker_name
+			id, user_id, event, edition, speaker_name, company_id
 		FROM event_speaker 
 		WHERE id >= %d AND id <= %d 
 		ORDER BY id 
