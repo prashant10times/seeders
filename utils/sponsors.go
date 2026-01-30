@@ -28,11 +28,11 @@ type SponsorRecord struct {
 	CompanyCityName  *string `ch:"company_city_name"`
 	FacebookID       *string `ch:"facebook_id"`
 	LinkedinID       *string `ch:"linkedin_id"`
-	TwitterID         *string `ch:"twitter_id"`
-	Created           string  `ch:"created"`
-	Version           uint32  `ch:"version"`
-	LastUpdatedAt     string  `ch:"last_updated_at"`
-	SponsorSourceID   uint32  `ch:"sponsorSourceId"`
+	TwitterID        *string `ch:"twitter_id"`
+	Created          string  `ch:"created"`
+	Version          uint32  `ch:"version"`
+	LastUpdatedAt    string  `ch:"last_updated_at"`
+	SponsorSourceID  uint32  `ch:"sponsorSourceId"`
 }
 
 func ProcessSponsorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
@@ -258,7 +258,7 @@ func processSponsorsChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 						log.Printf("Sponsors chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
 					}
 					attemptCount++
-					return insertSponsorsDataIntoClickHouse(clickhouseConn, sponsorRecords, config.ClickHouseWorkers)
+					return insertSponsorsDataIntoClickHouse(clickhouseConn, sponsorRecords, config)
 				},
 				3,
 			)
@@ -412,13 +412,17 @@ func fetchSponsorsCompanyData(db *sql.DB, companyIDs []int64) map[int64]map[stri
 	return allCompanyData
 }
 
-func insertSponsorsDataIntoClickHouse(clickhouseConn driver.Conn, sponsorRecords []SponsorRecord, numWorkers int) error {
+func insertSponsorsDataIntoClickHouse(clickhouseConn driver.Conn, sponsorRecords []SponsorRecord, config shared.Config) error {
 	if len(sponsorRecords) == 0 {
 		return nil
 	}
-
+	insertTable := "event_sponsors_temp"
+	if config.SponsorInsertTable != "" {
+		insertTable = config.SponsorInsertTable
+	}
+	numWorkers := config.ClickHouseWorkers
 	if numWorkers <= 1 {
-		return insertSponsorsDataSingleWorker(clickhouseConn, sponsorRecords)
+		return insertSponsorsDataSingleWorker(clickhouseConn, sponsorRecords, insertTable)
 	}
 
 	batchSize := (len(sponsorRecords) + numWorkers - 1) / numWorkers
@@ -436,12 +440,12 @@ func insertSponsorsDataIntoClickHouse(clickhouseConn driver.Conn, sponsorRecords
 		}
 
 		semaphore <- struct{}{}
-		go func(start, end int) {
+		go func(start, end int, tbl string) {
 			defer func() { <-semaphore }()
 			batch := sponsorRecords[start:end]
-			err := insertSponsorsDataSingleWorker(clickhouseConn, batch)
+			err := insertSponsorsDataSingleWorker(clickhouseConn, batch, tbl)
 			results <- err
-		}(start, end)
+		}(start, end, insertTable)
 	}
 
 	for i := 0; i < numWorkers && i*batchSize < len(sponsorRecords); i++ {
@@ -453,9 +457,12 @@ func insertSponsorsDataIntoClickHouse(clickhouseConn driver.Conn, sponsorRecords
 	return nil
 }
 
-func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords []SponsorRecord) error {
+func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords []SponsorRecord, insertTable string) error {
 	if len(sponsorRecords) == 0 {
 		return nil
+	}
+	if insertTable != "event_sponsors_temp" && insertTable != "event_sponsors_temp2" {
+		insertTable = "event_sponsors_temp"
 	}
 
 	connectionCheckErr := shared.RetryWithBackoff(
@@ -471,13 +478,13 @@ func insertSponsorsDataSingleWorker(clickhouseConn driver.Conn, sponsorRecords [
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_sponsors_temp (
+	batch, err := clickhouseConn.PrepareBatch(ctx, fmt.Sprintf(`
+		INSERT INTO %s (
 			company_id, company_uuid, company_id_name, edition_id, event_id, company_website,
 			company_domain, company_country, company_state, company_state_name, company_city, company_city_name, facebook_id,
 			linkedin_id, twitter_id, created, version, last_updated_at, sponsorSourceId
 		)
-	`)
+	`, insertTable))
 	if err != nil {
 		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
 	}

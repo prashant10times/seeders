@@ -1397,7 +1397,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 						log.Printf("Speakers chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
 					}
 					attemptCount++
-					return insertSpeakersDataIntoClickHouse(clickhouseConn, speakerRecords, config.ClickHouseWorkers)
+					return insertSpeakersDataIntoClickHouse(clickhouseConn, speakerRecords, config)
 				},
 				3,
 			)
@@ -1555,13 +1555,17 @@ func fetchSpeakersUserData(db *sql.DB, userIDs []int64) map[int64]map[string]int
 	return allUserData
 }
 
-func insertSpeakersDataIntoClickHouse(clickhouseConn driver.Conn, speakerRecords []SpeakerRecord, numWorkers int) error {
+func insertSpeakersDataIntoClickHouse(clickhouseConn driver.Conn, speakerRecords []SpeakerRecord, config shared.Config) error {
 	if len(speakerRecords) == 0 {
 		return nil
 	}
-
+	insertTable := "event_speaker_temp"
+	if config.SpeakerInsertTable != "" {
+		insertTable = config.SpeakerInsertTable
+	}
+	numWorkers := config.ClickHouseWorkers
 	if numWorkers <= 1 {
-		return insertSpeakersDataSingleWorker(clickhouseConn, speakerRecords)
+		return insertSpeakersDataSingleWorker(clickhouseConn, speakerRecords, insertTable)
 	}
 
 	batchSize := (len(speakerRecords) + numWorkers - 1) / numWorkers
@@ -1579,12 +1583,12 @@ func insertSpeakersDataIntoClickHouse(clickhouseConn driver.Conn, speakerRecords
 		}
 
 		semaphore <- struct{}{}
-		go func(start, end int) {
+		go func(start, end int, tbl string) {
 			defer func() { <-semaphore }()
 			batch := speakerRecords[start:end]
-			err := insertSpeakersDataSingleWorker(clickhouseConn, batch)
+			err := insertSpeakersDataSingleWorker(clickhouseConn, batch, tbl)
 			results <- err
-		}(start, end)
+		}(start, end, insertTable)
 	}
 
 	for i := 0; i < numWorkers && i*batchSize < len(speakerRecords); i++ {
@@ -1596,9 +1600,12 @@ func insertSpeakersDataIntoClickHouse(clickhouseConn driver.Conn, speakerRecords
 	return nil
 }
 
-func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords []SpeakerRecord) error {
+func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords []SpeakerRecord, insertTable string) error {
 	if len(speakerRecords) == 0 {
 		return nil
+	}
+	if insertTable != "event_speaker_temp" && insertTable != "event_speaker_temp2" {
+		insertTable = "event_speaker_temp"
 	}
 
 	connectionCheckErr := shared.RetryWithBackoff(
@@ -1615,12 +1622,12 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_speaker_temp (
+	batch, err := clickhouseConn.PrepareBatch(ctx, fmt.Sprintf(`
+		INSERT INTO %s (
 			user_id, event_id, edition_id, user_name, user_company_id, user_company,
 			user_designation, user_state, user_state_name, user_city, user_city_name, user_country, version, last_updated_at, speakerSourceId
 		)
-	`)
+	`, insertTable))
 	if err != nil {
 		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
 	}
@@ -1987,45 +1994,63 @@ func main() {
 	}
 
 	if exhibitorOnly {
-		// Ensure temp table exists
-		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_exhibitor_ch", config, errorLogFile); err != nil {
-			logErrorToFile("Ensure Temp Table (Exhibitor)", err)
-			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		// Single-table mode: use event_exhibitor_temp2 (do not create temp table)
+		if err := shared.EnsureTemp2TableExists(clickhouseDB, "event_exhibitor_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp2 Table (Exhibitor)", err)
+			log.Fatalf("Failed to ensure temp2 table exists: %v", err)
 		}
 
 		utilsConfig := shared.Config{
-			BatchSize:         config.BatchSize,
-			NumChunks:         config.NumChunks,
-			NumWorkers:        config.NumWorkers,
-			ClickHouseWorkers: config.ClickHouseWorkers,
+			BatchSize:           config.BatchSize,
+			NumChunks:           config.NumChunks,
+			NumWorkers:          config.NumWorkers,
+			ClickHouseWorkers:   config.ClickHouseWorkers,
+			ExhibitorInsertTable: "event_exhibitor_temp2",
 		}
 		utils.ProcessExhibitorOnly(mysqlDB, clickhouseDB, utilsConfig)
 
-		// Swap table after processing
+		log.Println("Optimizing event_exhibitor_temp2 table...")
+		if err := shared.OptimizeSingleTableWithTempName(clickhouseDB, "event_exhibitor_ch", "event_exhibitor_temp2", config, errorLogFile); err != nil {
+			logErrorToFile("Exhibitor Optimization", err)
+			log.Printf("⚠️  Error optimizing event_exhibitor_temp2: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ event_exhibitor_temp2 optimized successfully")
+		}
+
 		log.Println("Swapping event_exhibitor_ch table...")
-		if err := shared.SwapSingleTable(clickhouseDB, "event_exhibitor_ch", config, errorLogFile); err != nil {
+		if err := shared.SwapSingleTableWithSource(clickhouseDB, "event_exhibitor_ch", "event_exhibitor_temp2", config, errorLogFile); err != nil {
 			logErrorToFile("Exhibitor Table Swap", err)
 			log.Fatalf("Failed to swap event_exhibitor_ch: %v", err)
 		}
 		log.Println("✓ event_exhibitor_ch swapped successfully")
 	} else if sponsorsOnly {
-		// Ensure temp table exists
-		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_sponsors_ch", config, errorLogFile); err != nil {
-			logErrorToFile("Ensure Temp Table (Sponsors)", err)
-			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		// Single-table mode: use event_sponsors_temp2 (do not create temp table)
+		if err := shared.EnsureTemp2TableExists(clickhouseDB, "event_sponsors_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp2 Table (Sponsors)", err)
+			log.Fatalf("Failed to ensure temp2 table exists: %v", err)
 		}
 
 		utilsConfig := shared.Config{
-			BatchSize:         config.BatchSize,
-			NumChunks:         config.NumChunks,
-			NumWorkers:        config.NumWorkers,
-			ClickHouseWorkers: config.ClickHouseWorkers,
+			BatchSize:          config.BatchSize,
+			NumChunks:          config.NumChunks,
+			NumWorkers:         config.NumWorkers,
+			ClickHouseWorkers:  config.ClickHouseWorkers,
+			SponsorInsertTable: "event_sponsors_temp2",
 		}
 		utils.ProcessSponsorsOnly(mysqlDB, clickhouseDB, utilsConfig)
 
-		// Swap table after processing
+		log.Println("Optimizing event_sponsors_temp2 table...")
+		if err := shared.OptimizeSingleTableWithTempName(clickhouseDB, "event_sponsors_ch", "event_sponsors_temp2", config, errorLogFile); err != nil {
+			logErrorToFile("Sponsors Optimization", err)
+			log.Printf("⚠️  Error optimizing event_sponsors_temp2: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ event_sponsors_temp2 optimized successfully")
+		}
+
 		log.Println("Swapping event_sponsors_ch table...")
-		if err := shared.SwapSingleTable(clickhouseDB, "event_sponsors_ch", config, errorLogFile); err != nil {
+		if err := shared.SwapSingleTableWithSource(clickhouseDB, "event_sponsors_ch", "event_sponsors_temp2", config, errorLogFile); err != nil {
 			logErrorToFile("Sponsors Table Swap", err)
 			log.Fatalf("Failed to swap event_sponsors_ch: %v", err)
 		}
@@ -2056,26 +2081,27 @@ func main() {
 		}
 		log.Println("✓ event_visitors_ch swapped successfully")
 	} else if speakersOnly {
-		// Ensure temp table exists
-		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_speaker_ch", config, errorLogFile); err != nil {
-			logErrorToFile("Ensure Temp Table (Speakers)", err)
-			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		// Single-table mode: use event_speaker_temp2 (do not create temp table)
+		if err := shared.EnsureTemp2TableExists(clickhouseDB, "event_speaker_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp2 Table (Speakers)", err)
+			log.Fatalf("Failed to ensure temp2 table exists: %v", err)
 		}
 
-		processSpeakersOnly(mysqlDB, clickhouseDB, config)
+		speakerConfig := config
+		speakerConfig.SpeakerInsertTable = "event_speaker_temp2"
+		processSpeakersOnly(mysqlDB, clickhouseDB, speakerConfig)
 
-		log.Println("Optimizing event_speaker_ch table...")
-		if err := shared.OptimizeSingleTable(clickhouseDB, "event_speaker_ch", config, errorLogFile); err != nil {
+		log.Println("Optimizing event_speaker_temp2 table...")
+		if err := shared.OptimizeSingleTableWithTempName(clickhouseDB, "event_speaker_ch", "event_speaker_temp2", config, errorLogFile); err != nil {
 			logErrorToFile("Speakers Optimization", err)
-			log.Printf("⚠️  Error optimizing event_speaker_ch table: %v", err)
+			log.Printf("⚠️  Error optimizing event_speaker_temp2: %v", err)
 			log.Printf("⚠️  Continuing with table swap...")
 		} else {
-			log.Println("✓ event_speaker_ch optimized successfully")
+			log.Println("✓ event_speaker_temp2 optimized successfully")
 		}
 
-		// Swap table after processing
 		log.Println("Swapping event_speaker_ch table...")
-		if err := shared.SwapSingleTable(clickhouseDB, "event_speaker_ch", config, errorLogFile); err != nil {
+		if err := shared.SwapSingleTableWithSource(clickhouseDB, "event_speaker_ch", "event_speaker_temp2", config, errorLogFile); err != nil {
 			logErrorToFile("Speakers Table Swap", err)
 			log.Fatalf("Failed to swap event_speaker_ch: %v", err)
 		}

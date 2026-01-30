@@ -96,6 +96,89 @@ func GetTableMapping(originalTable string, config Config) TableMapping {
 	}
 }
 
+// GetTemp2TableName returns the _temp2 table name for a main table (e.g. event_exhibitor_ch -> event_exhibitor_temp2).
+func GetTemp2TableName(mainTable string) string {
+	return strings.Replace(mainTable, "_ch", "_temp2", 1)
+}
+
+// GetTableMappingWithSource returns a mapping with a custom source table (e.g. _temp2) instead of _temp.
+func GetTableMappingWithSource(originalTable, sourceTable string, config Config) TableMapping {
+	timestamp := GetHumanReadableTimestamp()
+	backupTable := fmt.Sprintf("%s_backup_%s", originalTable, timestamp)
+	return TableMapping{
+		Original: originalTable,
+		Temp:     sourceTable,
+		Backup:   backupTable,
+	}
+}
+
+// EnsureTemp2TableExists checks that the _temp2 table exists for the given main table. It does NOT create the table.
+func EnsureTemp2TableExists(clickhouseConn driver.Conn, mainTableName string, config Config, errorLogFile string) error {
+	temp2Name := GetTemp2TableName(mainTableName)
+	log.Printf("Checking that temp2 table %s exists for %s...", temp2Name, mainTableName)
+	exists, err := TableExists(clickhouseConn, temp2Name, config)
+	if err != nil {
+		err = fmt.Errorf("failed to check existence of temp2 table %s: %w", temp2Name, err)
+		logErrorToFile("Ensure Temp2 Table", err, errorLogFile)
+		return err
+	}
+	if !exists {
+		err := fmt.Errorf("temp2 table %s does not exist; create it before running single-table seed", temp2Name)
+		logErrorToFile("Ensure Temp2 Table", err, errorLogFile)
+		return err
+	}
+	log.Printf("✓ Temp2 table %s exists", temp2Name)
+	return nil
+}
+
+// SwapSingleTableWithSource swaps the main table with a custom source table (e.g. _temp2).
+// Result: mainTable -> backup, sourceTable -> mainTable.
+func SwapSingleTableWithSource(clickhouseConn driver.Conn, tableName, sourceTable string, config Config, errorLogFile string) error {
+	log.Printf("Swapping table: %s (source: %s)", tableName, sourceTable)
+	mapping := GetTableMappingWithSource(tableName, sourceTable, config)
+
+	exists, err := TableExists(clickhouseConn, mapping.Temp, config)
+	if err != nil {
+		err = fmt.Errorf("failed to check existence of source table %s: %w", mapping.Temp, err)
+		logErrorToFile("Table Swap", err, errorLogFile)
+		return err
+	}
+	if !exists {
+		err := fmt.Errorf("source table %s does not exist", mapping.Temp)
+		logErrorToFile("Table Swap", err, errorLogFile)
+		return err
+	}
+
+	originalExists, err := TableExists(clickhouseConn, mapping.Original, config)
+	if err == nil && originalExists {
+		originalSchema, err := GetTableSchema(clickhouseConn, mapping.Original, config)
+		if err != nil {
+			err = fmt.Errorf("failed to get schema for original table %s: %w", mapping.Original, err)
+			logErrorToFile("Table Swap", err, errorLogFile)
+			return err
+		}
+		tempSchema, err := GetTableSchema(clickhouseConn, mapping.Temp, config)
+		if err != nil {
+			err = fmt.Errorf("failed to get schema for source table %s: %w", mapping.Temp, err)
+			logErrorToFile("Table Swap", err, errorLogFile)
+			return err
+		}
+		if err := CompareTableSchemas(originalSchema, tempSchema, mapping.Original, mapping.Temp); err != nil {
+			err = fmt.Errorf("schema mismatch for %s: %w", mapping.Original, err)
+			logErrorToFile("Table Swap", err, errorLogFile)
+			return err
+		}
+		log.Printf("✓ Schema validation passed for %s", mapping.Original)
+	}
+
+	tableMappings := []TableMapping{mapping}
+	if err := SwapTables(clickhouseConn, tableMappings, config, errorLogFile); err != nil {
+		return fmt.Errorf("failed to swap table %s: %w", tableName, err)
+	}
+	log.Printf("✓ Successfully swapped table %s (source %s)", tableName, sourceTable)
+	return nil
+}
+
 func SwapSingleTable(clickhouseConn driver.Conn, tableName string, config Config, errorLogFile string) error {
 	log.Printf("Swapping table: %s", tableName)
 

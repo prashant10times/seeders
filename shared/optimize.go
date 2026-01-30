@@ -861,16 +861,16 @@ func OptimizeTablePartitions(clickhouseConn driver.Conn, optimizeConfig TableOpt
 			logOptimizeToFile("SUCCESS", "Optimize Table", successMsg)
 		}
 
-		if i < len(partitionsToOptimize)-1 {
-			delay := 15 * time.Second
-			if partInfo != nil {
-				if partInfo.BytesOnDisk > 1024*1024*1024 {
-					delay = 30 * time.Second
-				}
-			}
-			log.Printf("Waiting %v before next optimization to allow memory cleanup...", delay)
-			time.Sleep(delay)
-		}
+		// if i < len(partitionsToOptimize)-1 {
+		// 	delay := 15 * time.Second
+		// 	if partInfo != nil {
+		// 		if partInfo.BytesOnDisk > 1024*1024*1024 {
+		// 			delay = 30 * time.Second
+		// 		}
+		// 	}
+		// 	log.Printf("Waiting %v before next optimization to allow memory cleanup...", delay)
+		// 	time.Sleep(delay)
+		// }
 		log.Println("")
 	}
 
@@ -887,7 +887,22 @@ func OptimizeSingleTable(clickhouseConn driver.Conn, tableName string, config Co
 		log.Printf("⚠️  No optimization config found for %s, skipping optimization", tableName)
 		return nil
 	}
+	return optimizeSingleTableWithConfig(clickhouseConn, optimizeConfig, config, errorLogFile)
+}
 
+// OptimizeSingleTableWithTempName optimizes a specific temp table (e.g. event_exhibitor_temp2) using the main table's config.
+func OptimizeSingleTableWithTempName(clickhouseConn driver.Conn, tableName, tempTableName string, config Config, errorLogFile string) error {
+	optimizeConfigs := GetTableOptimizeConfigs()
+	optimizeConfig, exists := optimizeConfigs[tableName]
+	if !exists {
+		log.Printf("⚠️  No optimization config found for %s, skipping optimization", tableName)
+		return nil
+	}
+	optimizeConfig.TempTableName = tempTableName
+	return optimizeSingleTableWithConfig(clickhouseConn, optimizeConfig, config, errorLogFile)
+}
+
+func optimizeSingleTableWithConfig(_ driver.Conn, optimizeConfig TableOptimizeConfig, config Config, errorLogFile string) error {
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Printf("OPTIMIZING TABLE: %s (after insertion)", optimizeConfig.TableName)
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -898,19 +913,19 @@ func OptimizeSingleTable(clickhouseConn driver.Conn, tableName string, config Co
 		errMsg := fmt.Errorf("failed to create Native protocol connection for optimization: %w", err)
 		logOptimizeToFile("ERROR", "Optimize Single Table", errMsg.Error())
 		log.Printf("⚠️  %v", errMsg)
-	} else {
-		defer nativeConn.Close()
-		log.Printf("✓ Native protocol connection established for optimization")
+		return errMsg
 	}
+	defer nativeConn.Close()
+	log.Printf("✓ Native protocol connection established for optimization")
 
 	if err := OptimizeTablePartitions(nativeConn, optimizeConfig, config, errorLogFile); err != nil {
-		logOptimizeToFile("ERROR", "Optimize Single Table", fmt.Sprintf("Error optimizing %s: %v", tableName, err))
-		log.Printf("⚠️  Error optimizing %s: %v", tableName, err)
+		logOptimizeToFile("ERROR", "Optimize Single Table", fmt.Sprintf("Error optimizing %s: %v", optimizeConfig.TableName, err))
+		log.Printf("⚠️  Error optimizing %s: %v", optimizeConfig.TableName, err)
 		return err
 	}
 
-	logOptimizeToFile("SUCCESS", "Optimize Single Table", fmt.Sprintf("Successfully completed optimization for %s", tableName))
-	log.Printf("✓ Completed optimization for %s", tableName)
+	logOptimizeToFile("SUCCESS", "Optimize Single Table", fmt.Sprintf("Successfully completed optimization for %s", optimizeConfig.TableName))
+	log.Printf("✓ Completed optimization for %s", optimizeConfig.TableName)
 	log.Println("")
 
 	return nil

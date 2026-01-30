@@ -47,7 +47,10 @@ type Config struct {
 	ClickHouseMaxIdleConns int
 	RetryDelay             time.Duration
 	QueryTimeout           time.Duration
-	UseTempTables          bool // If true, read from _temp tables; if false, read from _ch tables
+	UseTempTables          bool   // If true, read from _temp tables; if false, read from _ch tables
+	ExhibitorInsertTable   string // If set (e.g. event_exhibitor_temp2), insert into this table instead of _temp
+	SponsorInsertTable     string // If set (e.g. event_sponsors_temp2), insert into this table instead of _temp
+	SpeakerInsertTable     string // If set (e.g. event_speaker_temp2), insert into this table instead of _temp
 }
 
 // RetryWithBackoff retries an operation with exponential backoff

@@ -267,7 +267,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config s
 							log.Printf("Exhibitor chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
 						}
 						attemptCount++
-						return insertExhibitorDataIntoClickHouse(clickhouseConn, exhibitorRecords, config.ClickHouseWorkers)
+						return insertExhibitorDataIntoClickHouse(clickhouseConn, exhibitorRecords, config)
 					},
 					3,
 				)
@@ -425,13 +425,17 @@ func fetchExhibitorSocialData(db *sql.DB, companyIDs []int64) map[int64]map[stri
 	return allSocialData
 }
 
-func insertExhibitorDataIntoClickHouse(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord, numWorkers int) error {
+func insertExhibitorDataIntoClickHouse(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord, config shared.Config) error {
 	if len(exhibitorRecords) == 0 {
 		return nil
 	}
-
+	insertTable := "event_exhibitor_temp"
+	if config.ExhibitorInsertTable != "" {
+		insertTable = config.ExhibitorInsertTable
+	}
+	numWorkers := config.ClickHouseWorkers
 	if numWorkers <= 1 {
-		return insertExhibitorDataSingleWorker(clickhouseConn, exhibitorRecords)
+		return insertExhibitorDataSingleWorker(clickhouseConn, exhibitorRecords, insertTable)
 	}
 
 	batchSize := (len(exhibitorRecords) + numWorkers - 1) / numWorkers
@@ -449,12 +453,12 @@ func insertExhibitorDataIntoClickHouse(clickhouseConn driver.Conn, exhibitorReco
 		}
 
 		semaphore <- struct{}{}
-		go func(start, end int) {
+		go func(start, end int, tbl string) {
 			defer func() { <-semaphore }()
 			batch := exhibitorRecords[start:end]
-			err := insertExhibitorDataSingleWorker(clickhouseConn, batch)
+			err := insertExhibitorDataSingleWorker(clickhouseConn, batch, tbl)
 			results <- err
-		}(start, end)
+		}(start, end, insertTable)
 	}
 
 	for i := 0; i < numWorkers && i*batchSize < len(exhibitorRecords); i++ {
@@ -466,9 +470,12 @@ func insertExhibitorDataIntoClickHouse(clickhouseConn driver.Conn, exhibitorReco
 	return nil
 }
 
-func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord) error {
+func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord, insertTable string) error {
 	if len(exhibitorRecords) == 0 {
 		return nil
+	}
+	if insertTable != "event_exhibitor_temp" && insertTable != "event_exhibitor_temp2" {
+		insertTable = "event_exhibitor_temp"
 	}
 
 	connectionCheckErr := shared.RetryWithBackoff(
@@ -484,13 +491,13 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO event_exhibitor_temp (
+	batch, err := clickhouseConn.PrepareBatch(ctx, fmt.Sprintf(`
+		INSERT INTO %s (
 			company_id, company_uuid, company_id_name, edition_id, event_id, company_website,
 			company_domain, company_country, company_state, company_state_name, company_city, company_city_name, facebook_id,
 			linkedin_id, twitter_id, created, version, last_updated_at, exhibitorSourceId
 		)
-	`)
+	`, insertTable))
 	if err != nil {
 		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
 	}
