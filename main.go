@@ -791,6 +791,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config shared.Config, 
 				UserState:       userState,
 				Version:         1,
 				LastUpdatedAt:   now,
+				Published:       shared.SafeConvertToInt8(visitor["published"]),
 			}
 
 			visitorRecords = append(visitorRecords, visitorRecord)
@@ -855,7 +856,7 @@ func buildVisitorsMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 
 	query := fmt.Sprintf(`
 		SELECT 
-			id, user, event, edition, visitor_company, visitor_designation, visitor_city, visitor_country
+			id, user, event, edition, visitor_company, visitor_designation, visitor_city, visitor_country, published
 		FROM event_visitor 
 		WHERE id >= %d AND id <= %d 
 		ORDER BY id 
@@ -1126,7 +1127,7 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_visitors_temp (
 			user_id, event_id, edition_id, user_name, user_company_id, user_company,
-			user_designation, user_city, user_city_name, user_country, user_state_id, user_state, version, last_updated_at
+			user_designation, user_city, user_city_name, user_country, user_state_id, user_state, version, last_updated_at, published
 		)
 	`)
 	if err != nil {
@@ -1152,6 +1153,7 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 			record.UserState,       // user_state: LowCardinality(Nullable(String))
 			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
 			record.LastUpdatedAt,   // last_updated_at: DateTime
+			record.Published,       // published: Int8
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append visitor record %d to batch (UserID: %d, EventID: %d, EditionID: %d): %v",
@@ -1378,6 +1380,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 				UserCountry:     shared.ToUpperNullableString(shared.ConvertToStringPtr(userCountry)),
 				Version:         1,
 				LastUpdatedAt:   now,
+				Published:       shared.SafeConvertToInt8(speaker["published"]),
 				SpeakerSourceID: speakerSourceID,
 			}
 
@@ -1436,7 +1439,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 func buildSpeakersMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
-			id, user_id, event, edition, speaker_name, company_id
+			id, user_id, event, edition, speaker_name, company_id, published
 		FROM event_speaker 
 		WHERE id >= %d AND id <= %d 
 		ORDER BY id 
@@ -1620,7 +1623,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_speaker_temp (
 			user_id, event_id, edition_id, user_name, user_company_id, user_company,
-			user_designation, user_state, user_state_name, user_city, user_city_name, user_country, version, last_updated_at, speakerSourceId
+			user_designation, user_state, user_state_name, user_city, user_city_name, user_country, version, last_updated_at, published, speakerSourceId
 		)
 	`)
 	if err != nil {
@@ -1643,6 +1646,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 			record.UserCountry,      // user_country: LowCardinality(Nullable(FixedString(2)))
 			record.Version,          // version: UInt32 NOT NULL DEFAULT 1
 			record.LastUpdatedAt,    // last_updated_at: DateTime
+			record.Published,        // published: Int8
 			record.SpeakerSourceID,  // speakerSourceId: UInt32
 		)
 		if err != nil {
@@ -1674,6 +1678,7 @@ type SpeakerRecord struct {
 	UserCountry     *string `ch:"user_country"`
 	Version         uint32  `ch:"version"`
 	LastUpdatedAt   string  `ch:"last_updated_at"`
+	Published       int8    `ch:"published"`
 	SpeakerSourceID uint32  `ch:"speakerSourceId"`
 }
 
@@ -1693,6 +1698,7 @@ type VisitorRecord struct {
 	UserState       *string `ch:"user_state"`
 	Version         uint32  `ch:"version"`
 	LastUpdatedAt   string  `ch:"last_updated_at"`
+	Published       int8    `ch:"published"`
 }
 
 func main() {

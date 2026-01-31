@@ -186,6 +186,23 @@ func getMaxEventID(clickhouseConn driver.Conn) (uint32, error) {
 	return maxID, nil
 }
 
+func getHolidayTotalCount(mysqlDB *sql.DB, startDate string) (int, error) {
+	query := fmt.Sprintf(`
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM holiday
+			WHERE cluster_name IS NOT NULL AND start_date >= '%s'
+			GROUP BY cluster_name, start_date, end_date
+		) AS t
+	`, startDate)
+	log.Println("query", query)
+	var count int
+	err := mysqlDB.QueryRow(query).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get holiday total count: %v", err)
+	}
+	return count, nil
+}
+
 func fetchHolidays(mysqlDB *sql.DB, limit, offset int, startDate string) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
@@ -324,6 +341,7 @@ func fetchHolidayLocations(mysqlDB *sql.DB, clusterName, startDate, endDate stri
 		AND hs.id IS NOT NULL
 		ORDER BY hs.id
 	`
+	log.Println("location query for holiday_score", query, clusterName, startDate, endDate)
 	rows, err := mysqlDB.Query(query, clusterName, startDate, endDate)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute holiday_score query: %v", err)

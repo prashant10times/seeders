@@ -32,6 +32,7 @@ type ExhibitorRecord struct {
 	Created           string  `ch:"created"`
 	Version           uint32  `ch:"version"`
 	LastUpdatedAt     string  `ch:"last_updated_at"`
+	Published         int8    `ch:"published"`
 	ExhibitorSourceID uint32  `ch:"exhibitorSourceId"`
 }
 
@@ -247,6 +248,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config s
 					Created:          shared.SafeConvertToDateTimeString(exhibitor["created"]),
 					Version:          1,
 					LastUpdatedAt:    now,
+					Published:        shared.SafeConvertToInt8(exhibitor["published"]),
 					ExhibitorSourceID: exhibitorSourceID,
 				}
 
@@ -307,7 +309,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config s
 func buildExhibitorMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
-			id, company_id, company_name, event_id, edition_id, country, city, website, created
+			id, company_id, company_name, event_id, edition_id, country, city, website, created, published
 		FROM event_exhibitor 
 		WHERE id >= %d AND id <= %d 
 		ORDER BY id 
@@ -488,7 +490,7 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 		INSERT INTO event_exhibitor_temp (
 			company_id, company_uuid, company_id_name, edition_id, event_id, company_website,
 			company_domain, company_country, company_state, company_state_name, company_city, company_city_name, facebook_id,
-			linkedin_id, twitter_id, created, version, last_updated_at, exhibitorSourceId
+			linkedin_id, twitter_id, created, version, last_updated_at, published, exhibitorSourceId
 		)
 	`)
 	if err != nil {
@@ -515,6 +517,7 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 			record.Created,           // created: DateTime
 			record.Version,           // version: UInt32 NOT NULL DEFAULT 1
 			record.LastUpdatedAt,    // last_updated_at: DateTime
+			record.Published,        // published: Int8
 			record.ExhibitorSourceID, // exhibitorSourceId: UInt32
 		)
 		if err != nil {
