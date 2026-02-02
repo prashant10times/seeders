@@ -42,3 +42,4 @@ optimize_logs.log
 seeding_errors.log
 
 /failed_batches/*
+seeder.log

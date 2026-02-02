@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -20,6 +21,17 @@ import (
 )
 
 const errorLogFile = "seeding_errors.log"
+const seederLogFile = "seeder.log"
+
+func initSeederLogFile() error {
+	f, err := os.OpenFile(seederLogFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	log.SetOutput(io.MultiWriter(os.Stdout, f))
+	log.SetFlags(log.LstdFlags)
+	return nil
+}
 
 func logErrorToFile(scriptName string, err error) {
 	file, fileErr := os.OpenFile(errorLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -1817,6 +1829,12 @@ func main() {
 		return
 	}
 
+	if err := initSeederLogFile(); err != nil {
+		log.Printf("WARNING: Could not open seeder log file %s: %v (logging to stdout only)", seederLogFile, err)
+	} else {
+		log.Printf("Logging to stdout and %s", seederLogFile)
+	}
+
 	if numChunks <= 0 {
 		log.Fatal("Error: chunks must be a positive number")
 	}
@@ -2455,7 +2473,7 @@ func main() {
 		log.Println("  -eventdesignation # Process event designation data")
 		log.Println("  -visitorspread    # Process visitor spread data")
 		log.Println("  -allevent         # Process all event data")
-		log.Println("  -holidays         # Process holidays into allevent_ch (automatically handles event types)")
+		log.Println("  -holidays         # Process holidays into allevent_ch")
 		log.Println("  -alerts           # Process alerts from GDAC API into alerts_ch")
 		log.Println("  -location         # Process all location types (countries, states, cities, venues, sub-venues)")
 		log.Println("  -location-countries   # Process only location countries")

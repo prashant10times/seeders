@@ -545,7 +545,8 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EditionCityLat:     shared.SafeConvertToFloat64(record["edition_city_lat"]),
 		EditionCityLong:    shared.SafeConvertToFloat64(record["edition_city_long"]),
 		CompanyID:          shared.SafeConvertToNullableUInt32(record["company_id"]),
-		CompanyUUID:        decodeStr("company_uuid"),
+		CompanyUUID:        decodeNullableStr("company_uuid"),
+		CompanyPublished:   shared.SafeConvertToNullableInt8(record["companyPublished"]),
 		CompanyName:        decodeNullableStr("company_name"),
 		CompanyDomain:      decodeNullableStr("company_domain"),
 		CompanyWebsite:     decodeNullableStr("company_website"),
@@ -735,7 +736,8 @@ type alleventRecord struct {
 	EditionCityLat                  float64  `ch:"edition_city_lat"`      // Float64 NOT NULL
 	EditionCityLong                 float64  `ch:"edition_city_long"`     // Float64 NOT NULL
 	CompanyID                       *uint32  `ch:"company_id"`
-	CompanyUUID                     string   `ch:"company_uuid"` // UUID NOT NULL
+	CompanyUUID                     *string  `ch:"company_uuid"` // Nullable(UUID)
+	CompanyPublished                *int8    `ch:"companyPublished"`
 	CompanyName                     *string  `ch:"company_name"`
 	CompanyDomain                   *string  `ch:"company_domain"`
 	CompanyWebsite                  *string  `ch:"company_website"`
@@ -1088,7 +1090,7 @@ func fetchalleventCompanyDataForBatch(db *sql.DB, companyIDs []int64) []map[stri
 		SELECT 
 			c.id as id_10x, c.name as company_name, c.domain as company_domain, 
 			c.website as company_website, c.country as company_country, 
-			c.city as company_city, c.address, c.created, a.cdn_url as company_logo_url
+			c.city as company_city, c.address, c.created, c.published as company_published, a.cdn_url as company_logo_url
 		FROM company c
 		LEFT JOIN attachment a ON c.logo = a.id
 		WHERE c.id IN (%s)`, strings.Join(placeholders, ","))
@@ -4181,7 +4183,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating, 10timesEventPageUrl,
 			start_date, end_date,
 			edition_id, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
-			company_id, company_uuid, company_name, company_domain, company_website, companyLogoUrl, company_country, company_state, company_city, company_city_name, company_address,
+			company_id, company_uuid, companyPublished, company_name, company_domain, company_website, companyLogoUrl, company_country, company_state, company_city, company_city_name, company_address,
 			venue_id, venue_name, venue_country, venue_city, venue_city_name, venue_lat, venue_long,
 			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
 			edition_type, event_editions, event_format, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
@@ -4257,7 +4259,8 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.EditionCityLat,                  // edition_city_lat: Float64 NOT NULL
 			alleventRecord.EditionCityLong,                 // edition_city_long: Float64 NOT NULL
 			alleventRecord.CompanyID,                       // company_id: Nullable(UInt32)
-			alleventRecord.CompanyUUID,                     // company_uuid: UUID NOT NULL
+			alleventRecord.CompanyUUID,                     // company_uuid: Nullable(UUID)
+			alleventRecord.CompanyPublished,                // companyPublished: Nullable(Int8)
 			alleventRecord.CompanyName,                     // company_name: Nullable(String)
 			alleventRecord.CompanyDomain,                   // company_domain: Nullable(String)
 			alleventRecord.CompanyWebsite,                  // company_website: Nullable(String)
@@ -5574,14 +5577,16 @@ func buildAlleventRecord(
 		"edition_city_lat":  city["event_city_lat"],
 		"edition_city_long": city["event_city_long"],
 		"company_id":        company["id_10x"],
-		"company_uuid": func() string {
+		"company_uuid": func() *string {
+			var uuidStr string
 			if company != nil {
 				if companyID, ok := company["id_10x"].(int64); ok && companyID > 0 {
 					created := company["created"]
 					createdStr := shared.ConvertToString(created)
 					if createdStr != "" {
 						idInputString := fmt.Sprintf("%d-%s", companyID, createdStr)
-						return shared.GenerateUUIDFromString(idInputString)
+						uuidStr = shared.GenerateUUIDFromString(idInputString)
+						return &uuidStr
 					}
 				}
 			}
@@ -5606,13 +5611,17 @@ func buildAlleventRecord(
 						createdStr = "1970-01-01 00:00:00"
 					}
 					idInputString := fmt.Sprintf("%d-%s", id, createdStr)
-					return shared.GenerateUUIDFromString(idInputString)
+					uuidStr = shared.GenerateUUIDFromString(idInputString)
+					return &uuidStr
 				}
 			}
-			eventIDStr := shared.ConvertToString(eventData["id"])
-			editionIDStr := shared.ConvertToString(edition["edition_id"])
-			idInputString := fmt.Sprintf("company-%s-%s", eventIDStr, editionIDStr)
-			return shared.GenerateUUIDFromString(idInputString)
+			return nil
+		}(),
+		"companyPublished": func() interface{} {
+			if company != nil {
+				return company["company_published"]
+			}
+			return nil
 		}(),
 		"company_name":    decodeBase64NullableStringIfNeeded(company["company_name"]),
 		"company_domain":  companyDomain,
@@ -6306,10 +6315,6 @@ func buildAlleventRecord(
 	var eventFormat string
 	fieldHybrid := esInfoMap["event_hybrid"]
 	fieldCity := esInfoMap["event_city"]
-	var isOnline interface{}
-	if edition["is_online"] != nil {
-		isOnline = edition["is_online"]
-	}
 
 	if fieldHybrid != nil {
 		if h, ok := fieldHybrid.(uint8); ok && h == 1 {
@@ -6320,17 +6325,8 @@ func buildAlleventRecord(
 	}
 
 	if eventFormat == "" {
-		var cityStr string
-		var isOnlineStr string
-
-		if fieldCity != nil {
-			cityStr = shared.ConvertToString(fieldCity)
-		}
-		if isOnline != nil {
-			isOnlineStr = shared.ConvertToString(isOnline)
-		}
-
-		if cityStr == "1" || isOnlineStr == "1" {
+		cityStr := shared.ConvertToString(fieldCity)
+		if cityStr == "1" {
 			eventFormat = "ONLINE"
 		} else {
 			eventFormat = "OFFLINE"
