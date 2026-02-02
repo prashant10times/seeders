@@ -28,12 +28,12 @@ type SponsorRecord struct {
 	CompanyCityName  *string `ch:"company_city_name"`
 	FacebookID       *string `ch:"facebook_id"`
 	LinkedinID       *string `ch:"linkedin_id"`
-	TwitterID         *string `ch:"twitter_id"`
-	Created           string  `ch:"created"`
-	Version           uint32  `ch:"version"`
-	LastUpdatedAt     string  `ch:"last_updated_at"`
-	Published         int8    `ch:"published"`
-	SponsorSourceID   uint32  `ch:"sponsorSourceId"`
+	TwitterID        *string `ch:"twitter_id"`
+	Created          string  `ch:"created"`
+	Version          uint32  `ch:"version"`
+	LastUpdatedAt    string  `ch:"last_updated_at"`
+	Published        int8    `ch:"published"`
+	SponsorSourceID  uint32  `ch:"sponsorSourceId"`
 }
 
 func ProcessSponsorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
@@ -297,7 +297,7 @@ func buildSponsorsMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 		SELECT 
 			id, company_id, name, event_id, event_edition, created, published
 		FROM event_sponsors 
-		WHERE id >= %d AND id <= %d 
+		WHERE id >= %d AND id <= %d AND published > 0
 		ORDER BY id 
 		LIMIT %d`, startID, endID, batchSize)
 

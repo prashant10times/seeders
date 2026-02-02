@@ -14,20 +14,20 @@ import (
 )
 
 type ExhibitorRecord struct {
-	CompanyID        *uint32 `ch:"company_id"`
-	CompanyUUID      string  `ch:"company_uuid"`
-	CompanyIDName    string  `ch:"company_id_name"`
-	EditionID        uint32  `ch:"edition_id"`
-	EventID          uint32  `ch:"event_id"`
-	CompanyWebsite   *string `ch:"company_website"`
-	CompanyDomain    *string `ch:"company_domain"`
-	CompanyCountry   *string `ch:"company_country"`
-	CompanyState     *uint32 `ch:"company_state"`
-	CompanyStateName *string `ch:"company_state_name"`
-	CompanyCity      *uint32 `ch:"company_city"`
-	CompanyCityName  *string `ch:"company_city_name"`
-	FacebookID       *string `ch:"facebook_id"`
-	LinkedinID       *string `ch:"linkedin_id"`
+	CompanyID         *uint32 `ch:"company_id"`
+	CompanyUUID       string  `ch:"company_uuid"`
+	CompanyIDName     string  `ch:"company_id_name"`
+	EditionID         uint32  `ch:"edition_id"`
+	EventID           uint32  `ch:"event_id"`
+	CompanyWebsite    *string `ch:"company_website"`
+	CompanyDomain     *string `ch:"company_domain"`
+	CompanyCountry    *string `ch:"company_country"`
+	CompanyState      *uint32 `ch:"company_state"`
+	CompanyStateName  *string `ch:"company_state_name"`
+	CompanyCity       *uint32 `ch:"company_city"`
+	CompanyCityName   *string `ch:"company_city_name"`
+	FacebookID        *string `ch:"facebook_id"`
+	LinkedinID        *string `ch:"linkedin_id"`
 	TwitterID         *string `ch:"twitter_id"`
 	Created           string  `ch:"created"`
 	Version           uint32  `ch:"version"`
@@ -230,25 +230,25 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config s
 
 				// Create exhibitor record with proper types
 				exhibitorRecord := ExhibitorRecord{
-					CompanyID:        companyID,
-					CompanyUUID:      shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(exhibitor["company_id"]), shared.ConvertToString(exhibitor["created"]))),
-					CompanyIDName:    shared.GetCompanyNameOrDefault(exhibitor["company_name"]),
-					EditionID:        editionID,
-					EventID:          eventID,
-					CompanyWebsite:   shared.ConvertToStringPtr(exhibitor["website"]),
-					CompanyDomain:    shared.ConvertToStringPtr(companyDomain),
-					CompanyCountry:   shared.ToUpperNullableString(shared.ConvertToStringPtr(exhibitor["country"])),
-					CompanyState:     companyState,
-					CompanyStateName: companyStateName,
-					CompanyCity:      shared.ConvertToUInt32Ptr(exhibitor["city"]),
-					CompanyCityName:  companyCityName,
-					FacebookID:       shared.ConvertToStringPtr(facebookID),
-					LinkedinID:       shared.ConvertToStringPtr(linkedinID),
-					TwitterID:        shared.ConvertToStringPtr(twitterID),
-					Created:          shared.SafeConvertToDateTimeString(exhibitor["created"]),
-					Version:          1,
-					LastUpdatedAt:    now,
-					Published:        shared.SafeConvertToInt8(exhibitor["published"]),
+					CompanyID:         companyID,
+					CompanyUUID:       shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(exhibitor["company_id"]), shared.ConvertToString(exhibitor["created"]))),
+					CompanyIDName:     shared.GetCompanyNameOrDefault(exhibitor["company_name"]),
+					EditionID:         editionID,
+					EventID:           eventID,
+					CompanyWebsite:    shared.ConvertToStringPtr(exhibitor["website"]),
+					CompanyDomain:     shared.ConvertToStringPtr(companyDomain),
+					CompanyCountry:    shared.ToUpperNullableString(shared.ConvertToStringPtr(exhibitor["country"])),
+					CompanyState:      companyState,
+					CompanyStateName:  companyStateName,
+					CompanyCity:       shared.ConvertToUInt32Ptr(exhibitor["city"]),
+					CompanyCityName:   companyCityName,
+					FacebookID:        shared.ConvertToStringPtr(facebookID),
+					LinkedinID:        shared.ConvertToStringPtr(linkedinID),
+					TwitterID:         shared.ConvertToStringPtr(twitterID),
+					Created:           shared.SafeConvertToDateTimeString(exhibitor["created"]),
+					Version:           1,
+					LastUpdatedAt:     now,
+					Published:         shared.SafeConvertToInt8(exhibitor["published"]),
 					ExhibitorSourceID: exhibitorSourceID,
 				}
 
@@ -311,7 +311,7 @@ func buildExhibitorMigrationData(db *sql.DB, startID, endID int, batchSize int) 
 		SELECT 
 			id, company_id, company_name, event_id, edition_id, country, city, website, created, published
 		FROM event_exhibitor 
-		WHERE id >= %d AND id <= %d 
+		WHERE id >= %d AND id <= %d AND published > 0
 		ORDER BY id 
 		LIMIT %d`, startID, endID, batchSize)
 
@@ -501,23 +501,23 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 		err := batch.Append(
 			record.CompanyID,         // company_id: Nullable(UInt32)
 			record.CompanyUUID,       // company_uuid: UUID
-			record.CompanyIDName,    // company_id_name: String NOT NULL
+			record.CompanyIDName,     // company_id_name: String NOT NULL
 			record.EditionID,         // edition_id: UInt32 NOT NULL
 			record.EventID,           // event_id: UInt32 NOT NULL
-			record.CompanyWebsite,   // company_website: Nullable(String)
-			record.CompanyDomain,    // company_domain: Nullable(String)
-			record.CompanyCountry,   // company_country: LowCardinality(FixedString(2))
-			record.CompanyState,     // company_state: Nullable(UInt32)
-			record.CompanyStateName, // company_state_name: LowCardinality(Nullable(String))
-			record.CompanyCity,      // company_city: Nullable(UInt32)
-			record.CompanyCityName,  // company_city_name: LowCardinality(Nullable(String))
-			record.FacebookID,       // facebook_id: Nullable(String)
-			record.LinkedinID,       // linkedin_id: Nullable(String)
+			record.CompanyWebsite,    // company_website: Nullable(String)
+			record.CompanyDomain,     // company_domain: Nullable(String)
+			record.CompanyCountry,    // company_country: LowCardinality(FixedString(2))
+			record.CompanyState,      // company_state: Nullable(UInt32)
+			record.CompanyStateName,  // company_state_name: LowCardinality(Nullable(String))
+			record.CompanyCity,       // company_city: Nullable(UInt32)
+			record.CompanyCityName,   // company_city_name: LowCardinality(Nullable(String))
+			record.FacebookID,        // facebook_id: Nullable(String)
+			record.LinkedinID,        // linkedin_id: Nullable(String)
 			record.TwitterID,         // twitter_id: Nullable(String)
 			record.Created,           // created: DateTime
 			record.Version,           // version: UInt32 NOT NULL DEFAULT 1
-			record.LastUpdatedAt,    // last_updated_at: DateTime
-			record.Published,        // published: Int8
+			record.LastUpdatedAt,     // last_updated_at: DateTime
+			record.Published,         // published: Int8
 			record.ExhibitorSourceID, // exhibitorSourceId: UInt32
 		)
 		if err != nil {

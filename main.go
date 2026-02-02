@@ -870,7 +870,7 @@ func buildVisitorsMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 		SELECT 
 			id, user, event, edition, visitor_company, visitor_designation, visitor_city, visitor_country, published
 		FROM event_visitor 
-		WHERE id >= %d AND id <= %d 
+		WHERE id >= %d AND id <= %d AND published > 0
 		ORDER BY id 
 		LIMIT %d`, startID, endID, batchSize)
 
@@ -1453,10 +1453,10 @@ func buildSpeakersMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 		SELECT 
 			id, user_id, event, edition, speaker_name, company_id, published
 		FROM event_speaker 
-		WHERE id >= %d AND id <= %d 
+		WHERE id >= %d AND id <= %d AND published > 0
 		ORDER BY id 
 		LIMIT %d`, startID, endID, batchSize)
-	
+
 	fmt.Printf("Executing query: %s\n", query)
 
 	rows, err := db.Query(query)
@@ -1646,20 +1646,20 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 		err := batch.Append(
 			record.UserID,          // user_id: UInt32 NOT NULL
 			record.EventID,         // event_id: UInt32 NOT NULL
-			record.EditionID,        // edition_id: UInt32 NOT NULL
-			record.UserName,         // user_name: String NOT NULL
-			record.UserCompanyID,    // user_company_id: Nullable(UInt32)
-			record.UserCompany,      // user_company: Nullable(String)
-			record.UserDesignation,  // user_designation: Nullable(String)
-			record.UserState,        // user_state: Nullable(UInt32)
-			record.UserStateName,    // user_state_name: LowCardinality(Nullable(String))
-			record.UserCity,         // user_city: Nullable(UInt32)
-			record.UserCityName,     // user_city_name: LowCardinality(Nullable(String))
-			record.UserCountry,      // user_country: LowCardinality(Nullable(FixedString(2)))
-			record.Version,          // version: UInt32 NOT NULL DEFAULT 1
-			record.LastUpdatedAt,    // last_updated_at: DateTime
-			record.Published,        // published: Int8
-			record.SpeakerSourceID,  // speakerSourceId: UInt32
+			record.EditionID,       // edition_id: UInt32 NOT NULL
+			record.UserName,        // user_name: String NOT NULL
+			record.UserCompanyID,   // user_company_id: Nullable(UInt32)
+			record.UserCompany,     // user_company: Nullable(String)
+			record.UserDesignation, // user_designation: Nullable(String)
+			record.UserState,       // user_state: Nullable(UInt32)
+			record.UserStateName,   // user_state_name: LowCardinality(Nullable(String))
+			record.UserCity,        // user_city: Nullable(UInt32)
+			record.UserCityName,    // user_city_name: LowCardinality(Nullable(String))
+			record.UserCountry,     // user_country: LowCardinality(Nullable(FixedString(2)))
+			record.Version,         // version: UInt32 NOT NULL DEFAULT 1
+			record.LastUpdatedAt,   // last_updated_at: DateTime
+			record.Published,       // published: Int8
+			record.SpeakerSourceID, // speakerSourceId: UInt32
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record to batch: %v", err)
