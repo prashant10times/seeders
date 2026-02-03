@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"seeders/shared"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -426,7 +427,7 @@ func normalizePricingValue(value interface{}) *string {
 	}
 	str = strings.ToLower(str)
 	str = strings.ReplaceAll(str, "free-paid", "free_and_paid")
-	
+
 	if str == "not_available" {
 		return nil
 	}
@@ -5692,10 +5693,22 @@ func buildAlleventRecord(
 			}
 			return nil
 		}(),
-		"venue_lat":              venue["venue_lat"],
-		"venue_long":             venue["venue_long"],
-		"published":              eventData["published"],
-		"status":                 eventData["status"],
+		"venue_lat":  venue["venue_lat"],
+		"venue_long": venue["venue_long"],
+		"published":  eventData["published"],
+		// "status":                 eventData["status"],
+		"status": func() string {
+			allowedStatus := []string{"C", "P", "U"}
+			statusStr := strings.TrimSpace(shared.ConvertToString(eventData["status"]))
+			if statusStr == "" {
+				return "A"
+			}
+			ch := strings.ToUpper(statusStr)[:1]
+			if slices.Contains(allowedStatus, ch) {
+				return ch
+			}
+			return "A"
+		}(),
 		"editions_audiance_type": eventData["event_audience"],
 		"edition_functionality":  eventData["functionality"],
 		"edition_website":        decodeBase64NullableStringIfNeeded(edition["edition_website"]),
@@ -5761,7 +5774,7 @@ func buildAlleventRecord(
 			}
 			return nil
 		}(),
-		"maturity": determinealleventMaturity(esInfoMap["total_edition"]),
+		"maturity":      determinealleventMaturity(esInfoMap["total_edition"]),
 		"event_pricing": normalizePricingValue(esInfoMap["event_pricing"]),
 		"tickets": func() []string {
 			if tickets, exists := ticketDataMap[eventID]; exists {
