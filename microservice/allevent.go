@@ -538,6 +538,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		StartDate:          decodeBase64Date(record["start_date"]),
 		EndDate:            decodeBase64Date(record["end_date"]),
 		EditionID:          shared.SafeConvertToUInt32(record["edition_id"]),
+		EditionUUID:        shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.SafeConvertToUInt32(record["edition_id"]), decodeBase64DateTime(record["edition_created"]))),
 		EditionCountry:     strings.ToUpper(decodeStr("edition_country")),
 		EditionCity:        shared.SafeConvertToUInt32(record["edition_city"]),
 		EditionCityName:    decodeStr("edition_city_name"),
@@ -729,6 +730,7 @@ type alleventRecord struct {
 	StartDate                       string   `ch:"start_date"`          // Date NOT NULL
 	EndDate                         string   `ch:"end_date"`            // Date NOT NULL
 	EditionID                       uint32   `ch:"edition_id"`
+	EditionUUID                     string   `ch:"edition_uuid"`            // UUID generated from edition_id + edition_created
 	EditionCountry                  string   `ch:"edition_country"`       // LowCardinality(FixedString(2)) NOT NULL
 	EditionCity                     uint32   `ch:"edition_city"`          // UInt32 NOT NULL
 	EditionCityName                 string   `ch:"edition_city_name"`     // String NOT NULL
@@ -4183,7 +4185,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 		INSERT INTO allevent_temp (
 			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating, 10timesEventPageUrl,
 			start_date, end_date,
-			edition_id, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
+			edition_id, edition_uuid, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
 			company_id, company_uuid, companyPublished, company_name, company_domain, company_website, companyLogoUrl, company_country, company_state, company_city, company_city_name, company_address,
 			venue_id, venue_name, venue_country, venue_city, venue_city_name, venue_lat, venue_long,
 			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
@@ -4252,6 +4254,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			alleventRecord.StartDate,                       // start_date: Date NOT NULL
 			alleventRecord.EndDate,                         // end_date: Date NOT NULL
 			alleventRecord.EditionID,                       // edition_id: UInt32 NOT NULL
+			alleventRecord.EditionUUID,                     // edition_uuid: UUID NOT NULL
 			alleventRecord.EditionCountry,                  // edition_country: LowCardinality(FixedString(2)) NOT NULL
 			alleventRecord.EditionCity,                     // edition_city: UInt32 NOT NULL
 			alleventRecord.EditionCityName,                 // edition_city_name: String NOT NULL
@@ -5551,6 +5554,7 @@ func buildAlleventRecord(
 		"start_date":        decodeBase64Date(eventData["start_date"]),
 		"end_date":          decodeBase64Date(eventData["end_date"]),
 		"edition_id":        edition["edition_id"],
+		"edition_uuid":      shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(edition["edition_id"]), decodeBase64DateTime(edition["edition_created"]))),
 		"edition_country":   editionCountryISO,
 		"edition_city": func() interface{} {
 			if editionCityLocationChID != nil {
