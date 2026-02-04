@@ -5551,8 +5551,8 @@ func buildAlleventRecord(
 		"event_abbr_name":   decodeBase64NullableStringIfNeeded(eventData["abbr_name"]),
 		"event_description": decodeBase64NullableStringIfNeeded(esInfoMap["event_description"]),
 		"event_punchline":   decodeBase64NullableStringIfNeeded(esInfoMap["event_punchline"]),
-		"start_date":        decodeBase64Date(eventData["start_date"]),
-		"end_date":          decodeBase64Date(eventData["end_date"]),
+		"start_date":        decodeBase64Date(edition["edition_start_date"]),
+		"end_date":          decodeBase64Date(edition["edition_end_date"]),
 		"edition_id":        edition["edition_id"],
 		"edition_uuid":      shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(edition["edition_id"]), decodeBase64DateTime(edition["edition_created"]))),
 		"edition_country":   editionCountryISO,
@@ -5583,41 +5583,15 @@ func buildAlleventRecord(
 		"edition_city_long": city["event_city_long"],
 		"company_id":        company["id_10x"],
 		"company_uuid": func() *string {
-			var uuidStr string
 			if company != nil {
 				if companyID, ok := company["id_10x"].(int64); ok && companyID > 0 {
 					created := company["created"]
 					createdStr := shared.ConvertToString(created)
 					if createdStr != "" {
 						idInputString := fmt.Sprintf("%d-%s", companyID, createdStr)
-						uuidStr = shared.GenerateUUIDFromString(idInputString)
+						uuidStr := shared.GenerateUUIDFromString(idInputString)
 						return &uuidStr
 					}
-				}
-			}
-			if companyID := edition["company_id"]; companyID != nil {
-				var id int64
-				var ok bool
-				if id, ok = companyID.(int64); !ok {
-					if idVal, ok2 := companyID.(int); ok2 {
-						id = int64(idVal)
-						ok = true
-					} else if idVal, ok2 := companyID.(uint32); ok2 {
-						id = int64(idVal)
-						ok = true
-					}
-				}
-				if ok && id > 0 {
-					createdStr := shared.ConvertToString(edition["edition_created"])
-					if createdStr == "" {
-						createdStr = shared.ConvertToString(edition["start_date"])
-					}
-					if createdStr == "" {
-						createdStr = "1970-01-01 00:00:00"
-					}
-					idInputString := fmt.Sprintf("%d-%s", id, createdStr)
-					uuidStr = shared.GenerateUUIDFromString(idInputString)
-					return &uuidStr
 				}
 			}
 			return nil
