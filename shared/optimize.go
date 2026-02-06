@@ -861,17 +861,17 @@ func OptimizeTablePartitions(clickhouseConn driver.Conn, optimizeConfig TableOpt
 			logOptimizeToFile("SUCCESS", "Optimize Table", successMsg)
 		}
 
-		if i < len(partitionsToOptimize)-1 {
-			delay := 15 * time.Second
-			if partInfo != nil {
-				if partInfo.BytesOnDisk > 1024*1024*1024 {
-					delay = 30 * time.Second
-				}
-			}
-			log.Printf("Waiting %v before next optimization to allow memory cleanup...", delay)
-			time.Sleep(delay)
-		}
-		log.Println("")
+		// if i < len(partitionsToOptimize)-1 {
+		// 	delay := 15 * time.Second
+		// 	if partInfo != nil {
+		// 		if partInfo.BytesOnDisk > 1024*1024*1024 {
+		// 			delay = 30 * time.Second
+		// 		}
+		// 	}
+		// 	log.Printf("Waiting %v before next optimization to allow memory cleanup...", delay)
+		// 	time.Sleep(delay)
+		// }
+		// log.Println("")
 	}
 
 	completionMsg := fmt.Sprintf("Completed optimization for %s (%d partitions processed)", optimizeConfig.TableName, len(partitionsToOptimize))

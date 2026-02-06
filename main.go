@@ -460,6 +460,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			log.Println("VALIDATION: Validating all first batch temp tables before swap")
 			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+			// event_visitorSpread_ch is swapped after step 12 (Visitor Spread) runs, not here
 			firstBatchTables := []string{
 				"location_ch",
 				"event_type_ch",
@@ -472,7 +473,6 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				"event_speaker_ch",
 				"event_sponsors_ch",
 				"event_visitors_ch",
-				"event_visitorSpread_ch",
 			}
 
 			var firstBatchMappings []shared.TableMapping
@@ -498,6 +498,19 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			}
 
 			log.Println("✓ All first batch tables swapped successfully")
+			log.Println("")
+		}
+
+		if i == 11 {
+			log.Println("")
+			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			log.Println("SWAP: Swapping event_visitorSpread_ch table (after Visitor Spread step)")
+			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			if err := shared.SwapSingleTable(clickhouseDB, "event_visitorSpread_ch", config, errorLogFile); err != nil {
+				logErrorToFile("Visitor Spread Table Swap", err)
+				log.Fatalf("Failed to swap event_visitorSpread_ch: %v", err)
+			}
+			log.Println("✓ event_visitorSpread_ch swapped successfully")
 			log.Println("")
 		}
 	}
