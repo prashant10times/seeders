@@ -70,6 +70,7 @@ func GetMainTableNames() []string {
 	return []string{
 		"alerts_ch",
 		"allevent_ch",
+		"event_daywiseEconomicImpact_ch", // Day-wise economic impact data (normalized table)
 		"event_category_ch",
 		"event_designation_ch",
 		"event_exhibitor_ch",

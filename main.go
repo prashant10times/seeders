@@ -465,6 +465,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				"location_ch",
 				"event_type_ch",
 				"allevent_ch",
+				"event_daywiseEconomicImpact_ch", // Day-wise economic impact data (swapped atomically with allevent_ch)
 				"event_category_ch",
 				"event_product_ch",
 				"event_ranking_ch",
@@ -2279,10 +2280,14 @@ func main() {
 		}
 		log.Println("✓ event_visitorSpread_ch swapped successfully")
 	} else if allEventOnly {
-		// Ensure temp table exists
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Ensure Temp Table (All Event)", err)
-			log.Fatalf("Failed to ensure temp table exists: %v", err)
+			log.Fatalf("Failed to ensure allevent temp table exists: %v", err)
+		}
+		
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_daywiseEconomicImpact_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Day-Wise Economic Impact)", err)
+			log.Fatalf("Failed to ensure day-wise economic impact temp table exists: %v", err)
 		}
 
 		utilsConfig := config
@@ -2310,6 +2315,15 @@ func main() {
 		} else {
 			log.Println("✓ allevent_ch optimized successfully")
 		}
+		
+		log.Println("Optimizing event_daywiseEconomicImpact_ch table...")
+		if err := shared.OptimizeSingleTable(clickhouseDB, "event_daywiseEconomicImpact_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Day-Wise Economic Impact Optimization", err)
+			log.Printf("⚠️  Error optimizing event_daywiseEconomicImpact_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ event_daywiseEconomicImpact_ch optimized successfully")
+		}
 
 		log.Println("Swapping allevent_ch table...")
 		if err := shared.SwapSingleTable(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
@@ -2317,6 +2331,13 @@ func main() {
 			log.Fatalf("Failed to swap allevent_ch: %v", err)
 		}
 		log.Println("✓ allevent_ch swapped successfully")
+		
+		log.Println("Swapping event_daywiseEconomicImpact_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_daywiseEconomicImpact_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Day-Wise Economic Impact Table Swap", err)
+			log.Fatalf("Failed to swap event_daywiseEconomicImpact_ch: %v", err)
+		}
+		log.Println("✓ event_daywiseEconomicImpact_ch swapped successfully")
 	} else if locationCountriesOnly || locationStatesOnly || locationCitiesOnly || locationVenuesOnly || locationSubVenuesOnly {
 		// Individual location types - no temp table creation/dropping, just process directly
 		locConfig := shared.Config{

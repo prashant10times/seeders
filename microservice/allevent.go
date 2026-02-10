@@ -730,7 +730,7 @@ type alleventRecord struct {
 	StartDate                       string   `ch:"start_date"`          // Date NOT NULL
 	EndDate                         string   `ch:"end_date"`            // Date NOT NULL
 	EditionID                       uint32   `ch:"edition_id"`
-	EditionUUID                     string   `ch:"edition_uuid"`            // UUID generated from edition_id + edition_created
+	EditionUUID                     string   `ch:"edition_uuid"`          // UUID generated from edition_id + edition_created
 	EditionCountry                  string   `ch:"edition_country"`       // LowCardinality(FixedString(2)) NOT NULL
 	EditionCity                     uint32   `ch:"edition_city"`          // UInt32 NOT NULL
 	EditionCityName                 string   `ch:"edition_city_name"`     // String NOT NULL
@@ -823,6 +823,14 @@ type alleventRecord struct {
 	VerifiedOn                      *string  `ch:"verifiedOn"`                           // Nullable(Date)
 	LastUpdatedAt                   string   `ch:"last_updated_at"`                      // DateTime NOT NULL
 	Version                         uint32   `ch:"version"`
+}
+
+type dayWiseEconomicImpactRecord struct {
+	EventID       uint32  `ch:"event_id"`        // UInt32
+	Date          string  `ch:"date"`            // Date
+	Metric        string  `ch:"metric"`          // LowCardinality(String)
+	Value         float64 `ch:"value"`           // Float64
+	LastUpdatedAt string  `ch:"last_updated_at"` // DateTime
 }
 
 func buildalleventMigrationData(db *sql.DB, table string, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
@@ -1820,11 +1828,15 @@ func processalleventSingleEconomicImpact(eventID int64, economicImpact string) m
 
 	var economicImpactJSON map[string]interface{}
 	if err := json.Unmarshal([]byte(economicImpact), &economicImpactJSON); err != nil {
+		processedData["breakdownJSON"] = "{}"
+		processedData["dayWiseJSON"] = "{}"
 		result[eventID] = processedData
 		return result
 	}
 
 	if errorField, exists := economicImpactJSON["error"]; exists && errorField != nil {
+		processedData["breakdownJSON"] = "{}"
+		processedData["dayWiseJSON"] = "{}"
 		result[eventID] = processedData
 		return result
 	}
@@ -1908,6 +1920,10 @@ func formatalleventEconomicImpact(_ int64, economicImpact string) (interface{}, 
 		return total, totalBreakdown, make(map[string]map[string]interface{})
 	}
 
+	if len(dayWise) == 0 {
+		return total, totalBreakdown, make(map[string]map[string]interface{})
+	}
+
 	dayWiseFormatted := make(map[string]map[string]interface{})
 	for date, dayData := range dayWise {
 		dayDataMap, ok := dayData.(map[string]interface{})
@@ -1945,6 +1961,118 @@ func formatalleventEconomicImpact(_ int64, economicImpact string) (interface{}, 
 	}
 
 	return total, totalBreakdown, dayWiseFormatted
+}
+
+func convertDayWiseDataToRows(
+	eventID int64,
+	dayWiseFormatted map[string]map[string]interface{},
+	lastUpdatedAt string,
+) []dayWiseEconomicImpactRecord {
+
+	if len(dayWiseFormatted) == 0 {
+		return nil
+	}
+
+	var records []dayWiseEconomicImpactRecord
+	var eventIDUint uint32
+	if eventID >= 0 {
+		eventIDUint = uint32(eventID)
+	}
+
+	for dateStr, dayData := range dayWiseFormatted {
+		if breakdownTyped, ok := dayData["breakdown"].(map[string]float64); ok {
+			for metric, value := range breakdownTyped {
+				record := dayWiseEconomicImpactRecord{
+					EventID:       eventIDUint,
+					Date:          dateStr,
+					Metric:        metric,
+					Value:         value,
+					LastUpdatedAt: lastUpdatedAt,
+				}
+				records = append(records, record)
+			}
+			continue
+		}
+
+		if breakdownIface, ok := dayData["breakdown"].(map[string]interface{}); ok {
+			for metric, v := range breakdownIface {
+				var value float64
+				switch val := v.(type) {
+				case float64:
+					value = val
+				case int:
+					value = float64(val)
+				case int64:
+					value = float64(val)
+				case float32:
+					value = float64(val)
+				case string:
+					if parsed, err := strconv.ParseFloat(val, 64); err == nil {
+						value = parsed
+					} else {
+						continue
+					}
+				default:
+					continue
+				}
+
+				record := dayWiseEconomicImpactRecord{
+					EventID:       eventIDUint,
+					Date:          dateStr,
+					Metric:        metric,
+					Value:         value,
+					LastUpdatedAt: lastUpdatedAt,
+				}
+				records = append(records, record)
+			}
+		}
+
+	}
+
+	return records
+}
+
+func aggregateDayWiseRecordsFromEconomicData(
+	processedEconomicData map[int64]map[string]interface{},
+	lastUpdatedAt string,
+) []dayWiseEconomicImpactRecord {
+
+	var allRecords []dayWiseEconomicImpactRecord
+	skippedEmpty := 0
+	skippedNil := 0
+	skippedParseError := 0
+	processedSuccess := 0
+
+	for eventID, economicData := range processedEconomicData {
+		if economicData == nil {
+			skippedNil++
+			continue
+		}
+
+		dayWiseJSONStr, ok := economicData["dayWiseJSON"].(string)
+		if !ok || dayWiseJSONStr == "" || dayWiseJSONStr == "{}" {
+			skippedEmpty++
+			continue
+		}
+
+		var dayWiseFormatted map[string]map[string]interface{}
+		if err := json.Unmarshal([]byte(dayWiseJSONStr), &dayWiseFormatted); err != nil {
+			log.Printf("WARNING: Failed to parse dayWiseJSON for event_id %d: %v", eventID, err)
+			skippedParseError++
+			continue
+		}
+
+		records := convertDayWiseDataToRows(eventID, dayWiseFormatted, lastUpdatedAt)
+		if len(records) > 0 {
+			allRecords = append(allRecords, records...)
+			processedSuccess++
+		}
+	}
+
+	log.Printf("Generated %d day-wise economic impact records from %d events (processed: %d, skipped: nil=%d, empty=%d, parse_error=%d)",
+		len(allRecords), len(processedEconomicData), processedSuccess, skippedNil, skippedEmpty, skippedParseError)
+
+	return allRecords
 }
 
 func cleanupOldLogFiles() {
@@ -2410,6 +2538,31 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 				processedEconomicData := make(map[int64]map[string]interface{})
 				if len(estimateDataMap) > 0 {
 					processedEconomicData = processalleventEconomicImpactDataParallel(estimateDataMap)
+				}
+
+				if len(processedEconomicData) > 0 {
+					log.Printf("allevent chunk %d: Processing day-wise economic impact data for %d events", chunkNum, len(processedEconomicData))
+					lastUpdatedAt := time.Now().Format("2006-01-02 15:04:05")
+					log.Printf("allevent chunk %d: Aggregating day-wise economic impact data for %d events", chunkNum, len(processedEconomicData))
+					dayWiseRecords := aggregateDayWiseRecordsFromEconomicData(
+						processedEconomicData,
+						lastUpdatedAt,
+					)
+
+					if len(dayWiseRecords) > 0 {
+						log.Printf("allevent chunk %d: Inserting %d day-wise records into event_daywiseEconomicImpact_temp", chunkNum, len(dayWiseRecords))
+
+						if err := insertDayWiseEconomicImpactWithRetry(
+							clickhouseConn,
+							dayWiseRecords,
+						); err != nil {
+							log.Printf("ERROR: Failed to insert day-wise records for chunk %d: %v", chunkNum, err)
+						} else {
+							log.Printf("allevent chunk %d: Successfully inserted %d day-wise economic impact records", chunkNum, len(dayWiseRecords))
+						}
+					} else {
+						log.Printf("allevent chunk %d: No day-wise records to insert", chunkNum)
+					}
 				}
 
 				categoryNamesMap := make(map[int64][]string)
@@ -4365,6 +4518,134 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 	return nil
 }
 
+func insertDayWiseEconomicImpactBatch(
+	clickhouseConn driver.Conn,
+	records []dayWiseEconomicImpactRecord,
+) error {
+
+	if len(records) == 0 {
+		return nil
+	}
+
+	ctx := context.Background()
+	insertSQL := `
+		INSERT INTO event_daywiseEconomicImpact_temp (
+			event_id,
+			date,
+			metric,
+			value,
+			last_updated_at
+		)
+	`
+
+	maxRetries := 3
+	var batch driver.Batch
+	var err error
+
+	for retryCount := 0; retryCount < maxRetries; retryCount++ {
+		batch, err = clickhouseConn.PrepareBatch(ctx, insertSQL)
+		if err == nil {
+			break
+		}
+
+		if retryCount < maxRetries-1 {
+			log.Printf("WARNING: ClickHouse PrepareBatch error for daywise table (attempt %d/%d): %v",
+				retryCount+1, maxRetries, err)
+			time.Sleep(2 * time.Second)
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to prepare batch for daywise table after %d retries: %v", maxRetries, err)
+	}
+
+	for _, record := range records {
+		err := batch.Append(
+			record.EventID,
+			record.Date,
+			record.Metric,
+			record.Value,
+			record.LastUpdatedAt,
+		)
+
+		if err != nil {
+			return fmt.Errorf("failed to append record to batch (event_id=%d, date=%s, metric=%s): %v",
+				record.EventID, record.Date, record.Metric, err)
+		}
+	}
+
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to send batch for daywise table: %v", err)
+	}
+
+	log.Printf("OK: Successfully inserted %d day-wise economic impact records", len(records))
+	return nil
+}
+
+func insertDayWiseEconomicImpactWithRetry(
+	clickhouseConn driver.Conn,
+	records []dayWiseEconomicImpactRecord,
+) error {
+
+	if len(records) == 0 {
+		return nil
+	}
+
+	maxRetries := 3
+	var lastErr error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		lastErr = insertDayWiseEconomicImpactBatch(clickhouseConn, records)
+
+		if lastErr == nil {
+			return nil
+		}
+
+		log.Printf("Attempt %d/%d failed for day-wise insert: %v", attempt, maxRetries, lastErr)
+
+		if attempt < maxRetries && len(records) > 1000 {
+			batchSize := 1000
+			if attempt == maxRetries-1 {
+				batchSize = 500
+			}
+
+			log.Printf("Splitting %d day-wise records into batches of %d", len(records), batchSize)
+
+			successCount := 0
+			failCount := 0
+
+			for i := 0; i < len(records); i += batchSize {
+				end := i + batchSize
+				if end > len(records) {
+					end = len(records)
+				}
+
+				smallBatch := records[i:end]
+				if err := insertDayWiseEconomicImpactBatch(clickhouseConn, smallBatch); err != nil {
+					log.Printf("Small day-wise batch %d-%d failed: %v", i, end, err)
+					failCount++
+					lastErr = err
+				} else {
+					successCount++
+				}
+			}
+
+			if failCount == 0 {
+				log.Printf("All day-wise small batches succeeded (%d batches)", successCount)
+				return nil
+			}
+
+			log.Printf("Partial success for day-wise: %d succeeded, %d failed", successCount, failCount)
+		}
+
+		if attempt < maxRetries {
+			time.Sleep(5 * time.Second)
+		}
+	}
+
+	return fmt.Errorf("failed to insert day-wise records after %d attempts: %v", maxRetries, lastErr)
+}
+
 type EventEditionPair struct {
 	EventID   uint32
 	EditionID uint32
@@ -5211,6 +5492,31 @@ func rebuildRecordsForFailedBatch(
 	ticketDataMap := processalleventTicketData(rawTicketData)
 	timingDataMap := fetchalleventTimingDataForBatch(mysqlDB, filteredEditionData)
 	processedEconomicData := processalleventEconomicImpactDataParallel(estimateDataMap)
+
+	if len(processedEconomicData) > 0 {
+		log.Printf("Processing day-wise economic impact data for %d events in batch", len(processedEconomicData))
+		lastUpdatedAt := time.Now().Format("2006-01-02 15:04:05")
+
+		dayWiseRecords := aggregateDayWiseRecordsFromEconomicData(
+			processedEconomicData,
+			lastUpdatedAt,
+		)
+
+		if len(dayWiseRecords) > 0 {
+			log.Printf("Inserting %d day-wise records into event_daywiseEconomicImpact_temp for batch", len(dayWiseRecords))
+
+			if err := insertDayWiseEconomicImpactWithRetry(
+				clickhouseConn,
+				dayWiseRecords,
+			); err != nil {
+				log.Printf("WARNING: Failed to insert day-wise records for batch: %v", err)
+			} else {
+				log.Printf("Successfully inserted %d day-wise economic impact records for batch", len(dayWiseRecords))
+			}
+		} else {
+			log.Printf("No day-wise records to insert for this batch")
+		}
+	}
 
 	allevents := make(map[int64][]map[string]interface{})
 	currentEditionStartDates := make(map[int64]interface{})
@@ -6363,8 +6669,10 @@ func buildAlleventRecord(
 			record["event_economic_breakdown"] = "{}"
 		}
 
-		if dayWiseJSON, ok := economicData["dayWiseJSON"].(string); ok {
+		if dayWiseJSON, ok := economicData["dayWiseJSON"].(string); ok && dayWiseJSON != "" {
 			record["event_economic_dayWiseEconomicImpact"] = dayWiseJSON
+		} else if rawJSON, ok := economicData["rawJSON"].(string); ok && rawJSON != "" {
+			record["event_economic_dayWiseEconomicImpact"] = rawJSON
 		} else {
 			record["event_economic_dayWiseEconomicImpact"] = "{}"
 		}

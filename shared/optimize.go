@@ -30,6 +30,12 @@ func GetTableOptimizeConfigs() map[string]TableOptimizeConfig {
 			PartitionExpression:   "",
 			DuplicateCheckColumns: []string{"published", "status", "edition_type", "event_id", "edition_id"},
 		},
+		"event_daywiseEconomicImpact_ch": {
+			TableName:             "event_daywiseEconomicImpact_ch",
+			TempTableName:         "event_daywiseEconomicImpact_temp",
+			PartitionExpression:   "toYYYYMM(date)",
+			DuplicateCheckColumns: []string{"date", "event_id", "metric"},
+		},
 		"location_ch": {
 			TableName:             "location_ch",
 			TempTableName:         "location_temp",
@@ -928,6 +934,7 @@ func OptimizeAllPhase1Tables(clickhouseConn driver.Conn, config Config, errorLog
 		"location_ch",
 		"event_type_ch",
 		"allevent_ch",
+		"event_daywiseEconomicImpact_ch",
 		"event_category_ch",
 		"event_ranking_ch",
 		"event_designation_ch",
