@@ -1255,6 +1255,24 @@ func processSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sha
 	log.Println("Speakers processing completed!")
 }
 
+func formatSingleValueWithSpaces(value interface{}) *string {
+	s := shared.SafeConvertToString(value)
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return nil
+	}
+	result := " " + trimmed + " "
+	return &result
+}
+
+
+func formatSingleValueWithSpacesOrEmpty(value interface{}) string {
+	if p := formatSingleValueWithSpaces(value); p != nil {
+		return *p
+	}
+	return "  "
+}
+
 func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing speakers chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
@@ -1327,18 +1345,67 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 			}
 		}
 
+		// Collect company IDs from speaker data for company name lookup
+		var speakerCompanyIDs []int64
+		seenCompanyIDs := make(map[int64]bool)
+		for _, speaker := range batchData {
+			if companyID, ok := speaker["company_id"].(int64); ok && companyID > 0 {
+				if !seenCompanyIDs[companyID] {
+					speakerCompanyIDs = append(speakerCompanyIDs, companyID)
+					seenCompanyIDs[companyID] = true
+				}
+			}
+		}
+
+		var companyLookup map[int64]map[string]interface{}
+		if len(speakerCompanyIDs) > 0 {
+			log.Printf("Speakers chunk %d: Fetching company data for %d companies", chunkNum, len(speakerCompanyIDs))
+			startTime := time.Now()
+			companyLookup = fetchSpeakersCompanyData(mysqlDB, speakerCompanyIDs)
+			companyTime := time.Since(startTime)
+			log.Printf("Speakers chunk %d: Retrieved company data for %d companies in %v", chunkNum, len(companyLookup), companyTime)
+		}
+
 		var speakerRecords []SpeakerRecord
 		now := time.Now().Format("2006-01-02 15:04:05")
 		for _, speaker := range batchData {
-			// Get user_company_id from speaker table's company_id column
 			userCompanyID := speaker["company_id"]
 
-			// Get user data for this speaker
-			var userName, userCompany, userDesignation, userCity, userCountry interface{}
+			formattedUserName := formatSingleValueWithSpacesOrEmpty(speaker["speaker_name"])
+
+			var sourceUserName *string
+			speakerNameTrimmed := strings.TrimSpace(shared.SafeConvertToString(speaker["speaker_name"]))
+			if userID, ok := speaker["user_id"].(int64); ok && userData != nil {
+				if user, exists := userData[userID]; exists && user["name"] != nil {
+					userNameTrimmed := strings.TrimSpace(shared.SafeConvertToString(user["name"]))
+					if userNameTrimmed != "" && !strings.EqualFold(speakerNameTrimmed, userNameTrimmed) {
+						sourceUserName = formatSingleValueWithSpaces(user["name"])
+					}
+				}
+			}
+
+			var formattedUserCompany *string
+			var companyNameTrimmed string
+			if companyID, ok := speaker["company_id"].(int64); ok && companyLookup != nil {
+				if company, exists := companyLookup[companyID]; exists && company["name"] != nil {
+					companyNameTrimmed = strings.TrimSpace(shared.SafeConvertToString(company["name"]))
+					formattedUserCompany = formatSingleValueWithSpaces(company["name"])
+				}
+			}
+
+			var sourceCompanyName *string
+			if userID, ok := speaker["user_id"].(int64); ok && userData != nil {
+				if user, exists := userData[userID]; exists && user["user_company"] != nil {
+					userCompanyTrimmed := strings.TrimSpace(shared.SafeConvertToString(user["user_company"]))
+					if userCompanyTrimmed != "" && !strings.EqualFold(companyNameTrimmed, userCompanyTrimmed) {
+						sourceCompanyName = formatSingleValueWithSpaces(user["user_company"])
+					}
+				}
+			}
+
+			var userDesignation, userCity, userCountry interface{}
 			if userID, ok := speaker["user_id"].(int64); ok && userData != nil {
 				if user, exists := userData[userID]; exists {
-					userName = speaker["speaker_name"] // Use speaker_name from speaker table
-					userCompany = user["user_company"] // Use user_company from user table
 					userDesignation = user["designation"]
 					userCity = user["city"]
 					userCountry = strings.ToUpper(shared.SafeConvertToString(user["country"]))
@@ -1392,12 +1459,16 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 			}
 
 			speakerRecord := SpeakerRecord{
-				UserID:          userID,
-				EventID:         eventID,
-				EditionID:       editionID,
-				UserName:        shared.ConvertToString(userName),
-				UserCompanyID:   userCompanyIDPtr,
-				UserCompany:     shared.ConvertToStringPtr(userCompany),
+				UserID:           userID,
+				EventID:          eventID,
+				EditionID:        editionID,
+				UserName:         formattedUserName,
+				SourceUserName:   sourceUserName,
+				SpeakerTitle:     formatSingleValueWithSpaces(speaker["title"]),
+				SpeakerProfile:   formatSingleValueWithSpaces(speaker["speaker_profile"]),
+				UserCompanyID:    userCompanyIDPtr,
+				UserCompany:      formattedUserCompany,
+				SourceCompanyName: sourceCompanyName,
 				UserDesignation: shared.ConvertToStringPtr(userDesignation),
 				UserState:       userStateID,
 				UserStateName:   userState,
@@ -1465,7 +1536,7 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 func buildSpeakersMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
-			id, user_id, event, edition, speaker_name, company_id, published
+			id, user_id, event, edition, speaker_name, title, speaker_profile, company_id, published
 		FROM event_speaker 
 		WHERE id >= %d AND id <= %d AND published > 0
 		ORDER BY id 
@@ -1536,7 +1607,7 @@ func fetchSpeakersUserData(db *sql.DB, userIDs []int64) map[int64]map[string]int
 
 		query := fmt.Sprintf(`
 			SELECT 
-				id, user_company, designation, city, country, company
+				id, name, user_company, designation, city, country, company
 			FROM user 
 			WHERE id IN (%s)`, strings.Join(placeholders, ","))
 
@@ -1584,6 +1655,79 @@ func fetchSpeakersUserData(db *sql.DB, userIDs []int64) map[int64]map[string]int
 	}
 
 	return allUserData
+}
+
+func fetchSpeakersCompanyData(db *sql.DB, companyIDs []int64) map[int64]map[string]interface{} {
+	if len(companyIDs) == 0 {
+		return nil
+	}
+
+	batchSize := 1000
+	var allCompanyData map[int64]map[string]interface{}
+
+	for i := 0; i < len(companyIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(companyIDs) {
+			end = len(companyIDs)
+		}
+		batch := companyIDs[i:end]
+
+		placeholders := make([]string, len(batch))
+		args := make([]interface{}, len(batch))
+		for j, id := range batch {
+			placeholders[j] = "?"
+			args[j] = id
+		}
+
+		query := fmt.Sprintf(`
+			SELECT id, name
+			FROM company
+			WHERE id IN (%s)`, strings.Join(placeholders, ","))
+
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			log.Printf("Error fetching speakers company data batch %d-%d: %v", i, end-1, err)
+			continue
+		}
+
+		columns, err := rows.Columns()
+		if err != nil {
+			rows.Close()
+			continue
+		}
+
+		for rows.Next() {
+			values := make([]interface{}, len(columns))
+			valuePtrs := make([]interface{}, len(columns))
+			for j := range values {
+				valuePtrs[j] = &values[j]
+			}
+
+			if err := rows.Scan(valuePtrs...); err != nil {
+				continue
+			}
+
+			row := make(map[string]interface{})
+			for j, col := range columns {
+				val := values[j]
+				if val == nil {
+					row[col] = nil
+				} else {
+					row[col] = val
+				}
+			}
+
+			if companyID, ok := row["id"].(int64); ok {
+				if allCompanyData == nil {
+					allCompanyData = make(map[int64]map[string]interface{})
+				}
+				allCompanyData[companyID] = row
+			}
+		}
+		rows.Close()
+	}
+
+	return allCompanyData
 }
 
 func insertSpeakersDataIntoClickHouse(clickhouseConn driver.Conn, speakerRecords []SpeakerRecord, numWorkers int) error {
@@ -1648,7 +1792,7 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO event_speaker_temp (
-			user_id, event_id, edition_id, user_name, user_company_id, user_company,
+			user_id, event_id, edition_id, user_name, sourceUserName, speaker_title, speaker_profile, user_company_id, user_company, sourceCompanyName,
 			user_designation, user_state, user_state_name, user_city, user_city_name, user_country, version, last_updated_at, published, speakerSourceId
 		)
 	`)
@@ -1662,8 +1806,12 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 			record.EventID,         // event_id: UInt32 NOT NULL
 			record.EditionID,       // edition_id: UInt32 NOT NULL
 			record.UserName,        // user_name: String NOT NULL
+			record.SourceUserName,   // sourceUserName: Nullable(String)
+			record.SpeakerTitle,    // speaker_title: LowCardinality(Nullable(String))
+			record.SpeakerProfile,  // speaker_profile: LowCardinality(Nullable(String))
 			record.UserCompanyID,   // user_company_id: Nullable(UInt32)
 			record.UserCompany,     // user_company: Nullable(String)
+			record.SourceCompanyName, // sourceCompanyName: Nullable(String)
 			record.UserDesignation, // user_designation: Nullable(String)
 			record.UserState,       // user_state: Nullable(UInt32)
 			record.UserStateName,   // user_state_name: LowCardinality(Nullable(String))
@@ -1690,13 +1838,17 @@ func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords [
 
 // SpeakerRecord represents a speaker record for ClickHouse insertion
 type SpeakerRecord struct {
-	UserID          uint32  `ch:"user_id"`
-	EventID         uint32  `ch:"event_id"`
-	EditionID       uint32  `ch:"edition_id"`
-	UserName        string  `ch:"user_name"`
-	UserCompanyID   *uint32 `ch:"user_company_id"`
-	UserCompany     *string `ch:"user_company"`
-	UserDesignation *string `ch:"user_designation"`
+	UserID           uint32  `ch:"user_id"`
+	EventID          uint32  `ch:"event_id"`
+	EditionID        uint32  `ch:"edition_id"`
+	UserName         string  `ch:"user_name"`
+	SourceUserName   *string `ch:"sourceUserName"`
+	SpeakerTitle     *string `ch:"speaker_title"`
+	SpeakerProfile   *string `ch:"speaker_profile"`
+	UserCompanyID    *uint32 `ch:"user_company_id"`
+	UserCompany      *string `ch:"user_company"`
+	SourceCompanyName *string `ch:"sourceCompanyName"`
+	UserDesignation   *string `ch:"user_designation"`
 	UserState       *uint32 `ch:"user_state"`
 	UserStateName   *string `ch:"user_state_name"`
 	UserCity        *uint32 `ch:"user_city"`
