@@ -314,6 +314,17 @@ func decodeBase64NullableDate(value interface{}) *string {
 	return &str
 }
 
+func parseDateLenient(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty date string")
+	}
+	datePart := s
+	if len(s) >= 10 {
+		datePart = s[:10]
+	}
+	return time.Parse("2006-01-02", datePart)
+}
+
 func decodeBase64DateTime(value interface{}) string {
 	str := shared.SafeConvertToString(value)
 	if str == "" {
@@ -1504,6 +1515,7 @@ func fetchalleventPredictedDatesForBatch(db *sql.DB, eventIDs []int64) map[int64
 			JOIN event e ON ee.event = e.id
 			WHERE ee.event IN (%s)
 			AND ee.start_date > e.start_date
+			AND ee.start_date > e.end_date
 			AND ee.start_date > NOW()
 			GROUP BY ee.event
 		) x ON ee.event = x.event AND ee.id = x.min_id`, strings.Join(placeholders, ","))
@@ -4066,7 +4078,7 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 			return nil
 		}
 
-		// Check if pred_endDate is less than 3 months from now
+		// Check if pred_startDate is not more than 3 months from now
 		// If so, set pred_startDate, pred_endDate, and pred_score to nil
 		var predStartDate interface{}
 		var predEndDate interface{}
@@ -4075,39 +4087,42 @@ func fetchalleventElasticsearchBatch(esClient *elasticsearch.Client, indexName s
 		now := time.Now()
 		threeMonthsFromNow := now.AddDate(0, 3, 0)
 
-		if predEndDateRaw := source["pred_endDate"]; predEndDateRaw != nil {
-			var predEndDateParsed time.Time
-			var err error
-			var dateStr string
+		shouldInvalidate := false
 
-			// Try to parse pred_endDate from various formats
-			if predEndDateStr, ok := predEndDateRaw.(string); ok && predEndDateStr != "" {
-				dateStr = predEndDateStr
-				predEndDateParsed, err = time.Parse("2006-01-02", dateStr)
-				if err != nil {
-					predEndDate = predEndDateRaw
-					predStartDate = source["pred_startDate"]
-					predScore = source["pred_score"]
-				} else {
-					// Check if pred_endDate is less than 3 months from now
-					if predEndDateParsed.Before(threeMonthsFromNow) {
-						// Set all three to nil
-						predStartDate = nil
-						predEndDate = nil
-						predScore = nil
+		// Check pred_endDate: invalidate if less than 3 months from now
+		// if predEndDateRaw := source["pred_endDate"]; predEndDateRaw != nil {
+		// 	if predEndDateStr, ok := predEndDateRaw.(string); ok && predEndDateStr != "" {
+		// 		if predEndDateParsed, err := time.Parse("2006-01-02", predEndDateStr); err == nil {
+		// 			if predEndDateParsed.Before(threeMonthsFromNow) {
+		// 				shouldInvalidate = true
+		// 			}
+		// 		}
+		// 	}
+		// }
+
+		// Check pred_startDate: invalidate if not more than 3 months from now
+		if !shouldInvalidate {
+			if predStartDateRaw := source["pred_startDate"]; predStartDateRaw != nil {
+				if predStartDateStr, ok := predStartDateRaw.(string); ok && predStartDateStr != "" {
+					if predStartDateParsed, err := time.Parse("2006-01-02", predStartDateStr); err == nil {
+						if !predStartDateParsed.After(threeMonthsFromNow) {
+							shouldInvalidate = true
+						}
 					} else {
-						// Keep original values
-						predStartDate = source["pred_startDate"]
-						predEndDate = predEndDateRaw
-						predScore = source["pred_score"]
+						shouldInvalidate = true
 					}
+				} else {
+					shouldInvalidate = true
 				}
 			} else {
-				// If pred_endDate is not a string or is empty, keep original values
-				predStartDate = source["pred_startDate"]
-				predEndDate = predEndDateRaw
-				predScore = source["pred_score"]
+				shouldInvalidate = true
 			}
+		}
+
+		if shouldInvalidate {
+			predStartDate = nil
+			predEndDate = nil
+			predScore = nil
 		} else {
 			predStartDate = source["pred_startDate"]
 			predEndDate = source["pred_endDate"]
@@ -6098,10 +6113,10 @@ func buildAlleventRecord(
 
 			// if (db_pred_data_exist is None AND ES predictions are invalidated)
 			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
-				startDate, err1 := time.Parse("2006-01-02", startDateStr)
-				endDate, err2 := time.Parse("2006-01-02", endDateStr)
-				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
-				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				startDate, err1 := parseDateLenient(startDateStr)
+				endDate, err2 := parseDateLenient(endDateStr)
+				predStartDate, err3 := parseDateLenient(*esPredStartDate)
+				predEndDate, err4 := parseDateLenient(*esPredEndDate)
 				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
 					now := time.Now()
 					if startDate.After(predStartDate) && endDate.After(predEndDate) && (predEndDate.Before(now) || predEndDate.Equal(now)) {
@@ -6118,10 +6133,10 @@ func buildAlleventRecord(
 			}
 			// elif db_pred_data_exist is None AND ES predictions are valid future predictions
 			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
-				startDate, err1 := time.Parse("2006-01-02", startDateStr)
-				endDate, err2 := time.Parse("2006-01-02", endDateStr)
-				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
-				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				startDate, err1 := parseDateLenient(startDateStr)
+				endDate, err2 := parseDateLenient(endDateStr)
+				predStartDate, err3 := parseDateLenient(*esPredStartDate)
+				predEndDate, err4 := parseDateLenient(*esPredEndDate)
 				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
 					now := time.Now()
 					if startDate.Before(predStartDate) && endDate.Before(predEndDate) && (predEndDate.After(now) || predEndDate.Equal(now)) {
@@ -6142,10 +6157,10 @@ func buildAlleventRecord(
 
 			// if (db_pred_data_exist is None AND ES predictions are invalidated)
 			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
-				startDate, err1 := time.Parse("2006-01-02", startDateStr)
-				endDate, err2 := time.Parse("2006-01-02", endDateStr)
-				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
-				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				startDate, err1 := parseDateLenient(startDateStr)
+				endDate, err2 := parseDateLenient(endDateStr)
+				predStartDate, err3 := parseDateLenient(*esPredStartDate)
+				predEndDate, err4 := parseDateLenient(*esPredEndDate)
 				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
 					now := time.Now()
 					if startDate.After(predStartDate) && endDate.After(predEndDate) && (predEndDate.Before(now) || predEndDate.Equal(now)) {
@@ -6162,10 +6177,10 @@ func buildAlleventRecord(
 			}
 			// elif db_pred_data_exist is None AND ES predictions are valid future predictions
 			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
-				startDate, err1 := time.Parse("2006-01-02", startDateStr)
-				endDate, err2 := time.Parse("2006-01-02", endDateStr)
-				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
-				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				startDate, err1 := parseDateLenient(startDateStr)
+				endDate, err2 := parseDateLenient(endDateStr)
+				predStartDate, err3 := parseDateLenient(*esPredStartDate)
+				predEndDate, err4 := parseDateLenient(*esPredEndDate)
 				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
 					now := time.Now()
 					if startDate.Before(predStartDate) && endDate.Before(predEndDate) && (predEndDate.After(now) || predEndDate.Equal(now)) {
@@ -6188,10 +6203,10 @@ func buildAlleventRecord(
 
 			// if (db_pred_data_exist is None AND ES predictions are invalidated)
 			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
-				startDate, err1 := time.Parse("2006-01-02", startDateStr)
-				endDate, err2 := time.Parse("2006-01-02", endDateStr)
-				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
-				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				startDate, err1 := parseDateLenient(startDateStr)
+				endDate, err2 := parseDateLenient(endDateStr)
+				predStartDate, err3 := parseDateLenient(*esPredStartDate)
+				predEndDate, err4 := parseDateLenient(*esPredEndDate)
 				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
 					now := time.Now()
 					if startDate.After(predStartDate) && endDate.After(predEndDate) && (predEndDate.Before(now) || predEndDate.Equal(now)) {
@@ -6210,10 +6225,10 @@ func buildAlleventRecord(
 			}
 			// elif db_pred_data_exist is None AND ES predictions are valid future predictions
 			if dbPredictedDates == nil && esPredStartDate != nil && esPredEndDate != nil && startDateStr != "" && endDateStr != "" {
-				startDate, err1 := time.Parse("2006-01-02", startDateStr)
-				endDate, err2 := time.Parse("2006-01-02", endDateStr)
-				predStartDate, err3 := time.Parse("2006-01-02", *esPredStartDate)
-				predEndDate, err4 := time.Parse("2006-01-02", *esPredEndDate)
+				startDate, err1 := parseDateLenient(startDateStr)
+				endDate, err2 := parseDateLenient(endDateStr)
+				predStartDate, err3 := parseDateLenient(*esPredStartDate)
+				predEndDate, err4 := parseDateLenient(*esPredEndDate)
 				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
 					now := time.Now()
 					if startDate.Before(predStartDate) && endDate.Before(predEndDate) && (predEndDate.After(now) || predEndDate.Equal(now)) {
