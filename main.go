@@ -355,6 +355,8 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					NumChunks:         config.NumChunks,
 					NumWorkers:        config.NumWorkers,
 					ClickHouseWorkers: config.ClickHouseWorkers,
+					UseTempTables:     true, // Swap-at-end: holidays read/write temp tables
+					ClickhouseDB:      config.ClickhouseDB,
 				}
 				microservice.ProcessHolidays(mysqlDB, clickhouseDB, holidayConfig)
 				log.Println("✓ STEP 13/14 (HOLIDAYS) COMPLETED SUCCESSFULLY")
@@ -454,66 +456,6 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			log.Println("")
 		}
 
-		if i == 10 {
-			log.Println("")
-			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			log.Println("VALIDATION: Validating all first batch temp tables before swap")
-			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-			// event_visitorSpread_ch is swapped after step 12 (Visitor Spread) runs, not here
-			firstBatchTables := []string{
-				"location_ch",
-				"event_type_ch",
-				"allevent_ch",
-				"event_daywiseEconomicImpact_ch", // Day-wise economic impact data (swapped atomically with allevent_ch)
-				"event_category_ch",
-				"event_product_ch",
-				"event_ranking_ch",
-				"event_designation_ch",
-				"event_exhibitor_ch",
-				"event_speaker_ch",
-				"event_sponsors_ch",
-				"event_visitors_ch",
-			}
-
-			var firstBatchMappings []shared.TableMapping
-			for _, tableName := range firstBatchTables {
-				firstBatchMappings = append(firstBatchMappings, shared.GetTableMapping(tableName, config))
-			}
-
-			if err := shared.ValidateTempTables(clickhouseDB, firstBatchMappings, config, errorLogFile); err != nil {
-				logErrorToFile("Pre-Swap Validation", err)
-				log.Fatalf("Validation failed before swap: %v", err)
-			}
-
-			log.Println("✓ All temp tables validated successfully, proceeding with batch swap")
-			log.Println("")
-
-			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			log.Println("BATCH SWAP: Swapping all first batch tables in one go")
-			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-			if err := shared.SwapTables(clickhouseDB, firstBatchMappings, config, errorLogFile); err != nil {
-				logErrorToFile("First Batch Table Swap", err)
-				log.Fatalf("Failed to swap first batch tables: %v", err)
-			}
-
-			log.Println("✓ All first batch tables swapped successfully")
-			log.Println("")
-		}
-
-		if i == 11 {
-			log.Println("")
-			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			log.Println("SWAP: Swapping event_visitorSpread_ch table (after Visitor Spread step)")
-			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			if err := shared.SwapSingleTable(clickhouseDB, "event_visitorSpread_ch", config, errorLogFile); err != nil {
-				logErrorToFile("Visitor Spread Table Swap", err)
-				log.Fatalf("Failed to swap event_visitorSpread_ch: %v", err)
-			}
-			log.Println("✓ event_visitorSpread_ch swapped successfully")
-			log.Println("")
-		}
 	}
 
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -529,39 +471,51 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 	log.Println("")
 
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	log.Println("VALIDATION: Validating second batch temp tables before swap")
+	log.Println("VALIDATION: Validating all temp tables before swap")
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	secondBatchTables := []string{
+	allTablesToSwap := []string{
+		"location_ch",
+		"event_type_ch",
+		"allevent_ch",
+		"event_daywiseEconomicImpact_ch",
+		"event_category_ch",
+		"event_product_ch",
+		"event_ranking_ch",
+		"event_designation_ch",
+		"event_exhibitor_ch",
+		"event_speaker_ch",
+		"event_sponsors_ch",
+		"event_visitors_ch",
+		"event_visitorSpread_ch",
 		"alerts_ch",
 		"location_polygons_ch",
 	}
 
-	var secondBatchMappings []shared.TableMapping
-	for _, tableName := range secondBatchTables {
-		secondBatchMappings = append(secondBatchMappings, shared.GetTableMapping(tableName, config))
+	var allTableMappings []shared.TableMapping
+	for _, tableName := range allTablesToSwap {
+		allTableMappings = append(allTableMappings, shared.GetTableMapping(tableName, config))
 	}
 
-	if err := shared.ValidateTempTables(clickhouseDB, secondBatchMappings, config, errorLogFile); err != nil {
-		logErrorToFile("Pre-Swap Validation (Second Batch)", err)
-		log.Printf("⚠️  Validation warning for second batch (may not exist yet): %v", err)
-		log.Println("")
-	} else {
-		log.Println("✓ All second batch temp tables validated successfully, proceeding with batch swap")
-		log.Println("")
-
-		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-		log.Println("BATCH SWAP: Swapping second batch tables (alerts, location_polygons)")
-		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-		if err := shared.SwapTables(clickhouseDB, secondBatchMappings, config, errorLogFile); err != nil {
-			logErrorToFile("Second Batch Table Swap", err)
-			log.Printf("⚠️  Failed to swap second batch tables: %v", err)
-		} else {
-			log.Println("✓ All second batch tables swapped successfully")
-		}
-		log.Println("")
+	if err := shared.ValidateTempTables(clickhouseDB, allTableMappings, config, errorLogFile); err != nil {
+		logErrorToFile("Pre-Swap Validation", err)
+		log.Fatalf("Validation failed before swap: %v", err)
 	}
+
+	log.Println("✓ All temp tables validated successfully, proceeding with batch swap")
+	log.Println("")
+
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Println("BATCH SWAP: Swapping all tables (data sync complete)")
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	if err := shared.SwapTables(clickhouseDB, allTableMappings, config, errorLogFile); err != nil {
+		logErrorToFile("Table Swap", err)
+		log.Fatalf("Failed to swap tables: %v", err)
+	}
+
+	log.Println("✓ All tables swapped successfully")
+	log.Println("")
 
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("PHASE 2 COMPLETE: STARTING CLICKHOUSE MERGES")
@@ -1907,6 +1861,7 @@ func main() {
 	var holidaysOnly bool
 	var alertsOnly bool
 	var allScripts bool
+	var daywiseOnly bool
 
 	flag.IntVar(&numChunks, "chunks", 5, "Number of chunks to process data in (default: 5)")
 	flag.IntVar(&batchSize, "batch", 5000, "MySQL batch size for fetching data (default: 5000)")
@@ -1934,6 +1889,7 @@ func main() {
 	flag.BoolVar(&holidaysOnly, "holidays", false, "Process holidays into allevent_ch (automatically handles event types) (default: false)")
 	flag.BoolVar(&alertsOnly, "alerts", false, "Process alerts from GDAC API into alerts_ch (default: false)")
 	flag.BoolVar(&allScripts, "all", false, "Run all seeding scripts in order: location, eventtype, allevent, category, product, ranking, designation, holidays, alerts, exhibitor, speaker, sponsor, visitors, visitorspread (default: false)")
+	flag.BoolVar(&daywiseOnly, "daywise", false, "Process only day-wise economic impact data from estimate table into event_daywiseEconomicImpact_ch (standalone, never runs with -all)")
 	flag.BoolVar(&showHelp, "help", false, "Show help information")
 	flag.Parse()
 
@@ -2089,6 +2045,8 @@ func main() {
 		log.Printf("Mode: ALL EVENT ONLY")
 	} else if holidaysOnly {
 		log.Printf("Mode: HOLIDAYS ONLY")
+	} else if daywiseOnly {
+		log.Printf("Mode: DAY-WISE ECONOMIC IMPACT ONLY (standalone)")
 	} else if locationAll {
 		log.Printf("Mode: LOCATION ALL (countries, states, cities, venues, sub-venues)")
 	} else if locationCountriesOnly {
@@ -2123,6 +2081,8 @@ func main() {
 		log.Printf("Elasticsearch: Required (needed for visitor spread data)")
 	} else if allEventOnly {
 		log.Printf("Elasticsearch: Required (needed for all event data)")
+	} else if daywiseOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for day-wise economic impact)")
 	}
 	log.Printf("==============================\n")
 
@@ -2144,7 +2104,7 @@ func main() {
 		return
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly {
+	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -2175,6 +2135,8 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for location_ch processing)")
 		} else if holidaysOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for holidays processing)")
+		} else if daywiseOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for day-wise economic impact processing)")
 		}
 	}
 
@@ -2645,6 +2607,36 @@ func main() {
 		}
 		log.Println("✓ location_polygons_ch swapped successfully")
 		log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	} else if daywiseOnly {
+		// Standalone day-wise flow: fetch event_ids from estimate in batches, process, insert. Never runs with -all.
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_daywiseEconomicImpact_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Day-Wise Economic Impact)", err)
+			log.Fatalf("Failed to ensure day-wise economic impact temp table exists: %v", err)
+		}
+
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:         config.NumWorkers,
+			ClickHouseWorkers:  config.ClickHouseWorkers,
+		}
+		microservice.ProcessDayWiseEconomicImpactOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		log.Println("Optimizing event_daywiseEconomicImpact_ch table...")
+		if err := shared.OptimizeSingleTable(clickhouseDB, "event_daywiseEconomicImpact_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Day-Wise Economic Impact Optimization", err)
+			log.Printf("⚠️  Error optimizing event_daywiseEconomicImpact_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ event_daywiseEconomicImpact_ch optimized successfully")
+		}
+
+		log.Println("Swapping event_daywiseEconomicImpact_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_daywiseEconomicImpact_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Day-Wise Economic Impact Table Swap", err)
+			log.Fatalf("Failed to swap event_daywiseEconomicImpact_ch: %v", err)
+		}
+		log.Println("✓ event_daywiseEconomicImpact_ch swapped successfully")
 	} else {
 		log.Println("Error: No specific table mode selected!")
 		log.Println("Please specify one of the following modes:")
@@ -2661,6 +2653,7 @@ func main() {
 		log.Println("  -allevent         # Process all event data")
 		log.Println("  -holidays         # Process holidays into allevent_ch")
 		log.Println("  -alerts           # Process alerts from GDAC API into alerts_ch")
+		log.Println("  -daywise          # Process day-wise economic impact from estimate table (standalone, never with -all)")
 		log.Println("  -location         # Process all location types (countries, states, cities, venues, sub-venues)")
 		log.Println("  -location-countries   # Process only location countries")
 		log.Println("  -location-states      # Process only location states")
@@ -2672,6 +2665,7 @@ func main() {
 		log.Println("Example: go run main.go -event-edition -chunks=10 -workers=20")
 		log.Println("Example: go run main.go -location -batch=1000 -clickhouse-workers=5")
 		log.Println("Example: go run main.go -all -chunks=5 -workers=10 -batch=5000")
+		log.Println("Example: go run main.go -daywise -batch=10000")
 		os.Exit(1)
 	}
 }
