@@ -168,6 +168,14 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					return fmt.Errorf("failed batches still remain - rerun script to retry")
 				}
 
+				log.Println("Updating future expected dates for past editions...")
+				if err := microservice.UpdateFutureExpectedDatesForPastEditions(clickhouseDB, config); err != nil {
+					log.Printf("⚠️  Warning: Failed to update future expected dates: %v", err)
+					log.Printf("⚠️  Continuing...")
+				} else {
+					log.Println("✓ Future expected dates updated successfully")
+				}
+
 				log.Println("✓ STEP 3/14 (ALL EVENT) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
@@ -2419,6 +2427,15 @@ func main() {
 			log.Println("Optimization and table swap will be performed after all batches succeed.")
 			log.Println("")
 			return // Exit early, don't proceed with optimization
+		}
+
+		log.Println("Updating future expected dates for past editions...")
+		if err := microservice.UpdateFutureExpectedDatesForPastEditions(clickhouseDB, config); err != nil {
+			logErrorToFile("Update Future Expected Dates", err)
+			log.Printf("⚠️  Warning: Failed to update future expected dates: %v", err)
+			log.Printf("⚠️  Continuing with optimization...")
+		} else {
+			log.Println("✓ Future expected dates updated successfully")
 		}
 
 		log.Println("Optimizing allevent_ch table...")

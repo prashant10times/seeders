@@ -899,7 +899,7 @@ func OptimizeSingleTable(clickhouseConn driver.Conn, tableName string, config Co
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	log.Printf("Creating Native protocol connection for optimization (port %s)...", config.ClickhouseNativePort)
-	nativeConn, err := setupNativeProtocolConnectionForOptimize(config)
+	nativeConn, err := SetupNativeProtocolConnection(config)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create Native protocol connection for optimization: %w", err)
 		logOptimizeToFile("ERROR", "Optimize Single Table", errMsg.Error())
@@ -976,7 +976,7 @@ func OptimizeAllPhase1Tables(clickhouseConn driver.Conn, config Config, errorLog
 	return nil
 }
 
-func setupNativeProtocolConnectionForOptimize(config Config) (driver.Conn, error) {
+func SetupNativeProtocolConnection(config Config) (driver.Conn, error) {
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{config.ClickhouseHost + ":" + config.ClickhouseNativePort},
 		Auth: clickhouse.Auth{
