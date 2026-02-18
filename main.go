@@ -391,7 +391,15 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					return fmt.Errorf("no valid countries found")
 				}
 
-				if err := microservice.ProcessAlertsFromAPI(clickhouseDB, gdacBaseURL, gdacEndpoint, validCountries); err != nil {
+				alertConfig := shared.Config{
+					BatchSize:         config.BatchSize,
+					NumChunks:         config.NumChunks,
+					NumWorkers:        config.NumWorkers,
+					ClickHouseWorkers: config.ClickHouseWorkers,
+					UseTempTables:     true, // -all: write to event_type_temp so alert data survives batch swap
+					ClickhouseDB:      config.ClickhouseDB,
+				}
+				if err := microservice.ProcessAlertsFromAPI(clickhouseDB, gdacBaseURL, gdacEndpoint, validCountries, alertConfig); err != nil {
 					return err
 				}
 				log.Println("✓ STEP 14/14 (ALERTS) COMPLETED SUCCESSFULLY")
@@ -2586,7 +2594,15 @@ func main() {
 
 		log.Printf("Processing alerts for %d valid countries", len(validCountries))
 
-		if err := microservice.ProcessAlertsFromAPI(clickhouseDB, gdacBaseURL, gdacEndpoint, validCountries); err != nil {
+		alertConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+			UseTempTables:     false, // -alerts only: write to event_type_ch (production)
+			ClickhouseDB:      config.ClickhouseDB,
+		}
+		if err := microservice.ProcessAlertsFromAPI(clickhouseDB, gdacBaseURL, gdacEndpoint, validCountries, alertConfig); err != nil {
 			log.Fatalf("ERROR: Failed to process alerts: %v", err)
 		}
 

@@ -1030,7 +1030,7 @@ func fetchAndProcessPolygon(httpClient *http.Client, alertID, geometryLink strin
 	}, nil
 }
 
-func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metadataMap map[string]*AlertMetadata, semaphore chan struct{}) error {
+func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metadataMap map[string]*AlertMetadata, semaphore chan struct{}, eventTypeTableName string) error {
 	type GeometryLink struct {
 		AlertID      string
 		GeometryLink string
@@ -1064,7 +1064,7 @@ func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metada
 	var counterMu sync.Mutex
 
 	var alertEventTypeID uint32
-	maxEventTypeID, err := getMaxEventTypeIDForAlerts(clickhouseConn)
+	maxEventTypeID, err := getMaxEventTypeIDForAlerts(clickhouseConn, eventTypeTableName)
 	if err != nil {
 		log.Printf("ERROR: Failed to get max eventtype_id: %v", err)
 		alertEventTypeID = 10
@@ -1154,7 +1154,7 @@ func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metada
 			}
 
 			if len(eventTypeRecords) > 0 {
-				if err := InsertEventTypeChDataSingleWorker(clickhouseConn, eventTypeRecords); err != nil {
+				if err := InsertEventTypeChDataSingleWorker(clickhouseConn, eventTypeRecords, eventTypeTableName); err != nil {
 					log.Printf("ERROR: Failed to insert event_type_ch records for alert %s (polygon): %v", metadata.AlertID, err)
 					continue
 				}
@@ -1166,18 +1166,18 @@ func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metada
 	return nil
 }
 
-func getMaxEventTypeIDForAlerts(clickhouseConn driver.Conn) (uint32, error) {
+func getMaxEventTypeIDForAlerts(clickhouseConn driver.Conn, eventTypeTableName string) (uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	query := "SELECT MAX(eventtype_id) FROM testing_db.event_type_ch"
+	query := fmt.Sprintf("SELECT MAX(eventtype_id) FROM %s", eventTypeTableName)
 	row := clickhouseConn.QueryRow(ctx, query)
 
 	var maxID uint32
 	err := row.Scan(&maxID)
 	if err != nil {
 		if err.Error() == "sql: no rows in result set" || strings.Contains(err.Error(), "no rows") {
-			log.Println("No existing records in event_type_ch, starting from 0")
+			log.Printf("No existing records in %s, starting from 0", eventTypeTableName)
 			return 0, nil
 		}
 		return 0, fmt.Errorf("failed to get max eventtype_id: %v", err)
@@ -1663,7 +1663,7 @@ func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJS
 	return allEventTypeRecords, nil
 }
 
-func InsertEventTypeChDataSingleWorker(clickhouseConn driver.Conn, eventTypeRecords []EventTypeChRecord) error {
+func InsertEventTypeChDataSingleWorker(clickhouseConn driver.Conn, eventTypeRecords []EventTypeChRecord, eventTypeTableName string) error {
 	if len(eventTypeRecords) == 0 {
 		return nil
 	}
@@ -1686,38 +1686,39 @@ func InsertEventTypeChDataSingleWorker(clickhouseConn driver.Conn, eventTypeReco
 				for i := range eventTypeRecords {
 					eventTypeRecords[i].LastUpdatedAt = now
 				}
-				log.Printf("Updated last_updated_at for event_type_ch batch retry attempt %d", attemptCount+1)
+				log.Printf("Updated last_updated_at for event_type batch retry attempt %d", attemptCount+1)
 			}
 			attemptCount++
-			return insertEventTypeChBatch(clickhouseConn, eventTypeRecords)
+			return insertEventTypeChBatch(clickhouseConn, eventTypeRecords, eventTypeTableName)
 		},
 		3,
 	)
 
 	if insertErr != nil {
-		return fmt.Errorf("failed to insert event_type_ch batch after retries: %w", insertErr)
+		return fmt.Errorf("failed to insert event_type batch after retries: %w", insertErr)
 	}
 
-	log.Printf("OK: Successfully inserted %d event_type_ch records with alert data", len(eventTypeRecords))
+	log.Printf("OK: Successfully inserted %d event_type records with alert data", len(eventTypeRecords))
 	return nil
 }
 
-func insertEventTypeChBatch(clickhouseConn driver.Conn, eventTypeRecords []EventTypeChRecord) error {
+func insertEventTypeChBatch(clickhouseConn driver.Conn, eventTypeRecords []EventTypeChRecord, eventTypeTableName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	log.Printf("Preparing ClickHouse batch for %d event_type_ch records", len(eventTypeRecords))
+	log.Printf("Preparing ClickHouse batch for %d event_type records into %s", len(eventTypeRecords), eventTypeTableName)
 
-	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO testing_db.event_type_ch (
+	insertSQL := fmt.Sprintf(`
+		INSERT INTO %s (
 			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version,
 			alert_id, alert_level, alert_type, alert_start_date, alert_end_date, last_updated_at
 		)
-	`)
+	`, eventTypeTableName)
+	batch, err := clickhouseConn.PrepareBatch(ctx, insertSQL)
 	if err != nil {
-		log.Printf("ERROR: Failed to prepare ClickHouse batch for event_type_ch: %v", err)
+		log.Printf("ERROR: Failed to prepare ClickHouse batch for event_type: %v", err)
 		if strings.Contains(err.Error(), "EOF") {
-			return fmt.Errorf("connection error (table may not exist or connection dropped): %v. Please verify table 'testing_db.event_type_ch' exists with alert fields", err)
+			return fmt.Errorf("connection error (table may not exist or connection dropped): %v. Please verify table '%s' exists with alert fields", err, eventTypeTableName)
 		}
 		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
 	}
@@ -1749,7 +1750,7 @@ func insertEventTypeChBatch(clickhouseConn driver.Conn, eventTypeRecords []Event
 		}
 	}
 
-	log.Printf("Sending ClickHouse batch with %d event_type_ch records", len(eventTypeRecords))
+	log.Printf("Sending ClickHouse batch with %d event_type records", len(eventTypeRecords))
 	if err := batch.Send(); err != nil {
 		log.Printf("ERROR: Failed to send ClickHouse batch: %v", err)
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
@@ -1758,9 +1759,12 @@ func insertEventTypeChBatch(clickhouseConn driver.Conn, eventTypeRecords []Event
 	return nil
 }
 
-func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint string, validCountries []string) error {
+func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint string, validCountries []string, config shared.Config) error {
 	startTime := time.Now()
 	log.Printf("Starting alert processing from GDAC API")
+
+	// Use event_type_temp when running -all (batch swap); use event_type_ch when running -alerts only
+	eventTypeTableName := shared.GetTableNameWithDB(shared.GetClickHouseTableName("event_type_ch", config), config)
 
 	// Initialize polygon error logger
 	if err := InitPolygonErrorLogger(); err != nil {
@@ -1879,7 +1883,7 @@ func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint 
 
 	if len(allMetadata) > 0 {
 		log.Printf("Starting polygon processing for %d alerts with geometry links", len(allMetadata))
-		if err := processPolygons(clickhouseConn, httpClient, allMetadata, semaphore); err != nil {
+		if err := processPolygons(clickhouseConn, httpClient, allMetadata, semaphore, eventTypeTableName); err != nil {
 			log.Printf("ERROR: Failed to process polygons: %v", err)
 			return fmt.Errorf("failed to process polygons: %w", err)
 		}
