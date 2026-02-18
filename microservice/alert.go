@@ -161,6 +161,140 @@ func FinalizePolygonErrorLogger() error {
 	return nil
 }
 
+// AlertCountryLogger logs per-country alert processing results to a single file.
+type AlertCountryLogger struct {
+	mu            sync.Mutex
+	logFile       *os.File
+	logger        *log.Logger
+	countryCount  int
+	successCount  int
+	failedCount   int
+	totalFetched  int
+	totalProcessed int
+	totalSkipped  int
+}
+
+var alertCountryLogger *AlertCountryLogger
+
+func InitAlertCountryLogger() error {
+	logFileName := "alerts_country_processing.log"
+	file, err := os.Create(logFileName)
+	if err != nil {
+		return fmt.Errorf("failed to create alert country log file: %w", err)
+	}
+
+	alertCountryLogger = &AlertCountryLogger{
+		logFile: file,
+		logger:  log.New(file, "", log.LstdFlags),
+	}
+
+	alertCountryLogger.logger.Println("================================================================================")
+	alertCountryLogger.logger.Printf("Alert Processing Run - %s", time.Now().Format("2006-01-02 15:04:05"))
+	alertCountryLogger.logger.Println("================================================================================")
+	alertCountryLogger.logger.Println("")
+
+	return nil
+}
+
+func LogAlertCountryResult(country string, fetched, processed, skippedDroughts int, parseErrors []string, duration time.Duration, success bool) {
+	if alertCountryLogger == nil {
+		return
+	}
+
+	alertCountryLogger.mu.Lock()
+	defer alertCountryLogger.mu.Unlock()
+
+	status := "SUCCESS"
+	if !success {
+		status = "FAILED"
+		alertCountryLogger.failedCount++
+	} else {
+		alertCountryLogger.successCount++
+	}
+	alertCountryLogger.countryCount++
+	alertCountryLogger.totalFetched += fetched
+	alertCountryLogger.totalProcessed += processed
+	alertCountryLogger.totalSkipped += skippedDroughts + len(parseErrors)
+
+	alertCountryLogger.logger.Printf("[%s] %s", country, status)
+	alertCountryLogger.logger.Printf("  Fetched: %d | Processed: %d | Skipped: %d", fetched, processed, skippedDroughts+len(parseErrors))
+	if skippedDroughts > 0 || len(parseErrors) > 0 {
+		alertCountryLogger.logger.Printf("  Skipped breakdown: Droughts: %d, Parse errors: %d", skippedDroughts, len(parseErrors))
+		for i, errMsg := range parseErrors {
+			if i < 5 {
+				alertCountryLogger.logger.Printf("    - %s", errMsg)
+			} else {
+				alertCountryLogger.logger.Printf("    - ... and %d more parse errors", len(parseErrors)-5)
+				break
+			}
+		}
+	}
+	alertCountryLogger.logger.Printf("  Duration: %v", duration.Round(time.Millisecond))
+	alertCountryLogger.logger.Println("")
+}
+
+func LogAlertCountryFetchError(country string, err error, duration time.Duration) {
+	if alertCountryLogger == nil {
+		return
+	}
+
+	alertCountryLogger.mu.Lock()
+	defer alertCountryLogger.mu.Unlock()
+
+	alertCountryLogger.countryCount++
+	alertCountryLogger.failedCount++
+
+	alertCountryLogger.logger.Printf("[%s] FAILED (fetch error)", country)
+	alertCountryLogger.logger.Printf("  Error: %v", err)
+	alertCountryLogger.logger.Printf("  Duration: %v", duration.Round(time.Millisecond))
+	alertCountryLogger.logger.Println("")
+}
+
+func LogAlertPhase(phase string, detail string, success bool, err error) {
+	if alertCountryLogger == nil {
+		return
+	}
+
+	alertCountryLogger.mu.Lock()
+	defer alertCountryLogger.mu.Unlock()
+
+	status := "OK"
+	if !success {
+		status = "FAILED"
+	}
+	alertCountryLogger.logger.Printf(">>> %s: %s %s", phase, detail, status)
+	if err != nil {
+		alertCountryLogger.logger.Printf("    Error: %v", err)
+	}
+	alertCountryLogger.logger.Println("")
+}
+
+func FinalizeAlertCountryLogger() error {
+	if alertCountryLogger == nil {
+		return nil
+	}
+
+	alertCountryLogger.mu.Lock()
+	defer alertCountryLogger.mu.Unlock()
+
+	alertCountryLogger.logger.Println("================================================================================")
+	alertCountryLogger.logger.Println("=== Summary ===")
+	alertCountryLogger.logger.Printf("Total countries processed: %d", alertCountryLogger.countryCount)
+	alertCountryLogger.logger.Printf("Successful: %d | Failed: %d", alertCountryLogger.successCount, alertCountryLogger.failedCount)
+	alertCountryLogger.logger.Printf("Total alerts fetched from API: %d", alertCountryLogger.totalFetched)
+	alertCountryLogger.logger.Printf("Total alerts inserted: %d", alertCountryLogger.totalProcessed)
+	alertCountryLogger.logger.Printf("Total skipped (droughts + parse errors): %d", alertCountryLogger.totalSkipped)
+	alertCountryLogger.logger.Println("================================================================================")
+
+	logFileName := alertCountryLogger.logFile.Name()
+	if err := alertCountryLogger.logFile.Close(); err != nil {
+		return fmt.Errorf("failed to close alert country log file: %w", err)
+	}
+
+	log.Printf("Alert processing log written to %s", logFileName)
+	return nil
+}
+
 func InsertAlertsChDataSingleWorker(clickhouseConn driver.Conn, alertRecords []AlertChRecord) error {
 	if len(alertRecords) == 0 {
 		return nil
@@ -1255,7 +1389,14 @@ func convertRingToClickHousePolygon(ring interface{}) (string, bool) {
 	return formatPointsToClickHouse(rawPoints), true
 }
 
-func convertFeatureToClickHousePolygon(feature GeoJSONFeature, alertID string, polygonSourceURL string, gdacSearchURL string) (string, error) {
+// convertRingToClickHousePolygonWithDiagnostic returns rawPoints even when invalid, for diagnostic logging.
+func convertRingToClickHousePolygonWithDiagnostic(ring interface{}) (rawPoints []struct{ Lon, Lat float64 }, valid bool) {
+	rawPoints = extractPointsFromRing(ring)
+	valid = validatePoints(rawPoints)
+	return rawPoints, valid
+}
+
+func convertFeatureToClickHousePolygon(feature GeoJSONFeature, alertID string, polygonSourceURL string, gdacSearchURL string, class string) (string, error) {
 	switch feature.Geometry.Type {
 	case "Polygon":
 		coords, ok := feature.Geometry.Coordinates.([]interface{})
@@ -1263,17 +1404,23 @@ func convertFeatureToClickHousePolygon(feature GeoJSONFeature, alertID string, p
 			return "", fmt.Errorf("invalid polygon coordinates")
 		}
 
-		if polygonStr, valid := convertRingToClickHousePolygon(coords[0]); valid {
-			return polygonStr, nil
+		rawPoints, valid := convertRingToClickHousePolygonWithDiagnostic(coords[0])
+		if valid {
+			return formatPointsToClickHouse(rawPoints), nil
 		}
 
+		// Log which specific case caused the failure
+		invalidReason := "empty ring (no valid coordinates extracted)"
+		if len(rawPoints) > 0 {
+			invalidReason = fmt.Sprintf("degenerate polygon (all %d coordinates identical at %f, %f)", len(rawPoints), rawPoints[0].Lon, rawPoints[0].Lat)
+		}
 		if alertID != "" {
 			if polygonSourceURL != "" && gdacSearchURL != "" {
-				log.Printf("WARNING: First ring (outer boundary) is invalid for alertID: %s, skipping polygon (same as PostGIS would return empty results), polygonSourceURL: %s, gdacSearchURL: %s", alertID, polygonSourceURL, gdacSearchURL)
+				log.Printf("WARNING: First ring (outer boundary) is invalid for alertID: %s, class=%s, reason=%s, polygonSourceURL: %s, gdacSearchURL: %s", alertID, class, invalidReason, polygonSourceURL, gdacSearchURL)
 			} else if polygonSourceURL != "" {
-				log.Printf("WARNING: First ring (outer boundary) is invalid for alertID: %s, skipping polygon (same as PostGIS would return empty results), polygonSourceURL: %s", alertID, polygonSourceURL)
+				log.Printf("WARNING: First ring (outer boundary) is invalid for alertID: %s, class=%s, reason=%s, polygonSourceURL: %s", alertID, class, invalidReason, polygonSourceURL)
 			} else {
-				log.Printf("WARNING: First ring (outer boundary) is invalid for alertID: %s, skipping polygon (same as PostGIS would return empty results)", alertID)
+				log.Printf("WARNING: First ring (outer boundary) is invalid for alertID: %s, class=%s, reason=%s", alertID, class, invalidReason)
 			}
 			LogPolygonError(alertID, gdacSearchURL, polygonSourceURL)
 		}
@@ -1367,9 +1514,7 @@ func queryEventsWithinPolygon(clickhouseConn driver.Conn, isCircle bool, centerL
 		query = fmt.Sprintf(`
 			SELECT event_id
 			FROM testing_db.allevent_ch
-			WHERE venue_lat IS NOT NULL
-				AND venue_long IS NOT NULL
-				AND greatCircleDistance(venue_lat, venue_long, %f, %f) <= %d
+			WHERE greatCircleDistance(coalesce(venue_lat, edition_city_lat), coalesce(venue_long, edition_city_long), %f, %f) <= %d
 				AND start_date <= '%s'
 				AND end_date >= '%s'
 				AND event_id > %d
@@ -1380,9 +1525,7 @@ func queryEventsWithinPolygon(clickhouseConn driver.Conn, isCircle bool, centerL
 		query = fmt.Sprintf(`
 			SELECT event_id
 			FROM testing_db.allevent_ch
-			WHERE venue_lat IS NOT NULL
-				AND venue_long IS NOT NULL
-				AND pointInPolygon((toFloat64OrDefault(venue_long, 0.0), toFloat64OrDefault(venue_lat, 0.0)), %s)
+			WHERE pointInPolygon((coalesce(venue_long, edition_city_long), coalesce(venue_lat, edition_city_lat)), %s)
 				AND start_date <= '%s'
 				AND end_date >= '%s'
 				AND event_id > %d
@@ -1391,6 +1534,7 @@ func queryEventsWithinPolygon(clickhouseConn driver.Conn, isCircle bool, centerL
 		`, polygonStr, endDate, startDate, lastEventID)
 	}
 
+	log.Printf("Alert event query: %s", query)
 	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
 		errStr := err.Error()
@@ -1549,7 +1693,7 @@ func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJS
 					}
 					polygonsToQuery = polygonStrs
 				} else {
-					polygonStr, err := convertFeatureToClickHousePolygon(feature, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL)
+					polygonStr, err := convertFeatureToClickHousePolygon(feature, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL, class)
 					if err != nil {
 						log.Printf("WARNING: Failed to convert polygon (same as PostGIS would return empty): %v (geometry type: %s, class: %s, alertID: %s, polygonSourceURL: %s, gdacSearchURL: %s)", err, feature.Geometry.Type, class, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL)
 						LogPolygonError(metadata.AlertID, metadata.GDACSearchURL, metadata.GeometryLink)
@@ -1776,6 +1920,16 @@ func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint 
 		}
 	}()
 
+	// Initialize alert country logger (per-country processing log)
+	if err := InitAlertCountryLogger(); err != nil {
+		log.Printf("WARNING: Failed to initialize alert country logger: %v", err)
+	}
+	defer func() {
+		if err := FinalizeAlertCountryLogger(); err != nil {
+			log.Printf("WARNING: Failed to finalize alert country logger: %v", err)
+		}
+	}()
+
 	endDate := time.Now()
 	startDate := endDate.AddDate(0, 0, -365)
 	startDateStr := startDate.Format("2006-01-02")
@@ -1817,12 +1971,14 @@ func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint 
 			initialGDACSearchURL, _, err := fetchAlerts(gdacBaseURL, gdacEndpoint, payload)
 			if err != nil {
 				log.Printf("ERROR: Failed to build GDAC search URL for %s: %v", countryName, err)
+				LogAlertCountryFetchError(countryName, err, time.Since(countryStart))
 				return
 			}
 
 			features, err := getAlerts(httpClient, gdacBaseURL, gdacEndpoint, []FetchAlertRequest{payload}, 1)
 			if err != nil {
 				log.Printf("ERROR: Failed to fetch alerts for %s: %v", countryName, err)
+				LogAlertCountryFetchError(countryName, err, time.Since(countryStart))
 				return
 			}
 
@@ -1831,11 +1987,15 @@ func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint 
 			now := time.Now()
 			var countryAlerts []AlertChRecord
 			countryMetadata := make(map[string]*AlertMetadata)
+			skippedDroughts := 0
+			var parseErrors []string
 
 			for _, feature := range features {
 				alert, metadata, err := parseAlertFeature(feature, now, countryName)
 				if err != nil {
+					errMsg := err.Error()
 					log.Printf("ERROR: Failed to parse alert feature: %v", err)
+					parseErrors = append(parseErrors, errMsg)
 					continue
 				}
 				if alert != nil && metadata != nil {
@@ -1845,6 +2005,9 @@ func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint 
 					if metadata.GeometryLink != "" {
 						countryMetadata[metadata.AlertID] = metadata
 					}
+				} else {
+					// nil, nil, nil = skipped DROUGHT
+					skippedDroughts++
 				}
 			}
 
@@ -1856,7 +2019,9 @@ func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint 
 			mu.Unlock()
 
 			countryEnd := time.Now()
-			log.Printf("Processed %d alerts for %s in %v", len(countryAlerts), countryName, countryEnd.Sub(countryStart))
+			duration := countryEnd.Sub(countryStart)
+			log.Printf("Processed %d alerts for %s in %v", len(countryAlerts), countryName, duration)
+			LogAlertCountryResult(countryName, len(features), len(countryAlerts), skippedDroughts, parseErrors, duration, true)
 		}(country)
 	}
 
@@ -1865,6 +2030,7 @@ func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint 
 	log.Printf("Total alerts fetched: %d", len(allAlerts))
 
 	batchSize := 1000
+	insertBatchErr := error(nil)
 	for i := 0; i < len(allAlerts); i += batchSize {
 		end := i + batchSize
 		if end > len(allAlerts) {
@@ -1874,20 +2040,28 @@ func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint 
 
 		if err := InsertAlertsChDataSingleWorker(clickhouseConn, batch); err != nil {
 			log.Printf("ERROR: Failed to insert alert batch: %v", err)
+			insertBatchErr = err
+			LogAlertPhase("Batch insert", fmt.Sprintf("batch %d-%d of %d", i+1, end, len(allAlerts)), false, err)
 			return fmt.Errorf("failed to insert alert batch: %w", err)
 		}
 	}
 
 	endTime := time.Now()
 	log.Printf("Successfully processed and inserted %d alerts in %v", len(allAlerts), endTime.Sub(startTime))
+	LogAlertPhase("Batch insert", fmt.Sprintf("%d alerts in %d batch(es)", len(allAlerts), (len(allAlerts)+batchSize-1)/batchSize), insertBatchErr == nil, insertBatchErr)
 
 	if len(allMetadata) > 0 {
 		log.Printf("Starting polygon processing for %d alerts with geometry links", len(allMetadata))
-		if err := processPolygons(clickhouseConn, httpClient, allMetadata, semaphore, eventTypeTableName); err != nil {
-			log.Printf("ERROR: Failed to process polygons: %v", err)
-			return fmt.Errorf("failed to process polygons: %w", err)
+		polygonErr := processPolygons(clickhouseConn, httpClient, allMetadata, semaphore, eventTypeTableName)
+		if polygonErr != nil {
+			log.Printf("ERROR: Failed to process polygons: %v", polygonErr)
+			LogAlertPhase("Polygon processing", fmt.Sprintf("%d alerts with geometry", len(allMetadata)), false, polygonErr)
+			return fmt.Errorf("failed to process polygons: %w", polygonErr)
 		}
 		log.Printf("Completed polygon processing")
+		LogAlertPhase("Polygon processing", fmt.Sprintf("%d alerts with geometry links mapped to events", len(allMetadata)), true, nil)
+	} else {
+		LogAlertPhase("Polygon processing", "no alerts with geometry links - skipped", true, nil)
 	}
 
 	return nil
