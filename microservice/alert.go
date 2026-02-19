@@ -1164,7 +1164,7 @@ func fetchAndProcessPolygon(httpClient *http.Client, alertID, geometryLink strin
 	}, nil
 }
 
-func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metadataMap map[string]*AlertMetadata, semaphore chan struct{}, eventTypeTableName string) error {
+func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metadataMap map[string]*AlertMetadata, semaphore chan struct{}, eventTypeTableName string, config shared.Config) error {
 	type GeometryLink struct {
 		AlertID      string
 		GeometryLink string
@@ -1277,11 +1277,14 @@ func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metada
 			log.Printf("Inserted %d polygons for chunk %d", len(chunkPolygons), chunkNum)
 		}
 
+		locationTableName := shared.GetTableNameWithDB(shared.GetClickHouseTableName("location_ch", config), config)
+		alleventTableName := shared.GetTableNameWithDB(shared.GetClickHouseTableName("allevent_ch", config), config)
+
 		for _, pg := range chunkPolygonsWithMetadata {
 			metadata := pg.Metadata
 			polygonGeoJSON := pg.Polygon.Polygon
 
-			eventTypeRecords, err := processPolygonFeaturesAndMapEvents(clickhouseConn, polygonGeoJSON, metadata, alertEventTypeID)
+			eventTypeRecords, err := processPolygonFeaturesAndMapEvents(clickhouseConn, polygonGeoJSON, metadata, alertEventTypeID, locationTableName, alleventTableName)
 			if err != nil {
 				log.Printf("ERROR: Failed to map events for alert %s (polygon): %v", metadata.AlertID, err)
 				continue
@@ -1505,48 +1508,103 @@ func convertMultiPolygonToClickHouse(feature GeoJSONFeature, alertID string, _ s
 	return polygonStrs, nil
 }
 
-func queryEventsWithinPolygon(clickhouseConn driver.Conn, isCircle bool, centerLat, centerLon float64, radiusMeters int, polygonStr string, startDate, endDate string, lastEventID uint32) ([]uint32, error) {
+// locationIDsResult holds venue and city IDs from location_ch that fall within the geometry.
+type locationIDsResult struct {
+	VenueIDs []uint32
+	CityIDs  []uint32
+}
+
+func queryLocationsWithinGeometry(clickhouseConn driver.Conn, locationTableName string, isCircle bool, centerLat, centerLon float64, radiusMeters int, polygonStr string) (*locationIDsResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	var query string
 	if isCircle {
 		query = fmt.Sprintf(`
-			SELECT event_id
-			FROM testing_db.allevent_ch
-			WHERE greatCircleDistance(coalesce(venue_lat, edition_city_lat), coalesce(venue_long, edition_city_long), %f, %f) <= %d
-				AND start_date <= '%s'
-				AND end_date >= '%s'
-				AND event_id > %d
-			ORDER BY event_id
-			LIMIT 1000
-		`, centerLat, centerLon, radiusMeters, endDate, startDate, lastEventID)
+			SELECT id, location_type
+			FROM %s
+			WHERE location_type IN ('VENUE', 'CITY')
+				AND (coalesce(latitude, city_latitude) IS NOT NULL AND coalesce(longitude, city_longitude) IS NOT NULL)
+				AND greatCircleDistance(coalesce(latitude, city_latitude), coalesce(longitude, city_longitude), %f, %f) <= %d
+		`, locationTableName, centerLat, centerLon, radiusMeters)
 	} else {
 		query = fmt.Sprintf(`
-			SELECT event_id
-			FROM testing_db.allevent_ch
-			WHERE pointInPolygon((coalesce(venue_long, edition_city_long), coalesce(venue_lat, edition_city_lat)), %s)
-				AND start_date <= '%s'
-				AND end_date >= '%s'
-				AND event_id > %d
-			ORDER BY event_id
-			LIMIT 1000
-		`, polygonStr, endDate, startDate, lastEventID)
+			SELECT id, location_type
+			FROM %s
+			WHERE location_type IN ('VENUE', 'CITY')
+				AND (coalesce(latitude, city_latitude) IS NOT NULL AND coalesce(longitude, city_longitude) IS NOT NULL)
+				AND pointInPolygon((toFloat64OrDefault(coalesce(longitude, city_longitude), 0.0), toFloat64OrDefault(coalesce(latitude, city_latitude), 0.0)), %s)
+		`, locationTableName, polygonStr)
 	}
 
-	log.Printf("Alert event query: %s", query)
+	log.Printf("[LOCATION] Alert location_ch query: %s", query)
 	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
 		errStr := err.Error()
-
 		if strings.Contains(errStr, "Polygon is not valid") || strings.Contains(errStr, "wrong topological dimension") || strings.Contains(errStr, "degenerate") {
 			return nil, fmt.Errorf("INVALID_POLYGON: %w", err)
 		}
-
 		if strings.Contains(errStr, "Max query size exceeded") || strings.Contains(errStr, "max_query_size") {
-			return nil, fmt.Errorf("polygon too large for ClickHouse query (max_query_size limit): %w. Consider increasing ClickHouse max_query_size setting or using a different approach", err)
+			return nil, fmt.Errorf("polygon too large for ClickHouse query: %w", err)
 		}
-		return nil, fmt.Errorf("failed to query events: %w", err)
+		return nil, fmt.Errorf("failed to query locations: %w", err)
+	}
+	defer rows.Close()
+
+	result := &locationIDsResult{VenueIDs: []uint32{}, CityIDs: []uint32{}}
+	for rows.Next() {
+		var id uint32
+		var locationType string
+		if err := rows.Scan(&id, &locationType); err != nil {
+			log.Printf("ERROR: Failed to scan location row: %v", err)
+			continue
+		}
+		switch locationType {
+		case "VENUE":
+			result.VenueIDs = append(result.VenueIDs, id)
+		case "CITY":
+			result.CityIDs = append(result.CityIDs, id)
+		}
+	}
+	return result, nil
+}
+
+func queryEventsByLocationIDs(clickhouseConn driver.Conn, alleventTableName string, venueIDs, cityIDs []uint32, startDate, endDate string) ([]uint32, error) {
+	if len(venueIDs) == 0 && len(cityIDs) == 0 {
+		return []uint32{}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var conditions []string
+	if len(venueIDs) > 0 {
+		venueStrs := make([]string, len(venueIDs))
+		for i, v := range venueIDs {
+			venueStrs[i] = fmt.Sprintf("%d", v)
+		}
+		conditions = append(conditions, fmt.Sprintf("venue_id IN (%s)", strings.Join(venueStrs, ",")))
+	}
+	if len(cityIDs) > 0 {
+		cityStrs := make([]string, len(cityIDs))
+		for i, c := range cityIDs {
+			cityStrs[i] = fmt.Sprintf("%d", c)
+		}
+		conditions = append(conditions, fmt.Sprintf("edition_city IN (%s)", strings.Join(cityStrs, ",")))
+	}
+	whereClause := "(" + strings.Join(conditions, ") OR (") + ")"
+	query := fmt.Sprintf(`
+		SELECT DISTINCT event_id
+		FROM %s
+		WHERE %s
+			AND start_date <= '%s'
+			AND end_date >= '%s'
+	`, alleventTableName, whereClause, endDate, startDate)
+
+	log.Printf("[EVENT] Alert allevent_ch query (venue_ids=%d, city_ids=%d): %s", len(venueIDs), len(cityIDs), query)
+	rows, err := clickhouseConn.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query events by location: %w", err)
 	}
 	defer rows.Close()
 
@@ -1559,11 +1617,10 @@ func queryEventsWithinPolygon(clickhouseConn driver.Conn, isCircle bool, centerL
 		}
 		eventIDs = append(eventIDs, eventID)
 	}
-
 	return eventIDs, nil
 }
 
-func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJSON string, metadata *AlertMetadata, alertEventTypeID uint32) ([]EventTypeChRecord, error) {
+func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJSON string, metadata *AlertMetadata, alertEventTypeID uint32, locationTableName string, alleventTableName string) ([]EventTypeChRecord, error) {
 	var geojson GeoJSON
 	if err := json.Unmarshal([]byte(polygonGeoJSON), &geojson); err != nil {
 		return nil, fmt.Errorf("failed to parse polygon GeoJSON: %w", err)
@@ -1647,8 +1704,12 @@ func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJS
 			}
 		}
 
-		lastEventID := uint32(0)
 		addBuffer := true
+
+		// Cache for circle location results to avoid redundant queries when buffer adds no extra radius
+		var cachedCircleVenueIDs, cachedCircleCityIDs []uint32
+		var cachedCircleRadiusMeters int
+		cachedCircleLat, cachedCircleLon := 0.0, 0.0
 
 		for {
 			var eventIDs []uint32
@@ -1675,13 +1736,35 @@ func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJS
 					endDate = bufferEndDateWithRecovery
 				}
 
-				eventIDs, err = queryEventsWithinPolygon(clickhouseConn, true, metadata.OriginLatitude, metadata.OriginLongitude, radiusMeters, "", metadata.StartDate, endDate, lastEventID)
+				// Step 1: Get all location IDs (venue + city) within circle from location_ch
+				// Reuse cached result when same center and radius (avoids duplicate query when bufferRadiusKm=0)
+				var allVenueIDs, allCityIDs []uint32
+				if cachedCircleLat == metadata.OriginLatitude && cachedCircleLon == metadata.OriginLongitude && cachedCircleRadiusMeters == radiusMeters {
+					allVenueIDs = cachedCircleVenueIDs
+					allCityIDs = cachedCircleCityIDs
+				} else {
+					locResult, locErr := queryLocationsWithinGeometry(clickhouseConn, locationTableName, true, metadata.OriginLatitude, metadata.OriginLongitude, radiusMeters, "")
+					if locErr != nil {
+						log.Printf("ERROR: Failed to query locations for circle: %v", locErr)
+						err = locErr
+						break
+					}
+					allVenueIDs = locResult.VenueIDs
+					allCityIDs = locResult.CityIDs
+					cachedCircleVenueIDs = allVenueIDs
+					cachedCircleCityIDs = allCityIDs
+					cachedCircleRadiusMeters = radiusMeters
+					cachedCircleLat = metadata.OriginLatitude
+					cachedCircleLon = metadata.OriginLongitude
+				}
+
+				// Step 2: Get events from allevent_ch by venue_id or edition_city
+				eventIDs, err = queryEventsByLocationIDs(clickhouseConn, alleventTableName, allVenueIDs, allCityIDs, metadata.StartDate, endDate)
 				if err != nil {
 					log.Printf("ERROR: Failed to query events for circle: %v", err)
 					break
 				}
 			} else {
-				var allEventIDs []uint32
 				var polygonsToQuery []string
 
 				if feature.Geometry.Type == "MultiPolygon" {
@@ -1707,30 +1790,42 @@ func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJS
 					endDate = bufferEndDateWithRecovery
 				}
 
+				// Step 1: Get all location IDs (venue + city) within polygon(s) from location_ch
+				var allVenueIDs, allCityIDs []uint32
+				seenVenue := make(map[uint32]bool)
+				seenCity := make(map[uint32]bool)
 				for _, polygonStr := range polygonsToQuery {
-					polygonEventIDs, err := queryEventsWithinPolygon(clickhouseConn, false, 0, 0, 0, polygonStr, metadata.StartDate, endDate, lastEventID)
-					if err != nil {
-						errStr := err.Error()
+					locResult, locErr := queryLocationsWithinGeometry(clickhouseConn, locationTableName, false, 0, 0, 0, polygonStr)
+					if locErr != nil {
+						errStr := locErr.Error()
 						if strings.Contains(errStr, "INVALID_POLYGON:") {
-							log.Printf("WARNING: Invalid polygon detected (same as PostGIS would return empty) - skipping this polygon (class: %s, alertID: %s, polygonSourceURL: %s, gdacSearchURL: %s)", class, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL)
+							log.Printf("WARNING: Invalid polygon detected (same as PostGIS would return empty) - skipping this polygon (class: %s, alertID: %s)", class, metadata.AlertID)
 							LogPolygonError(metadata.AlertID, metadata.GDACSearchURL, metadata.GeometryLink)
-							continue
+						} else {
+							log.Printf("ERROR: Failed to query locations for polygon: %v", locErr)
 						}
-						log.Printf("ERROR: Failed to query events for polygon: %v", err)
 						continue
 					}
-					allEventIDs = append(allEventIDs, polygonEventIDs...)
-				}
-
-				seen := make(map[uint32]bool)
-				var uniqueEventIDs []uint32
-				for _, id := range allEventIDs {
-					if !seen[id] {
-						seen[id] = true
-						uniqueEventIDs = append(uniqueEventIDs, id)
+					for _, v := range locResult.VenueIDs {
+						if !seenVenue[v] {
+							seenVenue[v] = true
+							allVenueIDs = append(allVenueIDs, v)
+						}
+					}
+					for _, c := range locResult.CityIDs {
+						if !seenCity[c] {
+							seenCity[c] = true
+							allCityIDs = append(allCityIDs, c)
+						}
 					}
 				}
-				eventIDs = uniqueEventIDs
+
+				// Step 2: Get events from allevent_ch by venue_id or edition_city
+				eventIDs, err = queryEventsByLocationIDs(clickhouseConn, alleventTableName, allVenueIDs, allCityIDs, metadata.StartDate, endDate)
+				if err != nil {
+					log.Printf("ERROR: Failed to query events for polygon: %v", err)
+					break
+				}
 			}
 
 			for _, eventID := range eventIDs {
@@ -1757,10 +1852,6 @@ func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJS
 					StartDate:  metadata.StartDate,
 					EndDate:    endDate,
 				}
-			}
-
-			if len(eventIDs) > 0 {
-				lastEventID = eventIDs[len(eventIDs)-1]
 			}
 
 			if addBuffer && class == "Poly_Circle" && len(eventIDs) < 1000 {
@@ -2052,7 +2143,7 @@ func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint 
 
 	if len(allMetadata) > 0 {
 		log.Printf("Starting polygon processing for %d alerts with geometry links", len(allMetadata))
-		polygonErr := processPolygons(clickhouseConn, httpClient, allMetadata, semaphore, eventTypeTableName)
+		polygonErr := processPolygons(clickhouseConn, httpClient, allMetadata, semaphore, eventTypeTableName, config)
 		if polygonErr != nil {
 			log.Printf("ERROR: Failed to process polygons: %v", polygonErr)
 			LogAlertPhase("Polygon processing", fmt.Sprintf("%d alerts with geometry", len(allMetadata)), false, polygonErr)
