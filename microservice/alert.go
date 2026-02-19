@@ -1514,13 +1514,13 @@ func queryEventsWithinPolygon(clickhouseConn driver.Conn, isCircle bool, centerL
 		query = fmt.Sprintf(`
 			SELECT event_id
 			FROM testing_db.allevent_ch
-			WHERE greatCircleDistance(coalesce(venue_lat, edition_city_lat), coalesce(venue_long, edition_city_long), %f, %f) <= %d
+			WHERE greatCircleDistance(coalesce(venue_long, edition_city_long), coalesce(venue_lat, edition_city_lat), %f, %f) <= %d
 				AND start_date <= '%s'
 				AND end_date >= '%s'
 				AND event_id > %d
 			ORDER BY event_id
 			LIMIT 1000
-		`, centerLat, centerLon, radiusMeters, endDate, startDate, lastEventID)
+		`, centerLon, centerLat, radiusMeters, endDate, startDate, lastEventID)
 	} else {
 		query = fmt.Sprintf(`
 			SELECT event_id
