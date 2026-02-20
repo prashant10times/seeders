@@ -258,6 +258,183 @@ func buildEventProductChMigrationData(db *sql.DB, startID, endID int, batchSize 
 	return results, nil
 }
 
+// buildEventProductChDataForEventIDs fetches event_products + product data for the given event IDs. Used for incremental sync.
+func buildEventProductChDataForEventIDs(db *sql.DB, eventIDs []int64) ([]map[string]interface{}, error) {
+	if len(eventIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT 
+			p.id as product_id,
+			ep.event,
+			ep.edition,
+			p.name as product_name,
+			p.published as product_published,
+			ep.published as event_product_published,
+			p.created as product_created
+		FROM event_products ep
+		INNER JOIN product p ON ep.product = p.id
+		WHERE ep.published IN (0, 1)
+		AND ep.event IN (%s)
+		ORDER BY ep.event, ep.edition, p.id`, strings.Join(placeholders, ","))
+	log.Printf("[Query] %s", query)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, err
+		}
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			if values[i] != nil {
+				row[col] = values[i]
+			} else {
+				row[col] = nil
+			}
+		}
+		results = append(results, row)
+	}
+	return results, rows.Err()
+}
+
+// BuildEventProductChRecordsForEventIDs fetches all event_products rows for the given event IDs
+// and builds EventProductChRecords. Used for incremental sync.
+func BuildEventProductChRecordsForEventIDs(db *sql.DB, eventIDs []int64) ([]EventProductChRecord, error) {
+	rawData, err := buildEventProductChDataForEventIDs(db, eventIDs)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().Format("2006-01-02 15:04:05")
+	var records []EventProductChRecord
+	for _, rec := range rawData {
+		productID := shared.ConvertToUInt32(rec["product_id"])
+		createdStr := shared.SafeConvertToDateTimeString(rec["product_created"])
+		idInputString := fmt.Sprintf("%d-%s", productID, createdStr)
+		productUUID := shared.GenerateUUIDFromString(idInputString)
+		productName := shared.ConvertToString(rec["product_name"])
+		slug := createSlug(productName)
+
+		records = append(records, EventProductChRecord{
+			ID:                    productID,
+			ProductUUID:           productUUID,
+			Name:                  productName,
+			Slug:                  slug,
+			Event:                 shared.ConvertToUInt32(rec["event"]),
+			Edition:               shared.ConvertToUInt32(rec["edition"]),
+			ProductPublished:      shared.ConvertToInt8(rec["product_published"]),
+			EventProductPublished: shared.ConvertToInt8(rec["event_product_published"]),
+			Created:               createdStr,
+			LastUpdatedAt:         now,
+		})
+	}
+	return records, nil
+}
+
+// InsertEventProductChDataIntoTable inserts records into the specified table. Used for incremental sync.
+func InsertEventProductChDataIntoTable(clickhouseConn driver.Conn, records []EventProductChRecord, tableName string, numWorkers int) error {
+	if len(records) == 0 {
+		return nil
+	}
+	if numWorkers <= 1 {
+		return insertEventProductChBatchIntoTable(clickhouseConn, records, tableName)
+	}
+	batchSize := (len(records) + numWorkers - 1) / numWorkers
+	results := make(chan error, numWorkers)
+	semaphore := make(chan struct{}, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		start := i * batchSize
+		end := start + batchSize
+		if end > len(records) {
+			end = len(records)
+		}
+		if start >= len(records) {
+			break
+		}
+		semaphore <- struct{}{}
+		go func(start, end int) {
+			defer func() { <-semaphore }()
+			batch := records[start:end]
+			results <- insertEventProductChBatchIntoTable(clickhouseConn, batch, tableName)
+		}(start, end)
+	}
+	for i := 0; i < numWorkers && i*batchSize < len(records); i++ {
+		if err := <-results; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertEventProductChBatchIntoTable(clickhouseConn driver.Conn, records []EventProductChRecord, tableName string) error {
+	if len(records) == 0 {
+		return nil
+	}
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	query := fmt.Sprintf(`
+		INSERT INTO %s (
+			id, product_uuid, name, slug, event, edition, product_published, event_product_published, created, last_updated_at
+		)`, tableName)
+
+	batch, err := clickhouseConn.PrepareBatch(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to prepare batch for %s: %w", tableName, err)
+	}
+	for _, record := range records {
+		if err := batch.Append(
+			record.ID,
+			record.ProductUUID,
+			record.Name,
+			record.Slug,
+			record.Event,
+			record.Edition,
+			record.ProductPublished,
+			record.EventProductPublished,
+			record.Created,
+			record.LastUpdatedAt,
+		); err != nil {
+			batch.Abort()
+			return fmt.Errorf("failed to append record: %w", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to send batch: %w", err)
+	}
+	return nil
+}
+
 func insertEventProductChDataIntoClickHouse(clickhouseConn driver.Conn, eventProductChRecords []EventProductChRecord, numWorkers int) error {
 	if len(eventProductChRecords) == 0 {
 		return nil
