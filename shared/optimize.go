@@ -894,12 +894,20 @@ func OptimizeSingleTable(clickhouseConn driver.Conn, tableName string, config Co
 		return nil
 	}
 
+	targetTable := optimizeConfig.TempTableName
+	if !config.UseTempTables {
+		targetTable = optimizeConfig.TableName
+		log.Printf("Incremental mode: optimizing main table %s", targetTable)
+	}
+	optimizeConfigForPartitions := optimizeConfig
+	optimizeConfigForPartitions.TempTableName = targetTable
+
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	log.Printf("OPTIMIZING TABLE: %s (after insertion)", optimizeConfig.TableName)
+	log.Printf("OPTIMIZING TABLE: %s (after insertion)", targetTable)
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	log.Printf("Creating Native protocol connection for optimization (port %s)...", config.ClickhouseNativePort)
-	nativeConn, err := setupNativeProtocolConnectionForOptimize(config)
+	nativeConn, err := SetupNativeProtocolConnectionForOptimize(config)
 	if err != nil {
 		errMsg := fmt.Errorf("failed to create Native protocol connection for optimization: %w", err)
 		logOptimizeToFile("ERROR", "Optimize Single Table", errMsg.Error())
@@ -909,14 +917,14 @@ func OptimizeSingleTable(clickhouseConn driver.Conn, tableName string, config Co
 		log.Printf("✓ Native protocol connection established for optimization")
 	}
 
-	if err := OptimizeTablePartitions(nativeConn, optimizeConfig, config, errorLogFile); err != nil {
-		logOptimizeToFile("ERROR", "Optimize Single Table", fmt.Sprintf("Error optimizing %s: %v", tableName, err))
+	if err := OptimizeTablePartitions(nativeConn, optimizeConfigForPartitions, config, errorLogFile); err != nil {
+		logOptimizeToFile("ERROR", "Optimize Single Table", fmt.Sprintf("Error optimizing %s: %v", targetTable, err))
 		log.Printf("⚠️  Error optimizing %s: %v", tableName, err)
 		return err
 	}
 
-	logOptimizeToFile("SUCCESS", "Optimize Single Table", fmt.Sprintf("Successfully completed optimization for %s", tableName))
-	log.Printf("✓ Completed optimization for %s", tableName)
+	logOptimizeToFile("SUCCESS", "Optimize Single Table", fmt.Sprintf("Successfully completed optimization for %s", targetTable))
+	log.Printf("✓ Completed optimization for %s", targetTable)
 	log.Println("")
 
 	return nil
@@ -976,7 +984,9 @@ func OptimizeAllPhase1Tables(clickhouseConn driver.Conn, config Config, errorLog
 	return nil
 }
 
-func setupNativeProtocolConnectionForOptimize(config Config) (driver.Conn, error) {
+// SetupNativeProtocolConnectionForOptimize creates a ClickHouse Native protocol connection
+// for operations that need it (e.g. OPTIMIZE, ALTER UPDATE). Use Native to avoid HTTP response size limits.
+func SetupNativeProtocolConnectionForOptimize(config Config) (driver.Conn, error) {
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{config.ClickhouseHost + ":" + config.ClickhouseNativePort},
 		Auth: clickhouse.Auth{

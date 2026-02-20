@@ -4257,12 +4257,19 @@ collectLoop:
 }
 
 func insertalleventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[string]interface{}, numWorkers int, config shared.Config) error {
+	return insertalleventDataIntoClickHouseTable(clickhouseConn, records, numWorkers, config, "allevent_temp")
+}
+
+func insertalleventDataIntoClickHouseTable(clickhouseConn driver.Conn, records []map[string]interface{}, numWorkers int, config shared.Config, tableName string) error {
 	if len(records) == 0 {
 		return nil
 	}
+	if tableName == "" {
+		tableName = "allevent_temp"
+	}
 
 	if numWorkers <= 1 {
-		return insertalleventDataSingleWorker(clickhouseConn, records, config)
+		return insertalleventDataSingleWorkerTable(clickhouseConn, records, config, tableName)
 	}
 
 	batchSize := (len(records) + numWorkers - 1) / numWorkers
@@ -4290,7 +4297,7 @@ func insertalleventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[
 				wg.Done()
 			}()
 			batch := records[start:end]
-			err := insertalleventDataSingleWorker(clickhouseConn, batch, config)
+			err := insertalleventDataSingleWorkerTable(clickhouseConn, batch, config, tableName)
 			results <- err
 		}(start, end)
 	}
@@ -4308,8 +4315,15 @@ func insertalleventDataIntoClickHouse(clickhouseConn driver.Conn, records []map[
 }
 
 func insertalleventDataSingleWorker(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) error {
+	return insertalleventDataSingleWorkerTable(clickhouseConn, records, config, "allevent_temp")
+}
+
+func insertalleventDataSingleWorkerTable(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config, tableName string) error {
 	if len(records) == 0 {
 		return nil
+	}
+	if tableName == "" {
+		tableName = "allevent_temp"
 	}
 
 	const maxBatchSize = 10000
@@ -4321,19 +4335,26 @@ func insertalleventDataSingleWorker(clickhouseConn driver.Conn, records []map[st
 			}
 			chunk := records[i:end]
 			log.Printf("Inserting chunk %d-%d (%d records)", i+1, end, len(chunk))
-			if err := insertalleventDataChunk(clickhouseConn, chunk, config); err != nil {
+			if err := insertalleventDataChunkWithTable(clickhouseConn, chunk, config, tableName); err != nil {
 				return fmt.Errorf("failed to insert chunk %d-%d: %v", i+1, end, err)
 			}
 		}
 		return nil
 	}
 
-	return insertalleventDataChunk(clickhouseConn, records, config)
+	return insertalleventDataChunkWithTable(clickhouseConn, records, config, tableName)
 }
 
 func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config) error {
+	return insertalleventDataChunkWithTable(clickhouseConn, records, config, "allevent_temp")
+}
+
+func insertalleventDataChunkWithTable(clickhouseConn driver.Conn, records []map[string]interface{}, config shared.Config, tableName string) error {
 	if len(records) == 0 {
 		return nil
+	}
+	if tableName == "" {
+		tableName = "allevent_temp"
 	}
 
 	connectionCheckErr := shared.RetryWithBackoff(
@@ -4349,8 +4370,8 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second)
 	defer cancel()
 
-	insertSQL := `
-		INSERT INTO allevent_temp (
+	insertSQL := fmt.Sprintf(`
+		INSERT INTO %s (
 			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating, 10timesEventPageUrl,
 			start_date, end_date,
 			edition_id, edition_uuid, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
@@ -4366,7 +4387,7 @@ func insertalleventDataChunk(clickhouseConn driver.Conn, records []map[string]in
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
 			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, futureExpexctedStartDate, futureExpexctedEndDate, predictionScore, PrimaryEventType, verifiedOn, last_updated_at, version
 		)
-	`
+	`, tableName)
 
 	var batch driver.Batch
 	var err error

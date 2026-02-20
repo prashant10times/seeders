@@ -146,6 +146,41 @@ func SetupConnections(config shared.Config) (*sql.DB, driver.Conn, *elasticsearc
 	return mysqlDB, clickhouseDB, esClient, nil
 }
 
+func SetupNativeProtocolClickHouseConnection(config shared.Config) (driver.Conn, error) {
+	conn, err := clickhouse.Open(&clickhouse.Options{
+		Addr: []string{config.ClickhouseHost + ":" + config.ClickhouseNativePort},
+		Auth: clickhouse.Auth{
+			Database: config.ClickhouseDB,
+			Username: config.ClickhouseUser,
+			Password: config.ClickhousePassword,
+		},
+		Protocol: clickhouse.Native,
+		Settings: clickhouse.Settings{
+			"max_execution_time": 900,
+			"max_block_size":     1000000,
+			"mutations_sync":     1,
+			"receive_timeout":    900,
+			"send_timeout":       900,
+		},
+		Compression: &clickhouse.Compression{
+			Method: clickhouse.CompressionLZ4,
+		},
+		MaxOpenConns:     50,
+		MaxIdleConns:     25,
+		DialTimeout:      900 * time.Second,
+		ReadTimeout:      900 * time.Second,
+		ConnOpenStrategy: clickhouse.ConnOpenInOrder,
+		Debug:            false,
+	})
+	if err != nil {
+		if conn != nil {
+			conn.Close()
+		}
+		return nil, fmt.Errorf("ClickHouse Native protocol connection failed: %v", err)
+	}
+	return conn, nil
+}
+
 func SetupNativeClickHouseConnection(config shared.Config) (driver.Conn, error) {
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{config.ClickhouseHost + ":" + config.ClickhousePort},

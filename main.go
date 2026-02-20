@@ -1866,6 +1866,7 @@ func main() {
 	var eventProductChOnly bool
 	var visitorSpreadOnly bool
 	var allEventOnly bool
+	var incrementalAlleventOnly bool
 	var holidaysOnly bool
 	var alertsOnly bool
 	var allScripts bool
@@ -1894,6 +1895,7 @@ func main() {
 	flag.BoolVar(&eventDesignationOnly, "eventdesignation", false, "Process only event designation data (default: false)")
 	flag.BoolVar(&visitorSpreadOnly, "visitorspread", false, "Process only visitor spread data (default: false)")
 	flag.BoolVar(&allEventOnly, "allevent", false, "Process only all event data (default: false)")
+	flag.BoolVar(&incrementalAlleventOnly, "allevent-incremental", false, "Incremental sync for allevent (only changed since yesterday) (default: false)")
 	flag.BoolVar(&holidaysOnly, "holidays", false, "Process holidays into allevent_ch (automatically handles event types) (default: false)")
 	flag.BoolVar(&alertsOnly, "alerts", false, "Process alerts from GDAC API into alerts_ch (default: false)")
 	flag.BoolVar(&allScripts, "all", false, "Run all seeding scripts in order: location, eventtype, allevent, category, product, ranking, designation, holidays, alerts, exhibitor, speaker, sponsor, visitors, visitorspread (default: false)")
@@ -1941,6 +1943,8 @@ func main() {
 		log.Println("        Process only visitor spread data (default: false)")
 		log.Println("  -allevent")
 		log.Println("        Process only all event data (default: false)")
+		log.Println("  -allevent-incremental")
+		log.Println("        Incremental sync for allevent (only changed since yesterday) (default: false)")
 		log.Println("  -holiday-eventtypes")
 		log.Println("        Process only holiday event types into event_type_ch (default: false)")
 		log.Println("  -holidays")
@@ -2051,6 +2055,8 @@ func main() {
 		log.Printf("Mode: VISITOR SPREAD ONLY")
 	} else if allEventOnly {
 		log.Printf("Mode: ALL EVENT ONLY")
+	} else if incrementalAlleventOnly {
+		log.Printf("Mode: INCREMENTAL ALLEVENT (changed since yesterday)")
 	} else if holidaysOnly {
 		log.Printf("Mode: HOLIDAYS ONLY")
 	} else if daywiseOnly {
@@ -2089,6 +2095,8 @@ func main() {
 		log.Printf("Elasticsearch: Required (needed for visitor spread data)")
 	} else if allEventOnly {
 		log.Printf("Elasticsearch: Required (needed for all event data)")
+	} else if incrementalAlleventOnly {
+		log.Printf("Elasticsearch: Required (needed for incremental allevent data)")
 	} else if daywiseOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for day-wise economic impact)")
 	}
@@ -2401,6 +2409,14 @@ func main() {
 			log.Fatalf("Failed to swap event_visitorSpread_ch: %v", err)
 		}
 		log.Println("✓ event_visitorSpread_ch swapped successfully")
+	} else if incrementalAlleventOnly {
+		utilsConfig := config
+		utilsConfig.UseTempTables = false
+		if err := microservice.ProcessIncrementalAllevent(mysqlDB, clickhouseDB, esClient, utilsConfig); err != nil {
+			logErrorToFile("Incremental Allevent", err)
+			log.Fatalf("Incremental allevent sync failed: %v", err)
+		}
+		log.Println("✓ Incremental allevent sync completed successfully")
 	} else if allEventOnly {
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Ensure Temp Table (All Event)", err)
@@ -2667,6 +2683,7 @@ func main() {
 		log.Println("  -eventdesignation # Process event designation data")
 		log.Println("  -visitorspread    # Process visitor spread data")
 		log.Println("  -allevent         # Process all event data")
+		log.Println("  -allevent-incremental # Incremental allevent sync (changed since yesterday)")
 		log.Println("  -holidays         # Process holidays into allevent_ch")
 		log.Println("  -alerts           # Process alerts from GDAC API into alerts_ch")
 		log.Println("  -daywise          # Process day-wise economic impact from estimate table (standalone, never with -all)")
