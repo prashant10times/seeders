@@ -17,19 +17,7 @@ import (
 
 const alleventIncrementalLogFile = "allevent_incremental.log"
 
-// -----------------------------------------------------------------------------
-// Generic Incremental Sync Framework
-// -----------------------------------------------------------------------------
-// TableIncrementalConfig defines the schema for incremental sync per table.
-// Add a config here when you add incremental logic for a new table.
-// -----------------------------------------------------------------------------
-
 // TableIncrementalConfig holds table-specific config for incremental sync.
-// PrimaryKeyColumns: used in DELETE WHERE (col1, col2) IN ((v1,v2),...)
-// OrderByColumns: ClickHouse ORDER BY key columns; if any change, we must DELETE+reinsert.
-// ExtractPKTuple: produces SQL tuple for one record, e.g. "(1, 2)" for DELETE IN clause.
-// RecordMapKey: produces unique key for map lookup when comparing with existing rows.
-// ScanOrderByRow: scans one row with typed vars (ClickHouse driver requires this, not *interface{}).
 type TableIncrementalConfig struct {
 	TableName          string
 	PrimaryKeyColumns  []string
@@ -73,11 +61,6 @@ var alleventIncrementalConfig = TableIncrementalConfig{
 	},
 }
 
-// -----------------------------------------------------------------------------
-// Generic Incremental Helpers (logging, etc.)
-// -----------------------------------------------------------------------------
-
-// refreshIncrementalLogFile clears the log file at the start of each run.
 func refreshIncrementalLogFile() {
 	f, err := os.OpenFile(alleventIncrementalLogFile, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -87,7 +70,6 @@ func refreshIncrementalLogFile() {
 	f.Close()
 }
 
-// writeIncrementalLog appends a line to the incremental sync log file.
 func writeIncrementalLog(line string) {
 	f, err := os.OpenFile(alleventIncrementalLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -100,7 +82,6 @@ func writeIncrementalLog(line string) {
 	}
 }
 
-// formatPairsForLog returns compact strings of (event_id, edition_id) pairs for logging.
 func formatPairsForLog(pairs []EventEditionPair, maxShow int) []string {
 	if len(pairs) == 0 {
 		return []string{"     (none)"}
@@ -136,7 +117,6 @@ func writePairsToLog(pairs []EventEditionPair, maxShow int) {
 	}
 }
 
-// extractPairsFromRecords returns (event_id, edition_id) pairs from records.
 func extractPairsFromRecords(records []map[string]interface{}) []EventEditionPair {
 	pairs := make([]EventEditionPair, len(records))
 	for i, r := range records {
@@ -148,9 +128,6 @@ func extractPairsFromRecords(records []map[string]interface{}) []EventEditionPai
 	return pairs
 }
 
-// ProcessIncrementalAllevent runs incremental sync for allevent: processes only
-// event-edition pairs that changed since yesterday, classifies by ORDER BY key
-// (published, status, edition_type), then insert-refresh, delete+reinsert, or insert-new.
 func ProcessIncrementalAllevent(
 	mysqlDB *sql.DB,
 	clickhouseConn driver.Conn,
@@ -166,7 +143,6 @@ func ProcessIncrementalAllevent(
 	writeIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL ALLEVENT SYNC STARTED", startTime.Format("2006-01-02 15:04:05")))
 	writeIncrementalLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	// 1. Load event type IDs (required for building records)
 	if eventTypeIDs == nil {
 		ids, err := loadEventTypeIDsFromDB(clickhouseConn, config)
 		if err != nil {
@@ -179,7 +155,6 @@ func ProcessIncrementalAllevent(
 		}
 	}
 
-	// 2. Compute incremental scope: (event_id, edition_id) pairs to refresh
 	pairs, err := fetchIncrementalScope(mysqlDB)
 	if err != nil {
 		return fmt.Errorf("fetch incremental scope: %w", err)
@@ -197,7 +172,6 @@ func ProcessIncrementalAllevent(
 	writeIncrementalLog("   Pairs (event_id, edition_id):")
 	writePairsToLog(pairs, 500)
 
-	// 3. Fetch data and build records
 	records, err := buildIncrementalRecords(mysqlDB, clickhouseConn, esClient, pairs, config)
 	if err != nil {
 		return fmt.Errorf("build incremental records: %w", err)
@@ -213,7 +187,6 @@ func ProcessIncrementalAllevent(
 	writeIncrementalLog("")
 	writeIncrementalLog(fmt.Sprintf("2. RECORDS BUILT: %d", len(records)))
 
-	// 4. Classify by ORDER BY key
 	tableName := shared.GetTableNameWithDB(shared.GetClickHouseTableName(alleventIncrementalConfig.TableName, config), config)
 	tableCfg := &alleventIncrementalConfig
 	situations, err := classifyRecordsByOrderByKey(clickhouseConn, records, tableName, tableCfg)
@@ -246,7 +219,7 @@ func ProcessIncrementalAllevent(
 		writePairsToLog(pairsNew, 500)
 	}
 
-	// 5. Key changed: DELETE + INSERT (ORDER BY columns cannot be ALTER UPDATE'd)
+	// 5. Key changed: DELETE + INSERT (ORDER BY columns cannot be ALTER UPDATE'd).
 	if len(situations.KeyChangedRecords) > 0 {
 		nativeConn, err := shared.SetupNativeProtocolConnectionForOptimize(config)
 		if err != nil {
@@ -308,12 +281,6 @@ func ProcessIncrementalAllevent(
 	return nil
 }
 
-// -----------------------------------------------------------------------------
-// Allevent-Specific: Scope, Build Records, Helpers
-// -----------------------------------------------------------------------------
-
-// fetchIncrementalScope returns (event_id, edition_id) pairs where either the edition
-// or the event was modified since yesterday.
 func fetchIncrementalScope(db *sql.DB) ([]EventEditionPair, error) {
 	query := `
 		SELECT DISTINCT ee.event AS event_id, ee.id AS edition_id
@@ -343,7 +310,6 @@ func fetchIncrementalScope(db *sql.DB) ([]EventEditionPair, error) {
 	return pairs, nil
 }
 
-// buildIncrementalRecords fetches all data for the scope events and builds records for the given pairs.
 func buildIncrementalRecords(
 	mysqlDB *sql.DB,
 	clickhouseConn driver.Conn,
@@ -497,8 +463,6 @@ func buildIncrementalRecords(
 	return records, nil
 }
 
-// fetchExistingOrderByKey returns existing ORDER BY key values from ClickHouse.
-// Uses tableCfg.PrimaryKeyColumns, OrderByColumns, and RecordMapKey.
 func fetchExistingOrderByKey(
 	conn driver.Conn,
 	records []map[string]interface{},
@@ -554,7 +518,6 @@ func fetchExistingOrderByKey(
 	return result, rows.Err()
 }
 
-// orderByValuesEqual compares ORDER BY column values between existing and new record.
 func orderByValuesEqual(existing map[string]interface{}, record map[string]interface{}, orderByCols []string) bool {
 	for _, col := range orderByCols {
 		ev := existing[col]
@@ -578,8 +541,6 @@ type classifiedRecordsResult struct {
 	NewRecords           []map[string]interface{} // was Situation B Insert
 }
 
-// classifyRecordsByOrderByKey classifies records into KeyUnchanged, KeyChanged, or New
-// based on comparing ORDER BY column values with existing ClickHouse rows.
 func classifyRecordsByOrderByKey(
 	conn driver.Conn,
 	records []map[string]interface{},
@@ -615,14 +576,8 @@ func classifyRecordsByOrderByKey(
 	return result, nil
 }
 
-// -----------------------------------------------------------------------------
-// Generic: Delete by Primary Key (uses TableIncrementalConfig)
-// -----------------------------------------------------------------------------
-
 const deleteBatchSize = 500 // Max rows per ALTER DELETE query to avoid query size limits
 
-// deleteRowsByPrimaryKey runs ALTER TABLE ... DELETE for records using table config.
-// Uses tableCfg.PrimaryKeyColumns and ExtractPKTuple. Batches for efficiency.
 func deleteRowsByPrimaryKey(
 	conn driver.Conn,
 	records []map[string]interface{},
@@ -732,6 +687,3 @@ func indexByID(data []map[string]interface{}, key string) map[int64]map[string]i
 	return m
 }
 
-// -----------------------------------------------------------------------------
-// Allevent-Specific: Data Helpers (company, venue, city indexing)
-// -----------------------------------------------------------------------------
