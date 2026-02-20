@@ -1867,6 +1867,8 @@ func main() {
 	var visitorSpreadOnly bool
 	var allEventOnly bool
 	var incrementalAlleventOnly bool
+	var incrementalEventTypeOnly bool
+	var incrementalCategoryOnly bool
 	var holidaysOnly bool
 	var alertsOnly bool
 	var allScripts bool
@@ -1896,6 +1898,8 @@ func main() {
 	flag.BoolVar(&visitorSpreadOnly, "visitorspread", false, "Process only visitor spread data (default: false)")
 	flag.BoolVar(&allEventOnly, "allevent", false, "Process only all event data (default: false)")
 	flag.BoolVar(&incrementalAlleventOnly, "allevent-incremental", false, "Incremental sync for allevent (only changed since yesterday) (default: false)")
+	flag.BoolVar(&incrementalEventTypeOnly, "eventtype-incremental", false, "Incremental sync for event_type_ch (only changed since yesterday) (default: false)")
+	flag.BoolVar(&incrementalCategoryOnly, "eventcategory-incremental", false, "Incremental sync for event_category_ch (only changed since yesterday) (default: false)")
 	flag.BoolVar(&holidaysOnly, "holidays", false, "Process holidays into allevent_ch (automatically handles event types) (default: false)")
 	flag.BoolVar(&alertsOnly, "alerts", false, "Process alerts from GDAC API into alerts_ch (default: false)")
 	flag.BoolVar(&allScripts, "all", false, "Run all seeding scripts in order: location, eventtype, allevent, category, product, ranking, designation, holidays, alerts, exhibitor, speaker, sponsor, visitors, visitorspread (default: false)")
@@ -1945,6 +1949,8 @@ func main() {
 		log.Println("        Process only all event data (default: false)")
 		log.Println("  -allevent-incremental")
 		log.Println("        Incremental sync for allevent (only changed since yesterday) (default: false)")
+		log.Println("  -eventtype-incremental")
+		log.Println("        Incremental sync for event_type_ch (only changed since yesterday) (default: false)")
 		log.Println("  -holiday-eventtypes")
 		log.Println("        Process only holiday event types into event_type_ch (default: false)")
 		log.Println("  -holidays")
@@ -2057,6 +2063,10 @@ func main() {
 		log.Printf("Mode: ALL EVENT ONLY")
 	} else if incrementalAlleventOnly {
 		log.Printf("Mode: INCREMENTAL ALLEVENT (changed since yesterday)")
+	} else if incrementalEventTypeOnly {
+		log.Printf("Mode: INCREMENTAL EVENT TYPE (changed since yesterday)")
+	} else if incrementalCategoryOnly {
+		log.Printf("Mode: INCREMENTAL EVENT CATEGORY (changed since yesterday)")
 	} else if holidaysOnly {
 		log.Printf("Mode: HOLIDAYS ONLY")
 	} else if daywiseOnly {
@@ -2097,6 +2107,10 @@ func main() {
 		log.Printf("Elasticsearch: Required (needed for all event data)")
 	} else if incrementalAlleventOnly {
 		log.Printf("Elasticsearch: Required (needed for incremental allevent data)")
+	} else if incrementalEventTypeOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for event type incremental)")
+	} else if incrementalCategoryOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for event category incremental)")
 	} else if daywiseOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for day-wise economic impact)")
 	}
@@ -2120,7 +2134,7 @@ func main() {
 		return
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly {
+	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -2139,6 +2153,10 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for exhibitors processing)")
 		} else if eventTypeEventChOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_type_ch processing)")
+		} else if incrementalEventTypeOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event type incremental)")
+		} else if incrementalCategoryOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event category incremental)")
 		} else if eventCategoryEventChOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_category_ch processing)")
 		} else if eventProductChOnly {
@@ -2417,6 +2435,20 @@ func main() {
 			log.Fatalf("Incremental allevent sync failed: %v", err)
 		}
 		log.Println("✓ Incremental allevent sync completed successfully")
+	} else if incrementalEventTypeOnly {
+		utilsConfig := config
+		if err := utils.ProcessIncrementalEventType(mysqlDB, clickhouseDB, utilsConfig); err != nil {
+			logErrorToFile("Incremental Event Type", err)
+			log.Fatalf("Incremental event type sync failed: %v", err)
+		}
+		log.Println("✓ Incremental event type sync completed successfully")
+	} else if incrementalCategoryOnly {
+		utilsConfig := config
+		if err := utils.ProcessIncrementalEventCategory(mysqlDB, clickhouseDB, utilsConfig); err != nil {
+			logErrorToFile("Incremental Event Category", err)
+			log.Fatalf("Incremental event category sync failed: %v", err)
+		}
+		log.Println("✓ Incremental event category sync completed successfully")
 	} else if allEventOnly {
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Ensure Temp Table (All Event)", err)
@@ -2684,6 +2716,7 @@ func main() {
 		log.Println("  -visitorspread    # Process visitor spread data")
 		log.Println("  -allevent         # Process all event data")
 		log.Println("  -allevent-incremental # Incremental allevent sync (changed since yesterday)")
+		log.Println("  -eventtype-incremental # Incremental event_type_ch sync (changed since yesterday)")
 		log.Println("  -holidays         # Process holidays into allevent_ch")
 		log.Println("  -alerts           # Process alerts from GDAC API into alerts_ch")
 		log.Println("  -daywise          # Process day-wise economic impact from estimate table (standalone, never with -all)")

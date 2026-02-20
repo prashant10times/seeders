@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -14,8 +13,6 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/elastic/go-elasticsearch/v6"
 )
-
-const alleventIncrementalLogFile = "allevent_incremental.log"
 
 // TableIncrementalConfig holds table-specific config for incremental sync.
 type TableIncrementalConfig struct {
@@ -61,27 +58,6 @@ var alleventIncrementalConfig = TableIncrementalConfig{
 	},
 }
 
-func refreshIncrementalLogFile() {
-	f, err := os.OpenFile(alleventIncrementalLogFile, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Printf("WARNING: Failed to refresh incremental log file: %v", err)
-		return
-	}
-	f.Close()
-}
-
-func writeIncrementalLog(line string) {
-	f, err := os.OpenFile(alleventIncrementalLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Printf("WARNING: Failed to open incremental log file: %v", err)
-		return
-	}
-	defer f.Close()
-	if _, err := f.WriteString(line + "\n"); err != nil {
-		log.Printf("WARNING: Failed to write to incremental log file: %v", err)
-	}
-}
-
 func formatPairsForLog(pairs []EventEditionPair, maxShow int) []string {
 	if len(pairs) == 0 {
 		return []string{"     (none)"}
@@ -113,7 +89,7 @@ func formatPairsForLog(pairs []EventEditionPair, maxShow int) []string {
 
 func writePairsToLog(pairs []EventEditionPair, maxShow int) {
 	for _, line := range formatPairsForLog(pairs, maxShow) {
-		writeIncrementalLog(line)
+		shared.WriteIncrementalLog(line)
 	}
 }
 
@@ -136,12 +112,12 @@ func ProcessIncrementalAllevent(
 ) error {
 	startTime := time.Now()
 	log.Println("=== Starting Incremental Allevent Sync ===")
-	log.Printf("Detailed log file: %s", alleventIncrementalLogFile)
+	log.Printf("Detailed log file: %s", shared.IncrementalLogFile)
 
-	refreshIncrementalLogFile()
-	writeIncrementalLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	writeIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL ALLEVENT SYNC STARTED", startTime.Format("2006-01-02 15:04:05")))
-	writeIncrementalLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	shared.WriteIncrementalLog("")
+	shared.WriteIncrementalLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL ALLEVENT SYNC STARTED", startTime.Format("2006-01-02 15:04:05")))
+	shared.WriteIncrementalLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	if eventTypeIDs == nil {
 		ids, err := loadEventTypeIDsFromDB(clickhouseConn, config)
@@ -161,15 +137,15 @@ func ProcessIncrementalAllevent(
 	}
 	if len(pairs) == 0 {
 		log.Println("No changed event-edition pairs since yesterday, nothing to sync")
-		writeIncrementalLog("SCOPE: No changed event-edition pairs since yesterday. Nothing to sync.")
-		writeIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL ALLEVENT SYNC COMPLETED (no changes)", time.Now().Format("2006-01-02 15:04:05")))
+		shared.WriteIncrementalLog("SCOPE: No changed event-edition pairs since yesterday. Nothing to sync.")
+		shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL ALLEVENT SYNC COMPLETED (no changes)", time.Now().Format("2006-01-02 15:04:05")))
 		return nil
 	}
 	log.Printf("Incremental scope: %d (event_id, edition_id) pairs to refresh", len(pairs))
-	writeIncrementalLog("")
-	writeIncrementalLog("1. SCOPE (event-edition pairs modified since yesterday):")
-	writeIncrementalLog(fmt.Sprintf("   Total: %d pairs", len(pairs)))
-	writeIncrementalLog("   Pairs (event_id, edition_id):")
+	shared.WriteIncrementalLog("")
+	shared.WriteIncrementalLog("1. SCOPE (event-edition pairs modified since yesterday):")
+	shared.WriteIncrementalLog(fmt.Sprintf("   Total: %d pairs", len(pairs)))
+	shared.WriteIncrementalLog("   Pairs (event_id, edition_id):")
 	writePairsToLog(pairs, 500)
 
 	records, err := buildIncrementalRecords(mysqlDB, clickhouseConn, esClient, pairs, config)
@@ -178,14 +154,14 @@ func ProcessIncrementalAllevent(
 	}
 	if len(records) == 0 {
 		log.Println("No records built, nothing to sync")
-		writeIncrementalLog("")
-		writeIncrementalLog("2. RECORDS BUILT: 0 (skipped or failed to build)")
-		writeIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL ALLEVENT SYNC COMPLETED (no records)", time.Now().Format("2006-01-02 15:04:05")))
+		shared.WriteIncrementalLog("")
+		shared.WriteIncrementalLog("2. RECORDS BUILT: 0 (skipped or failed to build)")
+		shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL ALLEVENT SYNC COMPLETED (no records)", time.Now().Format("2006-01-02 15:04:05")))
 		return nil
 	}
 	log.Printf("Built %d records for incremental sync", len(records))
-	writeIncrementalLog("")
-	writeIncrementalLog(fmt.Sprintf("2. RECORDS BUILT: %d", len(records)))
+	shared.WriteIncrementalLog("")
+	shared.WriteIncrementalLog(fmt.Sprintf("2. RECORDS BUILT: %d", len(records)))
 
 	tableName := shared.GetTableNameWithDB(shared.GetClickHouseTableName(alleventIncrementalConfig.TableName, config), config)
 	tableCfg := &alleventIncrementalConfig
@@ -196,26 +172,26 @@ func ProcessIncrementalAllevent(
 	log.Printf("Key unchanged (insert refresh): %d, Key changed (delete+reinsert): %d, New rows: %d",
 		len(situations.KeyUnchangedRecords), len(situations.KeyChangedRecords), len(situations.NewRecords))
 
-	writeIncrementalLog("")
-	writeIncrementalLog("3. CLASSIFICATION:")
-	writeIncrementalLog(fmt.Sprintf("   Key unchanged (insert refresh - non-key columns changed): %d", len(situations.KeyUnchangedRecords)))
-	writeIncrementalLog(fmt.Sprintf("   Key changed (delete+reinsert - e.g. edition_type current→past): %d", len(situations.KeyChangedRecords)))
-	writeIncrementalLog(fmt.Sprintf("   New rows (not in ClickHouse yet): %d", len(situations.NewRecords)))
+	shared.WriteIncrementalLog("")
+	shared.WriteIncrementalLog("3. CLASSIFICATION:")
+	shared.WriteIncrementalLog(fmt.Sprintf("   Key unchanged (insert refresh - non-key columns changed): %d", len(situations.KeyUnchangedRecords)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   Key changed (delete+reinsert - e.g. edition_type current→past): %d", len(situations.KeyChangedRecords)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   New rows (not in ClickHouse yet): %d", len(situations.NewRecords)))
 
 	pairsKeyUnchanged := extractPairsFromRecords(situations.KeyUnchangedRecords)
 	pairsKeyChanged := extractPairsFromRecords(situations.KeyChangedRecords)
 	pairsNew := extractPairsFromRecords(situations.NewRecords)
 
 	if len(pairsKeyUnchanged) > 0 {
-		writeIncrementalLog("   Key unchanged - Event/Edition pairs (insert refresh):")
+		shared.WriteIncrementalLog("   Key unchanged - Event/Edition pairs (insert refresh):")
 		writePairsToLog(pairsKeyUnchanged, 500)
 	}
 	if len(pairsKeyChanged) > 0 {
-		writeIncrementalLog("   Key changed - Event/Edition pairs (delete then re-insert):")
+		shared.WriteIncrementalLog("   Key changed - Event/Edition pairs (delete then re-insert):")
 		writePairsToLog(pairsKeyChanged, 500)
 	}
 	if len(pairsNew) > 0 {
-		writeIncrementalLog("   New rows - Event/Edition pairs (inserted):")
+		shared.WriteIncrementalLog("   New rows - Event/Edition pairs (inserted):")
 		writePairsToLog(pairsNew, 500)
 	}
 
@@ -229,11 +205,11 @@ func ProcessIncrementalAllevent(
 		if err := deleteRowsByPrimaryKey(nativeConn, situations.KeyChangedRecords, tableName, tableCfg); err != nil {
 			return fmt.Errorf("delete rows for key changed: %w", err)
 		}
-		writeIncrementalLog("")
-		writeIncrementalLog(fmt.Sprintf("4. DELETE: %d rows deleted (key changed, will re-insert)", len(situations.KeyChangedRecords)))
+		shared.WriteIncrementalLog("")
+		shared.WriteIncrementalLog(fmt.Sprintf("4. DELETE: %d rows deleted (key changed, will re-insert)", len(situations.KeyChangedRecords)))
 	} else {
-		writeIncrementalLog("")
-		writeIncrementalLog("4. DELETE: 0 rows (none required)")
+		shared.WriteIncrementalLog("")
+		shared.WriteIncrementalLog("4. DELETE: 0 rows (none required)")
 	}
 
 	// 6. INSERT all records: key unchanged + new rows + key changed (re-insert after delete)
@@ -242,40 +218,40 @@ func ProcessIncrementalAllevent(
 	insertTableName := shared.GetTableNameWithDB(shared.GetClickHouseTableName(alleventIncrementalConfig.TableName, config), config)
 	log.Printf("[INSERT] Inserting %d records into %s (key unchanged: %d, new: %d, key changed re-insert: %d)",
 		len(allRecords), insertTableName, len(situations.KeyUnchangedRecords), len(situations.NewRecords), len(situations.KeyChangedRecords))
-	writeIncrementalLog(fmt.Sprintf("   [INSERT] %d records into %s", len(allRecords), insertTableName))
+	shared.WriteIncrementalLog(fmt.Sprintf("   [INSERT] %d records into %s", len(allRecords), insertTableName))
 	if err := insertalleventDataIntoClickHouseTable(clickhouseConn, allRecords, config.ClickHouseWorkers, config, insertTableName); err != nil {
 		return fmt.Errorf("insert incremental records: %w", err)
 	}
 	log.Printf("Inserted %d records into ClickHouse", len(allRecords))
-	writeIncrementalLog("")
-	writeIncrementalLog(fmt.Sprintf("5. INSERT: %d records inserted into allevent_ch", len(allRecords)))
+	shared.WriteIncrementalLog("")
+	shared.WriteIncrementalLog(fmt.Sprintf("5. INSERT: %d records inserted into allevent_ch", len(allRecords)))
 
 	// 7. Run OPTIMIZE
 	log.Printf("Running OPTIMIZE on %s...", alleventIncrementalConfig.TableName)
 	optimizeErr := shared.OptimizeSingleTable(clickhouseConn, alleventIncrementalConfig.TableName, config, "")
 	if optimizeErr != nil {
 		log.Printf("WARNING: OPTIMIZE failed: %v", optimizeErr)
-		writeIncrementalLog("")
-		writeIncrementalLog(fmt.Sprintf("6. OPTIMIZE: WARNING - Failed: %v", optimizeErr))
+		shared.WriteIncrementalLog("")
+		shared.WriteIncrementalLog(fmt.Sprintf("6. OPTIMIZE: WARNING - Failed: %v", optimizeErr))
 	} else {
 		log.Println("OPTIMIZE completed successfully")
-		writeIncrementalLog("")
-		writeIncrementalLog("6. OPTIMIZE: Completed successfully")
+		shared.WriteIncrementalLog("")
+		shared.WriteIncrementalLog("6. OPTIMIZE: Completed successfully")
 	}
 
 	endTime := time.Now()
 	duration := endTime.Sub(startTime)
 	totalModified := len(situations.KeyUnchangedRecords) + len(situations.KeyChangedRecords) + len(situations.NewRecords)
 
-	writeIncrementalLog("")
-	writeIncrementalLog("SUMMARY:")
-	writeIncrementalLog(fmt.Sprintf("   Total event-edition pairs modified: %d", totalModified))
-	writeIncrementalLog(fmt.Sprintf("   - Key unchanged (insert refresh): %d", len(situations.KeyUnchangedRecords)))
-	writeIncrementalLog(fmt.Sprintf("   - Key changed (DELETE+reinsert): %d", len(situations.KeyChangedRecords)))
-	writeIncrementalLog(fmt.Sprintf("   - New rows inserted: %d", len(situations.NewRecords)))
-	writeIncrementalLog(fmt.Sprintf("   Duration: %v", duration.Round(time.Millisecond)))
-	writeIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL ALLEVENT SYNC COMPLETED", endTime.Format("2006-01-02 15:04:05")))
-	writeIncrementalLog("")
+	shared.WriteIncrementalLog("")
+	shared.WriteIncrementalLog("SUMMARY:")
+	shared.WriteIncrementalLog(fmt.Sprintf("   Total event-edition pairs modified: %d", totalModified))
+	shared.WriteIncrementalLog(fmt.Sprintf("   - Key unchanged (insert refresh): %d", len(situations.KeyUnchangedRecords)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   - Key changed (DELETE+reinsert): %d", len(situations.KeyChangedRecords)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   - New rows inserted: %d", len(situations.NewRecords)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   Duration: %v", duration.Round(time.Millisecond)))
+	shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL ALLEVENT SYNC COMPLETED", endTime.Format("2006-01-02 15:04:05")))
+	shared.WriteIncrementalLog("")
 
 	log.Println("=== Incremental Allevent Sync Completed ===")
 	return nil
@@ -616,7 +592,7 @@ func deleteRowsByPrimaryKey(
 		if len(tuplesForLog) > maxLogLen {
 			tuplesForLog = tuplesForLog[:maxLogLen] + "... (truncated)"
 		}
-		writeIncrementalLog(fmt.Sprintf("   [DELETE] Batch %d-%d: %d pairs: %s", batchStart+1, batchEnd, len(batch), tuplesForLog))
+		shared.WriteIncrementalLog(fmt.Sprintf("   [DELETE] Batch %d-%d: %d pairs: %s", batchStart+1, batchEnd, len(batch), tuplesForLog))
 
 		if err := conn.Exec(ctx, deleteQuery); err != nil {
 			return fmt.Errorf("ALTER DELETE batch %d-%d: %w", batchStart+1, batchEnd, err)

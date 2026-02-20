@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"seeders/shared"
@@ -336,5 +337,182 @@ func insertEventCategoryEventChDataSingleWorker(clickhouseConn driver.Conn, even
 	}
 
 	log.Printf("OK: Successfully inserted %d event_category_ch records", len(eventCategoryEventChRecords))
+	return nil
+}
+
+// buildEventCategoryEventChDataForEventIDs fetches event_category + category data for the given event IDs. Used for incremental sync.
+func buildEventCategoryEventChDataForEventIDs(db *sql.DB, eventIDs []int64) ([]map[string]interface{}, error) {
+	if len(eventIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT 
+			ec.id,
+			ec.category,
+			ec.event,
+			c.published,
+			c.name,
+			c.url as slug,
+			c.short_name,
+			c.is_group,
+			c.created
+		FROM event_category ec
+		INNER JOIN category c ON ec.category = c.id
+		WHERE ec.event IN (%s)
+		ORDER BY ec.event, ec.category`, strings.Join(placeholders, ","))
+	log.Printf("[Query] %s", query)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, err
+		}
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			if values[i] != nil {
+				row[col] = values[i]
+			} else {
+				row[col] = nil
+			}
+		}
+		results = append(results, row)
+	}
+	return results, rows.Err()
+}
+
+// BuildEventCategoryEventChRecordsForEventIDs fetches all event_category rows for the given event IDs
+// and builds EventCategoryEventChRecords. Used for incremental sync.
+func BuildEventCategoryEventChRecordsForEventIDs(db *sql.DB, eventIDs []int64) ([]EventCategoryEventChRecord, error) {
+	rawData, err := buildEventCategoryEventChDataForEventIDs(db, eventIDs)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().Format("2006-01-02 15:04:05")
+	var records []EventCategoryEventChRecord
+	for _, rec := range rawData {
+		categoryID := shared.ConvertToUInt32(rec["category"])
+		createdStr := shared.SafeConvertToDateTimeString(rec["created"])
+		idInputString := fmt.Sprintf("%d-%s", categoryID, createdStr)
+		categoryUUID := shared.GenerateUUIDFromString(idInputString)
+		records = append(records, EventCategoryEventChRecord{
+			Category:      categoryID,
+			CategoryUUID:  categoryUUID,
+			Event:         shared.ConvertToUInt32(rec["event"]),
+			Name:          shared.ConvertToString(rec["name"]),
+			Slug:          shared.ConvertToString(rec["slug"]),
+			Published:     shared.ConvertToInt8(rec["published"]),
+			ShortName:     shared.ConvertToString(rec["short_name"]),
+			IsGroup:       shared.ConvertToUInt8(rec["is_group"]),
+			Created:       createdStr,
+			Version:       1,
+			LastUpdatedAt: now,
+		})
+	}
+	return records, nil
+}
+
+// InsertEventCategoryEventChDataIntoTable inserts records into the specified table. Used for incremental sync.
+func InsertEventCategoryEventChDataIntoTable(clickhouseConn driver.Conn, records []EventCategoryEventChRecord, tableName string, numWorkers int) error {
+	if len(records) == 0 {
+		return nil
+	}
+	if numWorkers <= 1 {
+		return insertEventCategoryEventChBatchIntoTable(clickhouseConn, records, tableName)
+	}
+	batchSize := (len(records) + numWorkers - 1) / numWorkers
+	results := make(chan error, numWorkers)
+	semaphore := make(chan struct{}, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		start := i * batchSize
+		end := start + batchSize
+		if end > len(records) {
+			end = len(records)
+		}
+		if start >= len(records) {
+			break
+		}
+		semaphore <- struct{}{}
+		go func(start, end int) {
+			defer func() { <-semaphore }()
+			batch := records[start:end]
+			results <- insertEventCategoryEventChBatchIntoTable(clickhouseConn, batch, tableName)
+		}(start, end)
+	}
+	for i := 0; i < numWorkers && i*batchSize < len(records); i++ {
+		if err := <-results; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertEventCategoryEventChBatchIntoTable(clickhouseConn driver.Conn, records []EventCategoryEventChRecord, tableName string) error {
+	if len(records) == 0 {
+		return nil
+	}
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	query := fmt.Sprintf(`
+		INSERT INTO %s (
+			category, category_uuid, event, name, slug, published, short_name, is_group, created, version, last_updated_at
+		)`, tableName)
+
+	batch, err := clickhouseConn.PrepareBatch(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to prepare batch for %s: %w", tableName, err)
+	}
+	for _, record := range records {
+		if err := batch.Append(
+			record.Category,
+			record.CategoryUUID,
+			record.Event,
+			record.Name,
+			record.Slug,
+			record.Published,
+			record.ShortName,
+			record.IsGroup,
+			record.Created,
+			record.Version,
+			record.LastUpdatedAt,
+		); err != nil {
+			batch.Abort()
+			return fmt.Errorf("failed to append record: %w", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to send batch: %w", err)
+	}
 	return nil
 }

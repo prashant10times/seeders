@@ -445,6 +445,189 @@ func insertEventTypeEventChBatch(clickhouseConn driver.Conn, eventTypeEventChRec
 	return nil
 }
 
+func BuildEventTypeEventChRecordsForEventIDs(db *sql.DB, eventIDs []int64) ([]EventTypeEventChRecord, error) {
+	if len(eventIDs) == 0 {
+		return nil, nil
+	}
+	rawData, err := buildEventTypeEventChDataForEventIDs(db, eventIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(rawData) == 0 {
+		return nil, nil
+	}
+	now := time.Now().Format("2006-01-02 15:04:05")
+	var records []EventTypeEventChRecord
+	for _, record := range rawData {
+		eventTypeID := shared.ConvertToUInt32(record["eventtype_id"])
+		priority := getPriority(eventTypeID)
+		groups := getGroups(eventTypeID)
+		eventGroupType := getEventGroupType(eventTypeID)
+
+		eventTypeCreatedStr := shared.SafeConvertToDateTimeString(record["event_type_created"])
+		idInputString := fmt.Sprintf("%d-%s", eventTypeID, eventTypeCreatedStr)
+		eventTypeUUID := shared.GenerateUUIDFromString(idInputString)
+
+		records = append(records, EventTypeEventChRecord{
+			EventTypeID:    eventTypeID,
+			EventTypeUUID:  eventTypeUUID,
+			EventID:        shared.ConvertToUInt32(record["event_id"]),
+			Published:      shared.ConvertToInt8(record["published"]),
+			Name:           shared.ConvertToString(record["name"]),
+			Slug:           shared.ConvertToString(record["slug"]),
+			EventAudience:  shared.SafeConvertToUInt16(record["event_audience"]),
+			EventGroupType: eventGroupType,
+			Groups:         groups,
+			Priority:       priority,
+			Created:        shared.SafeConvertToDateTimeString(record["created"]),
+			Version:        1,
+			LastUpdatedAt:  now,
+		})
+	}
+	return records, nil
+}
+
+// InsertEventTypeEventChDataIntoTable inserts records into the specified table. Used for incremental sync.
+func InsertEventTypeEventChDataIntoTable(clickhouseConn driver.Conn, records []EventTypeEventChRecord, tableName string, numWorkers int) error {
+	if len(records) == 0 {
+		return nil
+	}
+	if numWorkers <= 1 {
+		return insertEventTypeEventChBatchIntoTable(clickhouseConn, records, tableName)
+	}
+	batchSize := (len(records) + numWorkers - 1) / numWorkers
+	results := make(chan error, numWorkers)
+	semaphore := make(chan struct{}, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		start := i * batchSize
+		end := start + batchSize
+		if end > len(records) {
+			end = len(records)
+		}
+		if start >= len(records) {
+			break
+		}
+		semaphore <- struct{}{}
+		go func(start, end int) {
+			defer func() { <-semaphore }()
+			batch := records[start:end]
+			results <- insertEventTypeEventChBatchIntoTable(clickhouseConn, batch, tableName)
+		}(start, end)
+	}
+	for i := 0; i < numWorkers && i*batchSize < len(records); i++ {
+		if err := <-results; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func buildEventTypeEventChDataForEventIDs(db *sql.DB, eventIDs []int64) ([]map[string]interface{}, error) {
+	if len(eventIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT 
+			ee.id,
+			ee.eventtype_id,
+			ee.event_id,
+			ee.published,
+			et.name,
+			et.url as slug,
+			et.event_audience,
+			et.created as event_type_created,
+			ee.created
+		FROM event_type_event ee
+		INNER JOIN event_type et ON ee.eventtype_id = et.id
+		INNER JOIN event e ON ee.event_id = e.id
+		WHERE ee.event_id IN (%s) AND e.event_audience = et.event_audience
+		ORDER BY ee.event_id, ee.eventtype_id`, strings.Join(placeholders, ","))
+	log.Printf("[Query] %s", query)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, err
+		}
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			if values[i] != nil {
+				row[col] = values[i]
+			} else {
+				row[col] = nil
+			}
+		}
+		results = append(results, row)
+	}
+	return results, nil
+}
+
+func insertEventTypeEventChBatchIntoTable(clickhouseConn driver.Conn, records []EventTypeEventChRecord, tableName string) error {
+	if len(records) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	query := fmt.Sprintf(`
+		INSERT INTO %s (
+			eventtype_id, eventtype_uuid, event_id, published, name, slug, event_audience, eventGroupType, groups, priority, created, version,
+			alert_id, alert_level, alert_type, alert_start_date, alert_end_date, last_updated_at
+		)`, tableName)
+
+	batch, err := clickhouseConn.PrepareBatch(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to prepare batch for %s: %w", tableName, err)
+	}
+	for _, record := range records {
+		if err := batch.Append(
+			record.EventTypeID,
+			record.EventTypeUUID,
+			record.EventID,
+			record.Published,
+			record.Name,
+			record.Slug,
+			record.EventAudience,
+			record.EventGroupType,
+			record.Groups,
+			record.Priority,
+			record.Created,
+			record.Version,
+			nil, nil, nil, nil, nil,
+			record.LastUpdatedAt,
+		); err != nil {
+			batch.Abort()
+			return fmt.Errorf("failed to append record: %w", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to send batch: %w", err)
+	}
+	return nil
+}
+
 func buildEventTypeEventChMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
