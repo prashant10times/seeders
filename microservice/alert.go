@@ -295,7 +295,7 @@ func FinalizeAlertCountryLogger() error {
 	return nil
 }
 
-func InsertAlertsChDataSingleWorker(clickhouseConn driver.Conn, alertRecords []AlertChRecord) error {
+func InsertAlertsChDataIntoTable(clickhouseConn driver.Conn, alertRecords []AlertChRecord, tableName string) error {
 	if len(alertRecords) == 0 {
 		return nil
 	}
@@ -309,16 +309,17 @@ func InsertAlertsChDataSingleWorker(clickhouseConn driver.Conn, alertRecords []A
 	if connectionCheckErr != nil {
 		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
 	}
-	log.Printf("ClickHouse connection is alive, proceeding with alerts_ch batch insert")
+	log.Printf("ClickHouse connection is alive, proceeding with alerts batch insert into %s", tableName)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO testing_db.alerts_temp (
+	insertSQL := fmt.Sprintf(`
+		INSERT INTO %s (
 			id, sourceId, currentEpisodeId, type, name, description, level, startDate, endDate, lastModified, created, originLongitude, originLatitude, last_updated_at
 		)
-	`)
+	`, tableName)
+	batch, err := clickhouseConn.PrepareBatch(ctx, insertSQL)
 	if err != nil {
 		log.Printf("ERROR: Failed to prepare ClickHouse batch for alerts_ch: %v", err)
 		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
@@ -354,7 +355,7 @@ func InsertAlertsChDataSingleWorker(clickhouseConn driver.Conn, alertRecords []A
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
 	}
 
-	log.Printf("OK: Successfully inserted %d alerts_ch records", len(alertRecords))
+	log.Printf("OK: Successfully inserted %d alerts records into %s", len(alertRecords), tableName)
 	return nil
 }
 
@@ -1016,7 +1017,7 @@ func getClassValue(class interface{}) int {
 	return 2
 }
 
-func InsertLocationPolygonsChDataSingleWorker(clickhouseConn driver.Conn, polygonRecords []LocationPolygonRecord) error {
+func InsertLocationPolygonsChDataSingleWorker(clickhouseConn driver.Conn, polygonRecords []LocationPolygonRecord, tableName string) error {
 	if len(polygonRecords) == 0 {
 		return nil
 	}
@@ -1052,35 +1053,36 @@ func InsertLocationPolygonsChDataSingleWorker(clickhouseConn driver.Conn, polygo
 				for i := range polygonRecords {
 					polygonRecords[i].LastUpdatedAt = now
 				}
-				log.Printf("Updated last_updated_at for location_polygons_ch retry attempt %d", attemptCount+1)
+				log.Printf("Updated last_updated_at for location_polygons retry attempt %d", attemptCount+1)
 			}
 			attemptCount++
-			return insertLocationPolygonsBatch(clickhouseConn, polygonRecords)
+			return insertLocationPolygonsBatch(clickhouseConn, polygonRecords, tableName)
 		},
 		3,
 	)
 
 	if insertErr != nil {
-		return fmt.Errorf("failed to insert location_polygons_ch batch after retries: %w", insertErr)
+		return fmt.Errorf("failed to insert location_polygons batch after retries: %w", insertErr)
 	}
 
-	log.Printf("OK: Successfully inserted %d location_polygons_ch records", len(polygonRecords))
+	log.Printf("OK: Successfully inserted %d location_polygons records into %s", len(polygonRecords), tableName)
 	return nil
 }
 
-func insertLocationPolygonsBatch(clickhouseConn driver.Conn, polygonRecords []LocationPolygonRecord) error {
+func insertLocationPolygonsBatch(clickhouseConn driver.Conn, polygonRecords []LocationPolygonRecord, tableName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	log.Printf("Preparing ClickHouse batch for %d location_polygons_ch records", len(polygonRecords))
+	log.Printf("Preparing ClickHouse batch for %d location_polygons records", len(polygonRecords))
 
-	batch, err := clickhouseConn.PrepareBatch(ctx, `
-		INSERT INTO testing_db.location_polygons_temp (
+	insertSQL := fmt.Sprintf(`
+		INSERT INTO %s (
 			tableName, tableId, polygon, polygonSourceUrl, createdAt, updatedAt, version, last_updated_at
 		)
-	`)
-	if err != nil {
-		log.Printf("ERROR: Failed to prepare ClickHouse batch for location_polygons_ch: %v", err)
+	`, tableName)
+	batch, err := clickhouseConn.PrepareBatch(ctx, insertSQL)
+		if err != nil {
+		log.Printf("ERROR: Failed to prepare ClickHouse batch for location_polygons: %v", err)
 		log.Printf("ERROR: Attempting to insert %d records", len(polygonRecords))
 		if len(polygonRecords) > 0 {
 			log.Printf("ERROR: First record TableID: %s, Polygon length: %d",
@@ -1090,7 +1092,7 @@ func insertLocationPolygonsBatch(clickhouseConn driver.Conn, polygonRecords []Lo
 			}
 		}
 		if strings.Contains(err.Error(), "EOF") {
-			return fmt.Errorf("connection error (table may not exist or connection dropped): %v. Please verify table 'testing_db.location_polygons_ch' exists", err)
+			return fmt.Errorf("connection error (table may not exist or connection dropped): %v. Please verify table %s exists", err, tableName)
 		}
 		return fmt.Errorf("failed to prepare ClickHouse batch: %v", err)
 	}
@@ -1113,7 +1115,7 @@ func insertLocationPolygonsBatch(clickhouseConn driver.Conn, polygonRecords []Lo
 		}
 	}
 
-	log.Printf("Sending ClickHouse batch with %d location_polygons_ch records", len(polygonRecords))
+	log.Printf("Sending ClickHouse batch with %d location_polygons records", len(polygonRecords))
 	if err := batch.Send(); err != nil {
 		log.Printf("ERROR: Failed to send ClickHouse batch: %v", err)
 		return fmt.Errorf("failed to send ClickHouse batch: %v", err)
@@ -1164,7 +1166,7 @@ func fetchAndProcessPolygon(httpClient *http.Client, alertID, geometryLink strin
 	}, nil
 }
 
-func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metadataMap map[string]*AlertMetadata, semaphore chan struct{}, eventTypeTableName string) error {
+func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metadataMap map[string]*AlertMetadata, semaphore chan struct{}, eventTypeTableName, locationPolygonsTableName string) error {
 	type GeometryLink struct {
 		AlertID      string
 		GeometryLink string
@@ -1198,13 +1200,19 @@ func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metada
 	var counterMu sync.Mutex
 
 	var alertEventTypeID uint32
-	maxEventTypeID, err := getMaxEventTypeIDForAlerts(clickhouseConn, eventTypeTableName)
-	if err != nil {
-		log.Printf("ERROR: Failed to get max eventtype_id: %v", err)
-		alertEventTypeID = 10
+	existingID, found := getAlertEventTypeIDFromExisting(clickhouseConn, eventTypeTableName)
+	if found {
+		alertEventTypeID = existingID
+		log.Printf("Using existing eventtype_id %d from previous alert entries", alertEventTypeID)
 	} else {
-		alertEventTypeID = maxEventTypeID + 10
-		log.Printf("Using eventtype_id %d for all alert records (max in DB: %d, added buffer: 10)", alertEventTypeID, maxEventTypeID)
+		maxEventTypeID, err := getMaxEventTypeIDForAlerts(clickhouseConn, eventTypeTableName)
+		if err != nil {
+			log.Printf("ERROR: Failed to get max eventtype_id: %v", err)
+			alertEventTypeID = 10
+		} else {
+			alertEventTypeID = maxEventTypeID + 1
+			log.Printf("No previous alert entries; using eventtype_id %d (max in DB: %d)", alertEventTypeID, maxEventTypeID)
+		}
 	}
 
 	for i := 0; i < len(geometryLinks); i += chunkSize {
@@ -1270,7 +1278,7 @@ func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metada
 			chunkPolygons := allPolygons
 			allPolygons = []LocationPolygonRecord{}
 
-			if err := InsertLocationPolygonsChDataSingleWorker(clickhouseConn, chunkPolygons); err != nil {
+			if err := InsertLocationPolygonsChDataSingleWorker(clickhouseConn, chunkPolygons, locationPolygonsTableName); err != nil {
 				log.Printf("ERROR: Failed to insert polygon chunk %d: %v", chunkNum, err)
 				return fmt.Errorf("failed to insert polygon chunk: %w", err)
 			}
@@ -1318,6 +1326,25 @@ func getMaxEventTypeIDForAlerts(clickhouseConn driver.Conn, eventTypeTableName s
 	}
 
 	return maxID, nil
+}
+
+func getAlertEventTypeIDFromExisting(clickhouseConn driver.Conn, eventTypeTableName string) (uint32, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	query := fmt.Sprintf("SELECT eventtype_id FROM %s WHERE alert_id IS NOT NULL LIMIT 1", eventTypeTableName)
+	row := clickhouseConn.QueryRow(ctx, query)
+
+	var eventTypeID uint32
+	err := row.Scan(&eventTypeID)
+	if err != nil {
+		if err.Error() == "sql: no rows in result set" || strings.Contains(err.Error(), "no rows") {
+			return 0, false
+		}
+		log.Printf("WARNING: Failed to get alert eventtype_id from existing: %v", err)
+		return 0, false
+	}
+	return eventTypeID, true
 }
 
 func extractPointsFromRing(ring interface{}) []struct {
@@ -2038,7 +2065,9 @@ func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint 
 		}
 		batch := allAlerts[i:end]
 
-		if err := InsertAlertsChDataSingleWorker(clickhouseConn, batch); err != nil {
+		alertsConfig := shared.Config{UseTempTables: true, ClickhouseDB: config.ClickhouseDB}
+		alertsTableName := shared.GetTableNameWithDB(shared.GetClickHouseTableName("alerts_ch", alertsConfig), config)
+		if err := InsertAlertsChDataIntoTable(clickhouseConn, batch, alertsTableName); err != nil {
 			log.Printf("ERROR: Failed to insert alert batch: %v", err)
 			insertBatchErr = err
 			LogAlertPhase("Batch insert", fmt.Sprintf("batch %d-%d of %d", i+1, end, len(allAlerts)), false, err)
@@ -2052,7 +2081,9 @@ func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint 
 
 	if len(allMetadata) > 0 {
 		log.Printf("Starting polygon processing for %d alerts with geometry links", len(allMetadata))
-		polygonErr := processPolygons(clickhouseConn, httpClient, allMetadata, semaphore, eventTypeTableName)
+		locationPolygonsConfig := shared.Config{UseTempTables: true, ClickhouseDB: config.ClickhouseDB}
+		locationPolygonsTableName := shared.GetTableNameWithDB(shared.GetClickHouseTableName("location_polygons_ch", locationPolygonsConfig), config)
+		polygonErr := processPolygons(clickhouseConn, httpClient, allMetadata, semaphore, eventTypeTableName, locationPolygonsTableName)
 		if polygonErr != nil {
 			log.Printf("ERROR: Failed to process polygons: %v", polygonErr)
 			LogAlertPhase("Polygon processing", fmt.Sprintf("%d alerts with geometry", len(allMetadata)), false, polygonErr)

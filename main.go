@@ -584,6 +584,7 @@ func main() {
 	var incrementalVisitorOnly bool
 	var holidaysOnly bool
 	var alertsOnly bool
+	var incrementalAlertsOnly bool
 	var allScripts bool
 	var daywiseOnly bool
 
@@ -621,6 +622,7 @@ func main() {
 	flag.BoolVar(&incrementalVisitorOnly, "eventvisitor-incremental", false, "Incremental sync for event_visitors_ch (only changed since yesterday) (default: false)")
 	flag.BoolVar(&holidaysOnly, "holidays", false, "Process holidays into allevent_ch (automatically handles event types) (default: false)")
 	flag.BoolVar(&alertsOnly, "alerts", false, "Process alerts from GDAC API into alerts_ch (default: false)")
+	flag.BoolVar(&incrementalAlertsOnly, "alerts-incremental", false, "Incremental alert sync: fetch yesterday only and upsert into alerts_ch, location_polygons_ch, event_type_ch (default: false)")
 	flag.BoolVar(&allScripts, "all", false, "Run all seeding scripts in order: location, eventtype, allevent, category, product, ranking, designation, holidays, alerts, exhibitor, speaker, sponsor, visitors, visitorspread (default: false)")
 	flag.BoolVar(&daywiseOnly, "daywise", false, "Process only day-wise economic impact data from estimate table into event_daywiseEconomicImpact_ch (standalone, never runs with -all)")
 	flag.BoolVar(&showHelp, "help", false, "Show help information")
@@ -798,6 +800,8 @@ func main() {
 		log.Printf("Mode: INCREMENTAL EVENT SPONSOR (changed since yesterday)")
 	} else if incrementalVisitorOnly {
 		log.Printf("Mode: INCREMENTAL EVENT VISITOR (changed since yesterday)")
+	} else if incrementalAlertsOnly {
+		log.Printf("Mode: INCREMENTAL ALERTS (yesterday only, upsert)")
 	} else if holidaysOnly {
 		log.Printf("Mode: HOLIDAYS ONLY")
 	} else if daywiseOnly {
@@ -869,7 +873,7 @@ func main() {
 		return
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly && !incrementalExhibitorOnly && !incrementalSpeakerOnly && !incrementalSponsorOnly && !incrementalVisitorOnly {
+	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly && !incrementalExhibitorOnly && !incrementalSpeakerOnly && !incrementalSponsorOnly && !incrementalVisitorOnly && !incrementalAlertsOnly && !alertsOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -904,6 +908,10 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event sponsor incremental)")
 		} else if incrementalVisitorOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event visitor incremental)")
+		} else if incrementalAlertsOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for alerts incremental)")
+		} else if alertsOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for alerts processing)")
 		} else if eventCategoryEventChOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_category_ch processing)")
 		} else if eventProductChOnly {
@@ -1240,6 +1248,34 @@ func main() {
 			log.Fatalf("Incremental event visitor sync failed: %v", err)
 		}
 		log.Println("✓ Incremental event visitor sync completed successfully")
+	} else if incrementalAlertsOnly {
+		gdacBaseURL := os.Getenv("gdac_base_url")
+		gdacEndpoint := os.Getenv("gdac_event_search_endpoint")
+		if gdacBaseURL == "" {
+			log.Fatal("ERROR: GDAC_BASE_URL environment variable is not set")
+		}
+		if gdacEndpoint == "" {
+			log.Fatal("ERROR: GDAC_EVENT_SEARCH_ENDPOINT environment variable is not set")
+		}
+		validCountries, err := microservice.GetValidCountries()
+		if err != nil {
+			log.Fatalf("ERROR: Failed to get valid countries: %v", err)
+		}
+		if len(validCountries) == 0 {
+			log.Fatal("ERROR: No valid countries found")
+		}
+		alertConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+			ClickhouseDB:      config.ClickhouseDB,
+		}
+		if err := microservice.ProcessIncrementalAlerts(clickhouseDB, gdacBaseURL, gdacEndpoint, validCountries, alertConfig); err != nil {
+			logErrorToFile("Incremental Alerts", err)
+			log.Fatalf("Incremental alert sync failed: %v", err)
+		}
+		log.Println("✓ Incremental alert sync completed successfully")
 	} else if allEventOnly {
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Ensure Temp Table (All Event)", err)
@@ -1511,6 +1547,7 @@ func main() {
 		log.Println("  -eventtype-incremental # Incremental event_type_ch sync (changed since yesterday)")
 		log.Println("  -holidays         # Process holidays into allevent_ch")
 		log.Println("  -alerts           # Process alerts from GDAC API into alerts_ch")
+		log.Println("  -alerts-incremental  # Incremental alert sync: yesterday only, upsert into alerts_ch, location_polygons_ch, event_type_ch")
 		log.Println("  -daywise          # Process day-wise economic impact from estimate table (standalone, never with -all)")
 		log.Println("  -location         # Process all location types (countries, states, cities, venues, sub-venues)")
 		log.Println("  -location-countries   # Process only location countries")
