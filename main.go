@@ -1218,6 +1218,7 @@ func main() {
 	var incrementalDesignationOnly bool
 	var incrementalExhibitorOnly bool
 	var incrementalSpeakerOnly bool
+	var incrementalSponsorOnly bool
 	var holidaysOnly bool
 	var alertsOnly bool
 	var allScripts bool
@@ -1253,6 +1254,7 @@ func main() {
 	flag.BoolVar(&incrementalDesignationOnly, "eventdesignation-incremental", false, "Incremental sync for event_designation_ch (only changed since yesterday) (default: false)")
 	flag.BoolVar(&incrementalExhibitorOnly, "eventexhibitor-incremental", false, "Incremental sync for event_exhibitor_ch (only changed since yesterday) (default: false)")
 	flag.BoolVar(&incrementalSpeakerOnly, "eventspeaker-incremental", false, "Incremental sync for event_speaker_ch (only changed since yesterday) (default: false)")
+	flag.BoolVar(&incrementalSponsorOnly, "eventsponsor-incremental", false, "Incremental sync for event_sponsors_ch (only changed since yesterday) (default: false)")
 	flag.BoolVar(&holidaysOnly, "holidays", false, "Process holidays into allevent_ch (automatically handles event types) (default: false)")
 	flag.BoolVar(&alertsOnly, "alerts", false, "Process alerts from GDAC API into alerts_ch (default: false)")
 	flag.BoolVar(&allScripts, "all", false, "Run all seeding scripts in order: location, eventtype, allevent, category, product, ranking, designation, holidays, alerts, exhibitor, speaker, sponsor, visitors, visitorspread (default: false)")
@@ -1428,6 +1430,8 @@ func main() {
 		log.Printf("Mode: INCREMENTAL EVENT EXHIBITOR (changed since yesterday)")
 	} else if incrementalSpeakerOnly {
 		log.Printf("Mode: INCREMENTAL EVENT SPEAKER (changed since yesterday)")
+	} else if incrementalSponsorOnly {
+		log.Printf("Mode: INCREMENTAL EVENT SPONSOR (changed since yesterday)")
 	} else if holidaysOnly {
 		log.Printf("Mode: HOLIDAYS ONLY")
 	} else if daywiseOnly {
@@ -1499,7 +1503,7 @@ func main() {
 		return
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly && !incrementalExhibitorOnly && !incrementalSpeakerOnly {
+	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly && !incrementalExhibitorOnly && !incrementalSpeakerOnly && !incrementalSponsorOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -1530,6 +1534,8 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event exhibitor incremental)")
 		} else if incrementalSpeakerOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event speaker incremental)")
+		} else if incrementalSponsorOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event sponsor incremental)")
 		} else if eventCategoryEventChOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_category_ch processing)")
 		} else if eventProductChOnly {
@@ -1852,6 +1858,13 @@ func main() {
 			log.Fatalf("Incremental event speaker sync failed: %v", err)
 		}
 		log.Println("✓ Incremental event speaker sync completed successfully")
+	} else if incrementalSponsorOnly {
+		utilsConfig := config
+		if err := utils.ProcessIncrementalEventSponsor(mysqlDB, clickhouseDB, utilsConfig); err != nil {
+			logErrorToFile("Incremental Event Sponsor", err)
+			log.Fatalf("Incremental event sponsor sync failed: %v", err)
+		}
+		log.Println("✓ Incremental event sponsor sync completed successfully")
 	} else if allEventOnly {
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Ensure Temp Table (All Event)", err)
@@ -2116,6 +2129,7 @@ func main() {
 		log.Println("  -eventcategory    # Process eventcategory data")
 		log.Println("  -eventranking     # Process event ranking data")
 		log.Println("  -eventdesignation # Process event designation data")
+		log.Println("  -eventsponsor-incremental # Incremental event_sponsors_ch sync (changed since yesterday)")
 		log.Println("  -visitorspread    # Process visitor spread data")
 		log.Println("  -allevent         # Process all event data")
 		log.Println("  -allevent-incremental # Incremental allevent sync (changed since yesterday)")
