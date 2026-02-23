@@ -31,49 +31,46 @@ func ProcessIncrementalEventVisitor(mysqlDB *sql.DB, clickhouseConn driver.Conn,
 	shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL EVENT VISITOR SYNC STARTED", startTime.Format("2006-01-02 15:04:05")))
 	shared.WriteIncrementalLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	scopeEventIDs, err := fetchIncrementalScopeEventVisitor(mysqlDB)
+	modifiedBatchData, err := buildVisitorChDataForModifiedRows(mysqlDB)
 	if err != nil {
-		return fmt.Errorf("fetch incremental scope: %w", err)
+		return fmt.Errorf("fetch modified visitor rows: %w", err)
 	}
-	if len(scopeEventIDs) == 0 {
-		log.Println("No events with modified event_visitor since yesterday, nothing to sync")
-		shared.WriteIncrementalLog("SCOPE: No events with modified event_visitor since yesterday. Nothing to sync.")
+	if len(modifiedBatchData) == 0 {
+		log.Println("No event_visitor rows modified since yesterday, nothing to sync")
+		shared.WriteIncrementalLog("SCOPE: No event_visitor rows modified since yesterday. Nothing to sync.")
 		shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL EVENT VISITOR SYNC COMPLETED (no changes)", time.Now().Format("2006-01-02 15:04:05")))
 		return nil
 	}
 
-	log.Printf("Incremental scope: %d event IDs to reconcile", len(scopeEventIDs))
+	log.Printf("Incremental scope: %d modified visitor rows to reconcile", len(modifiedBatchData))
 	shared.WriteIncrementalLog("")
-	shared.WriteIncrementalLog(fmt.Sprintf("1. SCOPE: %d event IDs (event_visitor modified since yesterday)", len(scopeEventIDs)))
+	shared.WriteIncrementalLog(fmt.Sprintf("1. SCOPE: %d modified rows (event_visitor modified since yesterday)", len(modifiedBatchData)))
 
-	mysqlRecords, err := BuildEventVisitorChRecordsForEventIDs(mysqlDB, scopeEventIDs, config)
+	toDelete := extractVisitorTuplesFromBatchData(modifiedBatchData)
+
+	var insertBatchData []map[string]interface{}
+	for _, row := range modifiedBatchData {
+		if shared.SafeConvertToInt8(row["published"]) > 0 {
+			insertBatchData = append(insertBatchData, row)
+		}
+	}
+
+	mysqlRecords, err := BuildEventVisitorChRecordsFromBatchData(mysqlDB, insertBatchData, config)
 	if err != nil {
 		return fmt.Errorf("build MySQL records: %w", err)
 	}
-	if len(mysqlRecords) == 0 {
-		log.Println("No records built from MySQL, nothing to sync")
-		shared.WriteIncrementalLog("")
-		shared.WriteIncrementalLog("2. MYSQL RECORDS: 0")
-		shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL EVENT VISITOR SYNC COMPLETED (no records)", time.Now().Format("2006-01-02 15:04:05")))
-		return nil
-	}
 
 	shared.WriteIncrementalLog("")
-	shared.WriteIncrementalLog(fmt.Sprintf("2. MYSQL RECORDS: %d (current state for scoped events)", len(mysqlRecords)))
+	shared.WriteIncrementalLog(fmt.Sprintf("2. MYSQL RECORDS: %d to insert (modified rows with published>0)", len(mysqlRecords)))
 
 	tableName := shared.GetTableNameWithDB(shared.GetClickHouseTableName("event_visitors_ch", config), config)
 
-	chRowsByEvent, err := fetchEventVisitorChRowsForEventIDs(clickhouseConn, scopeEventIDs, tableName)
-	if err != nil {
-		return fmt.Errorf("fetch ClickHouse rows: %w", err)
-	}
-
-	toDelete, toInsert := computeEventVisitorDiff(mysqlRecords, chRowsByEvent)
+	toInsert := mysqlRecords
 
 	shared.WriteIncrementalLog("")
 	shared.WriteIncrementalLog("3. DIFF:")
-	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to DELETE (in CH but not in MySQL): %d", len(toDelete)))
-	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to INSERT (current MySQL state): %d", len(toInsert)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to DELETE (modified only): %d", len(toDelete)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to INSERT (modified only, published>0): %d", len(toInsert)))
 
 	if len(toDelete) > 0 {
 		nativeConn, err := shared.SetupNativeProtocolConnectionForOptimize(config)
@@ -120,7 +117,7 @@ func ProcessIncrementalEventVisitor(mysqlDB *sql.DB, clickhouseConn driver.Conn,
 	duration := endTime.Sub(startTime)
 	shared.WriteIncrementalLog("")
 	shared.WriteIncrementalLog("SUMMARY:")
-	shared.WriteIncrementalLog(fmt.Sprintf("   Events reconciled: %d", len(scopeEventIDs)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   Modified rows reconciled: %d", len(modifiedBatchData)))
 	shared.WriteIncrementalLog(fmt.Sprintf("   Rows deleted: %d", len(toDelete)))
 	shared.WriteIncrementalLog(fmt.Sprintf("   Rows inserted: %d", len(toInsert)))
 	shared.WriteIncrementalLog(fmt.Sprintf("   Duration: %v", duration.Round(time.Millisecond)))
@@ -131,82 +128,17 @@ func ProcessIncrementalEventVisitor(mysqlDB *sql.DB, clickhouseConn driver.Conn,
 	return nil
 }
 
-func fetchIncrementalScopeEventVisitor(db *sql.DB) ([]int64, error) {
-	query := `
-		SELECT DISTINCT event
-		FROM event_visitor
-		WHERE modified >= CURDATE() - INTERVAL 1 DAY
-		ORDER BY event
-	`
-	log.Printf("[Query] %s", strings.TrimSpace(query))
-	rows, err := db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var eventIDs []int64
-	for rows.Next() {
-		var eventID int64
-		if err := rows.Scan(&eventID); err != nil {
-			return nil, err
-		}
-		eventIDs = append(eventIDs, eventID)
-	}
-	return eventIDs, rows.Err()
-}
-
-// fetchEventVisitorChRowsForEventIDs returns map[eventID][]visitorTuple - all (event_id, edition_id, user_id) in ClickHouse for the given events.
-func fetchEventVisitorChRowsForEventIDs(conn driver.Conn, eventIDs []int64, tableName string) (map[int64][]visitorTuple, error) {
-	if len(eventIDs) == 0 {
-		return make(map[int64][]visitorTuple), nil
-	}
-
-	placeholders := make([]string, len(eventIDs))
-	args := make([]interface{}, len(eventIDs))
-	for i, id := range eventIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-
-	query := fmt.Sprintf(
-		`SELECT event_id, edition_id, user_id FROM %s FINAL WHERE event_id IN (%s)`,
-		tableName,
-		strings.Join(placeholders, ","),
-	)
-	log.Printf("[Query] %s", query)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	rows, err := conn.Query(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	result := make(map[int64][]visitorTuple)
-	for rows.Next() {
-		var eventID, editionID, userID uint32
-		if err := rows.Scan(&eventID, &editionID, &userID); err != nil {
-			return nil, err
-		}
-		eid := int64(eventID)
-		result[eid] = append(result[eid], visitorTuple{
+func extractVisitorTuplesFromBatchData(batchData []map[string]interface{}) []visitorTuple {
+	var tuples []visitorTuple
+	for _, row := range batchData {
+		eventID := shared.ConvertToUInt32(row["event"])
+		editionID := shared.ConvertToUInt32(row["edition"])
+		userID := shared.ConvertToUInt32(row["user"])
+		tuples = append(tuples, visitorTuple{
 			EventID: eventID, EditionID: editionID, UserID: userID,
 		})
 	}
-	return result, rows.Err()
-}
-
-func computeEventVisitorDiff(mysqlRecords []VisitorRecord, chRowsByEvent map[int64][]visitorTuple) (toDelete []visitorTuple, toInsert []VisitorRecord) {
-	for _, chTuples := range chRowsByEvent {
-		for _, t := range chTuples {
-			toDelete = append(toDelete, t)
-		}
-	}
-	toInsert = mysqlRecords
-	return toDelete, toInsert
+	return tuples
 }
 
 func deleteEventVisitorRowsByPrimaryKey(conn driver.Conn, tuples []visitorTuple, tableName string) error {

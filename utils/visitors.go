@@ -647,6 +647,47 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 	return nil
 }
 
+// buildVisitorChDataForModifiedRows fetches rows where modified >= yesterday (includes published=0 for soft deletes).
+// Used by incremental sync to scope only modified records.
+func buildVisitorChDataForModifiedRows(db *sql.DB) ([]map[string]interface{}, error) {
+	query := `
+		SELECT id, user, event, edition, visitor_company, visitor_designation, visitor_city, visitor_country, published
+		FROM event_visitor
+		WHERE modified >= CURDATE() - INTERVAL 1 DAY
+		ORDER BY event, edition, id`
+	log.Printf("[Query] %s", strings.TrimSpace(query))
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, err
+		}
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			if values[i] != nil {
+				row[col] = values[i]
+			} else {
+				row[col] = nil
+			}
+		}
+		results = append(results, row)
+	}
+	return results, rows.Err()
+}
+
 // buildVisitorChDataForEventIDs fetches event_visitor rows for the given event IDs.
 // Used by incremental sync.
 func buildVisitorChDataForEventIDs(db *sql.DB, eventIDs []int64) ([]map[string]interface{}, error) {
@@ -704,6 +745,12 @@ func BuildEventVisitorChRecordsForEventIDs(db *sql.DB, eventIDs []int64, config 
 	if err != nil {
 		return nil, err
 	}
+	return BuildEventVisitorChRecordsFromBatchData(db, batchData, config)
+}
+
+// BuildEventVisitorChRecordsFromBatchData builds VisitorRecords from raw batch data.
+// Used by incremental sync for modified rows only.
+func BuildEventVisitorChRecordsFromBatchData(db *sql.DB, batchData []map[string]interface{}, config shared.Config) ([]VisitorRecord, error) {
 	if len(batchData) == 0 {
 		return nil, nil
 	}

@@ -46,3 +46,6 @@ alerts_country_processing.log
 seeder.log
 incremental.log
 datacheck.py
+seeder
+increment.sh
+incremental_cron.log

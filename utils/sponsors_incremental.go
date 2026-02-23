@@ -31,49 +31,46 @@ func ProcessIncrementalEventSponsor(mysqlDB *sql.DB, clickhouseConn driver.Conn,
 	shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL EVENT SPONSOR SYNC STARTED", startTime.Format("2006-01-02 15:04:05")))
 	shared.WriteIncrementalLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	scopeEventIDs, err := fetchIncrementalScopeEventSponsor(mysqlDB)
+	modifiedBatchData, err := buildSponsorsChDataForModifiedRows(mysqlDB)
 	if err != nil {
-		return fmt.Errorf("fetch incremental scope: %w", err)
+		return fmt.Errorf("fetch modified sponsor rows: %w", err)
 	}
-	if len(scopeEventIDs) == 0 {
-		log.Println("No events with modified event_sponsors since yesterday, nothing to sync")
-		shared.WriteIncrementalLog("SCOPE: No events with modified event_sponsors since yesterday. Nothing to sync.")
+	if len(modifiedBatchData) == 0 {
+		log.Println("No event_sponsors rows modified since yesterday, nothing to sync")
+		shared.WriteIncrementalLog("SCOPE: No event_sponsors rows modified since yesterday. Nothing to sync.")
 		shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL EVENT SPONSOR SYNC COMPLETED (no changes)", time.Now().Format("2006-01-02 15:04:05")))
 		return nil
 	}
 
-	log.Printf("Incremental scope: %d event IDs to reconcile", len(scopeEventIDs))
+	log.Printf("Incremental scope: %d modified sponsor rows to reconcile", len(modifiedBatchData))
 	shared.WriteIncrementalLog("")
-	shared.WriteIncrementalLog(fmt.Sprintf("1. SCOPE: %d event IDs (event_sponsors modified since yesterday)", len(scopeEventIDs)))
+	shared.WriteIncrementalLog(fmt.Sprintf("1. SCOPE: %d modified rows (event_sponsors modified since yesterday)", len(modifiedBatchData)))
 
-	mysqlRecords, err := BuildEventSponsorChRecordsForEventIDs(mysqlDB, scopeEventIDs, config)
+	toDelete := extractSponsorTuplesFromBatchData(modifiedBatchData)
+
+	var insertBatchData []map[string]interface{}
+	for _, row := range modifiedBatchData {
+		if shared.SafeConvertToInt8(row["published"]) > 0 {
+			insertBatchData = append(insertBatchData, row)
+		}
+	}
+
+	mysqlRecords, err := BuildEventSponsorChRecordsFromBatchData(mysqlDB, insertBatchData, config)
 	if err != nil {
 		return fmt.Errorf("build MySQL records: %w", err)
 	}
-	if len(mysqlRecords) == 0 {
-		log.Println("No records built from MySQL, nothing to sync")
-		shared.WriteIncrementalLog("")
-		shared.WriteIncrementalLog("2. MYSQL RECORDS: 0")
-		shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL EVENT SPONSOR SYNC COMPLETED (no records)", time.Now().Format("2006-01-02 15:04:05")))
-		return nil
-	}
 
 	shared.WriteIncrementalLog("")
-	shared.WriteIncrementalLog(fmt.Sprintf("2. MYSQL RECORDS: %d (current state for scoped events)", len(mysqlRecords)))
+	shared.WriteIncrementalLog(fmt.Sprintf("2. MYSQL RECORDS: %d to insert (modified rows with published>0)", len(mysqlRecords)))
 
 	tableName := shared.GetTableNameWithDB(shared.GetClickHouseTableName("event_sponsors_ch", config), config)
 
-	chRowsByEvent, err := fetchEventSponsorChRowsForEventIDs(clickhouseConn, scopeEventIDs, tableName)
-	if err != nil {
-		return fmt.Errorf("fetch ClickHouse rows: %w", err)
-	}
-
-	toDelete, toInsert := computeEventSponsorDiff(mysqlRecords, chRowsByEvent)
+	toInsert := mysqlRecords
 
 	shared.WriteIncrementalLog("")
 	shared.WriteIncrementalLog("3. DIFF:")
-	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to DELETE (in CH but not in MySQL): %d", len(toDelete)))
-	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to INSERT (current MySQL state): %d", len(toInsert)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to DELETE (modified only): %d", len(toDelete)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to INSERT (modified only, published>0): %d", len(toInsert)))
 
 	if len(toDelete) > 0 {
 		nativeConn, err := shared.SetupNativeProtocolConnectionForOptimize(config)
@@ -120,7 +117,7 @@ func ProcessIncrementalEventSponsor(mysqlDB *sql.DB, clickhouseConn driver.Conn,
 	duration := endTime.Sub(startTime)
 	shared.WriteIncrementalLog("")
 	shared.WriteIncrementalLog("SUMMARY:")
-	shared.WriteIncrementalLog(fmt.Sprintf("   Events reconciled: %d", len(scopeEventIDs)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   Modified rows reconciled: %d", len(modifiedBatchData)))
 	shared.WriteIncrementalLog(fmt.Sprintf("   Rows deleted: %d", len(toDelete)))
 	shared.WriteIncrementalLog(fmt.Sprintf("   Rows inserted: %d", len(toInsert)))
 	shared.WriteIncrementalLog(fmt.Sprintf("   Duration: %v", duration.Round(time.Millisecond)))
@@ -131,81 +128,17 @@ func ProcessIncrementalEventSponsor(mysqlDB *sql.DB, clickhouseConn driver.Conn,
 	return nil
 }
 
-func fetchIncrementalScopeEventSponsor(db *sql.DB) ([]int64, error) {
-	query := `
-		SELECT DISTINCT event_id
-		FROM event_sponsors
-		WHERE modified >= CURDATE() - INTERVAL 1 DAY
-		ORDER BY event_id
-	`
-	log.Printf("[Query] %s", strings.TrimSpace(query))
-	rows, err := db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var eventIDs []int64
-	for rows.Next() {
-		var eventID int64
-		if err := rows.Scan(&eventID); err != nil {
-			return nil, err
-		}
-		eventIDs = append(eventIDs, eventID)
-	}
-	return eventIDs, rows.Err()
-}
-
-func fetchEventSponsorChRowsForEventIDs(conn driver.Conn, eventIDs []int64, tableName string) (map[int64][]sponsorTuple, error) {
-	if len(eventIDs) == 0 {
-		return make(map[int64][]sponsorTuple), nil
-	}
-
-	placeholders := make([]string, len(eventIDs))
-	args := make([]interface{}, len(eventIDs))
-	for i, id := range eventIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-
-	query := fmt.Sprintf(
-		`SELECT event_id, edition_id, sponsorSourceId FROM %s FINAL WHERE event_id IN (%s)`,
-		tableName,
-		strings.Join(placeholders, ","),
-	)
-	log.Printf("[Query] %s", query)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	rows, err := conn.Query(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	result := make(map[int64][]sponsorTuple)
-	for rows.Next() {
-		var eventID, editionID, sponsorSourceID uint32
-		if err := rows.Scan(&eventID, &editionID, &sponsorSourceID); err != nil {
-			return nil, err
-		}
-		eid := int64(eventID)
-		result[eid] = append(result[eid], sponsorTuple{
+func extractSponsorTuplesFromBatchData(batchData []map[string]interface{}) []sponsorTuple {
+	var tuples []sponsorTuple
+	for _, row := range batchData {
+		eventID := shared.ConvertToUInt32(row["event_id"])
+		editionID := shared.ConvertToUInt32(row["event_edition"])
+		sponsorSourceID := shared.ConvertToUInt32(row["id"])
+		tuples = append(tuples, sponsorTuple{
 			EventID: eventID, EditionID: editionID, SponsorSourceID: sponsorSourceID,
 		})
 	}
-	return result, rows.Err()
-}
-
-func computeEventSponsorDiff(mysqlRecords []SponsorRecord, chRowsByEvent map[int64][]sponsorTuple) (toDelete []sponsorTuple, toInsert []SponsorRecord) {
-	for _, chTuples := range chRowsByEvent {
-		for _, t := range chTuples {
-			toDelete = append(toDelete, t)
-		}
-	}
-	toInsert = mysqlRecords
-	return toDelete, toInsert
+	return tuples
 }
 
 func deleteEventSponsorRowsByPrimaryKey(conn driver.Conn, tuples []sponsorTuple, tableName string) error {

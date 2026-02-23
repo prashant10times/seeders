@@ -547,6 +547,71 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 	}
 }
 
+func runAllIncrementalSequential(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Println("=== STARTING ALL INCREMENTAL SYNC (sequential) ===")
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Println("")
+
+	utilsConfig := config
+	utilsConfig.UseTempTables = false
+
+	tasks := []struct {
+		name string
+		run  func() error
+	}{
+		{"allevent-incremental", func() error { return microservice.ProcessIncrementalAllevent(mysqlDB, clickhouseDB, esClient, utilsConfig) }},
+		{"eventtype-incremental", func() error { return utils.ProcessIncrementalEventType(mysqlDB, clickhouseDB, utilsConfig) }},
+		{"eventcategory-incremental", func() error { return utils.ProcessIncrementalEventCategory(mysqlDB, clickhouseDB, utilsConfig) }},
+		{"eventproduct-incremental", func() error { return utils.ProcessIncrementalEventProduct(mysqlDB, clickhouseDB, utilsConfig) }},
+		{"eventdesignation-incremental", func() error { return utils.ProcessIncrementalEventDesignation(mysqlDB, clickhouseDB, utilsConfig) }},
+		{"eventexhibitor-incremental", func() error { return utils.ProcessIncrementalEventExhibitor(mysqlDB, clickhouseDB, utilsConfig) }},
+		{"eventspeaker-incremental", func() error { return utils.ProcessIncrementalEventSpeaker(mysqlDB, clickhouseDB, utilsConfig) }},
+		{"eventsponsor-incremental", func() error { return utils.ProcessIncrementalEventSponsor(mysqlDB, clickhouseDB, utilsConfig) }},
+		{"eventvisitor-incremental", func() error { return utils.ProcessIncrementalEventVisitor(mysqlDB, clickhouseDB, utilsConfig) }},
+		{"alerts-incremental", func() error {
+			gdacBaseURL := os.Getenv("gdac_base_url")
+			gdacEndpoint := os.Getenv("gdac_event_search_endpoint")
+			if gdacBaseURL == "" {
+				log.Fatal("ERROR: GDAC_BASE_URL environment variable is not set")
+			}
+			if gdacEndpoint == "" {
+				log.Fatal("ERROR: GDAC_EVENT_SEARCH_ENDPOINT environment variable is not set")
+			}
+			validCountries, err := microservice.GetValidCountries()
+			if err != nil {
+				return fmt.Errorf("get valid countries: %w", err)
+			}
+			if len(validCountries) == 0 {
+				log.Fatal("ERROR: No valid countries found")
+			}
+			alertConfig := shared.Config{
+				BatchSize:         config.BatchSize,
+				NumChunks:         config.NumChunks,
+				NumWorkers:        config.NumWorkers,
+				ClickHouseWorkers: config.ClickHouseWorkers,
+				ClickhouseDB:      config.ClickhouseDB,
+			}
+			return microservice.ProcessIncrementalAlerts(clickhouseDB, gdacBaseURL, gdacEndpoint, validCountries, alertConfig)
+		}},
+	}
+
+	for i, t := range tasks {
+		log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		log.Printf("Step %d/%d: %s", i+1, len(tasks), t.name)
+		log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		if err := t.run(); err != nil {
+			logErrorToFile(t.name, err)
+			log.Fatalf("Incremental sync failed at %s: %v", t.name, err)
+		}
+		log.Printf("✓ %s completed", t.name)
+		log.Println("")
+	}
+
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	log.Println("=== ALL INCREMENTAL SYNC COMPLETED SUCCESSFULLY ===")
+	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+}
 
 func main() {
 	var numChunks int
@@ -585,6 +650,7 @@ func main() {
 	var holidaysOnly bool
 	var alertsOnly bool
 	var incrementalAlertsOnly bool
+	var allIncrementalOnly bool
 	var allScripts bool
 	var daywiseOnly bool
 
@@ -626,12 +692,44 @@ func main() {
 	flag.BoolVar(&allScripts, "all", false, "Run all seeding scripts in order: location, eventtype, allevent, category, product, ranking, designation, holidays, alerts, exhibitor, speaker, sponsor, visitors, visitorspread (default: false)")
 	flag.BoolVar(&daywiseOnly, "daywise", false, "Process only day-wise economic impact data from estimate table into event_daywiseEconomicImpact_ch (standalone, never runs with -all)")
 	flag.BoolVar(&showHelp, "help", false, "Show help information")
+	task := flag.String("task", "", "Incremental task only (cron-friendly). E.g. -task=allevent-incremental")
 	flag.Parse()
+
+	// Map -task to incremental boolean flags only (for cron scheduling of incremental syncs)
+	if *task != "" {
+		switch *task {
+		case "allevent-incremental":
+			incrementalAlleventOnly = true
+		case "eventtype-incremental":
+			incrementalEventTypeOnly = true
+		case "eventcategory-incremental":
+			incrementalCategoryOnly = true
+		case "eventproduct-incremental":
+			incrementalProductOnly = true
+		case "eventdesignation-incremental":
+			incrementalDesignationOnly = true
+		case "eventexhibitor-incremental":
+			incrementalExhibitorOnly = true
+		case "eventspeaker-incremental":
+			incrementalSpeakerOnly = true
+		case "eventsponsor-incremental":
+			incrementalSponsorOnly = true
+		case "eventvisitor-incremental":
+			incrementalVisitorOnly = true
+		case "alerts-incremental":
+			incrementalAlertsOnly = true
+		case "all-incremental":
+			allIncrementalOnly = true
+		default:
+			log.Fatalf("Unknown incremental task: %q. Valid: allevent-incremental, eventtype-incremental, eventcategory-incremental, eventproduct-incremental, eventdesignation-incremental, eventexhibitor-incremental, eventspeaker-incremental, eventsponsor-incremental, eventvisitor-incremental, alerts-incremental, all-incremental", *task)
+		}
+	}
 
 	if showHelp {
 		log.Println("=== Data Migration Script ===")
 		log.Println("Usage: go run main.go [table-mode] [options]")
 		log.Println("\nRequired Table Mode (choose one):")
+		log.Println("  -task=NAME        # Incremental sync only (cron-friendly). E.g. -task=allevent-incremental, -task=eventvisitor-incremental")
 		log.Println("  -event-edition    # Process event edition data")
 		log.Println("  -sponsors         # Process sponsors data")
 		log.Println("  -exhibitors       # Process exhibitors data")
@@ -681,7 +779,12 @@ func main() {
 		log.Println("\nExamples:")
 		log.Println("  go run main.go -event-edition -chunks=10 -workers=20 -batch=50000")
 		log.Println("  go run main.go -sponsors -chunks=5 -workers=10 -batch=10000")
-		log.Println("  go run main.go -exhibitors -chunks=8 -workers=15 -batch=20000")
+		log.Println("  go run main.go -exhibitor -chunks=8 -workers=15 -batch=20000")
+		log.Println("\nIncremental sync (cron-friendly, -task only):")
+		log.Println("  go run main.go -task=allevent-incremental")
+		log.Println("  go run main.go -task=all-incremental    # Run all incremental syncs sequentially")
+		log.Println("\nCron (run all incremental syncs daily at 2 AM):")
+		log.Println("  0 2 * * * /opt/seeding/seeder -task=all-incremental >> /opt/seeding/incremental_cron.log 2>&1")
 		log.Println("  go run main.go -visitors -chunks=3 -workers=8 -batch=5000")
 		log.Println("  go run main.go -speakers -chunks=6 -workers=12 -batch=15000")
 		log.Println("  go run main.go -eventtype -chunks=5 -workers=10 -batch=10000")
@@ -802,6 +905,8 @@ func main() {
 		log.Printf("Mode: INCREMENTAL EVENT VISITOR (changed since yesterday)")
 	} else if incrementalAlertsOnly {
 		log.Printf("Mode: INCREMENTAL ALERTS (yesterday only, upsert)")
+	} else if allIncrementalOnly {
+		log.Printf("Mode: ALL INCREMENTAL (run all incremental syncs sequentially)")
 	} else if holidaysOnly {
 		log.Printf("Mode: HOLIDAYS ONLY")
 	} else if daywiseOnly {
@@ -873,11 +978,20 @@ func main() {
 		return
 	}
 
+	if allIncrementalOnly {
+		runAllIncrementalSequential(mysqlDB, clickhouseDB, esClient, config)
+		return
+	}
+
 	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly && !incrementalExhibitorOnly && !incrementalSpeakerOnly && !incrementalSponsorOnly && !incrementalVisitorOnly && !incrementalAlertsOnly && !alertsOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
 	} else if visitorSpreadOnly {
+		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
+			log.Fatalf("Elasticsearch connection test failed: %v", err)
+		}
+	} else if allIncrementalOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -1530,37 +1644,11 @@ func main() {
 		log.Println("✓ event_daywiseEconomicImpact_ch swapped successfully")
 	} else {
 		log.Println("Error: No specific table mode selected!")
-		log.Println("Please specify one of the following modes:")
-		log.Println("  -event-edition    # Process event edition data")
-		log.Println("  -sponsors         # Process sponsors data")
-		log.Println("  -exhibitors       # Process exhibitors data")
-		log.Println("  -visitors         # Process visitors data")
-		log.Println("  -speakers         # Process speakers data")
-		log.Println("  -eventtype        # Process eventtype data")
-		log.Println("  -eventcategory    # Process eventcategory data")
-		log.Println("  -eventranking     # Process event ranking data")
-		log.Println("  -eventdesignation # Process event designation data")
-		log.Println("  -eventsponsor-incremental # Incremental event_sponsors_ch sync (changed since yesterday)")
-		log.Println("  -visitorspread    # Process visitor spread data")
-		log.Println("  -allevent         # Process all event data")
-		log.Println("  -allevent-incremental # Incremental allevent sync (changed since yesterday)")
-		log.Println("  -eventtype-incremental # Incremental event_type_ch sync (changed since yesterday)")
-		log.Println("  -holidays         # Process holidays into allevent_ch")
-		log.Println("  -alerts           # Process alerts from GDAC API into alerts_ch")
-		log.Println("  -alerts-incremental  # Incremental alert sync: yesterday only, upsert into alerts_ch, location_polygons_ch, event_type_ch")
-		log.Println("  -daywise          # Process day-wise economic impact from estimate table (standalone, never with -all)")
-		log.Println("  -location         # Process all location types (countries, states, cities, venues, sub-venues)")
-		log.Println("  -location-countries   # Process only location countries")
-		log.Println("  -location-states      # Process only location states")
-		log.Println("  -location-cities      # Process only location cities")
-		log.Println("  -location-venues      # Process only location venues")
-		log.Println("  -location-sub-venues  # Process only location sub-venues")
-		log.Println("  -all                 # Run all seeding scripts in order: location, eventtype, allevent, category, product, ranking, designation, holidays, alerts, exhibitor, speaker, sponsor, visitors, visitorspread")
+		log.Println("Please specify one of the individual flags (e.g. -visitors, -allevent-incremental)")
+		log.Println("For incremental syncs via cron, use -task=<name> (e.g. -task=allevent-incremental)")
 		log.Println("")
-		log.Println("Example: go run main.go -event-edition -chunks=10 -workers=20")
-		log.Println("Example: go run main.go -location -batch=1000 -clickhouse-workers=5")
-		log.Println("Example: go run main.go -all -chunks=5 -workers=10 -batch=5000")
-		log.Println("Example: go run main.go -daywise -batch=10000")
+		log.Println("Example: go run main.go -task=visitors -chunks=10 -workers=30")
+		log.Println("Example: go run main.go -task=allevent-incremental")
 		os.Exit(1)
 	}
 }

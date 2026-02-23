@@ -299,6 +299,47 @@ func BuildSponsorRecordsFromBatchData(
 	return sponsorRecords
 }
 
+// buildSponsorsChDataForModifiedRows fetches rows where modified >= yesterday (includes published=0 for soft deletes).
+// Used by incremental sync to scope only modified records.
+func buildSponsorsChDataForModifiedRows(db *sql.DB) ([]map[string]interface{}, error) {
+	query := `
+		SELECT id, company_id, name, event_id, event_edition, created, published
+		FROM event_sponsors
+		WHERE modified >= CURDATE() - INTERVAL 1 DAY
+		ORDER BY event_id, event_edition, id`
+	log.Printf("[Query] %s", strings.TrimSpace(query))
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, err
+		}
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			if values[i] != nil {
+				row[col] = values[i]
+			} else {
+				row[col] = nil
+			}
+		}
+		results = append(results, row)
+	}
+	return results, rows.Err()
+}
+
 func buildSponsorsChDataForEventIDs(db *sql.DB, eventIDs []int64) ([]map[string]interface{}, error) {
 	if len(eventIDs) == 0 {
 		return nil, nil
@@ -352,6 +393,12 @@ func BuildEventSponsorChRecordsForEventIDs(db *sql.DB, eventIDs []int64, config 
 	if err != nil {
 		return nil, err
 	}
+	return BuildEventSponsorChRecordsFromBatchData(db, batchData, config)
+}
+
+// BuildEventSponsorChRecordsFromBatchData builds SponsorRecords from raw batch data.
+// Used by incremental sync for modified rows only.
+func BuildEventSponsorChRecordsFromBatchData(db *sql.DB, batchData []map[string]interface{}, config shared.Config) ([]SponsorRecord, error) {
 	if len(batchData) == 0 {
 		return nil, nil
 	}

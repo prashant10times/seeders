@@ -31,49 +31,46 @@ func ProcessIncrementalEventExhibitor(mysqlDB *sql.DB, clickhouseConn driver.Con
 	shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL EVENT EXHIBITOR SYNC STARTED", startTime.Format("2006-01-02 15:04:05")))
 	shared.WriteIncrementalLog("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-	scopeEventIDs, err := fetchIncrementalScopeEventExhibitor(mysqlDB)
+	modifiedBatchData, err := buildExhibitorChDataForModifiedRows(mysqlDB)
 	if err != nil {
-		return fmt.Errorf("fetch incremental scope: %w", err)
+		return fmt.Errorf("fetch modified exhibitor rows: %w", err)
 	}
-	if len(scopeEventIDs) == 0 {
-		log.Println("No events with modified event_exhibitor since yesterday, nothing to sync")
-		shared.WriteIncrementalLog("SCOPE: No events with modified event_exhibitor since yesterday. Nothing to sync.")
+	if len(modifiedBatchData) == 0 {
+		log.Println("No event_exhibitor rows modified since yesterday, nothing to sync")
+		shared.WriteIncrementalLog("SCOPE: No event_exhibitor rows modified since yesterday. Nothing to sync.")
 		shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL EVENT EXHIBITOR SYNC COMPLETED (no changes)", time.Now().Format("2006-01-02 15:04:05")))
 		return nil
 	}
 
-	log.Printf("Incremental scope: %d event IDs to reconcile", len(scopeEventIDs))
+	log.Printf("Incremental scope: %d modified exhibitor rows to reconcile", len(modifiedBatchData))
 	shared.WriteIncrementalLog("")
-	shared.WriteIncrementalLog(fmt.Sprintf("1. SCOPE: %d event IDs (event_exhibitor modified since yesterday)", len(scopeEventIDs)))
+	shared.WriteIncrementalLog(fmt.Sprintf("1. SCOPE: %d modified rows (event_exhibitor modified since yesterday)", len(modifiedBatchData)))
 
-	mysqlRecords, err := BuildEventExhibitorChRecordsForEventIDs(mysqlDB, scopeEventIDs, config)
+	toDelete := extractExhibitorTuplesFromBatchData(modifiedBatchData)
+
+	var insertBatchData []map[string]interface{}
+	for _, row := range modifiedBatchData {
+		if shared.SafeConvertToInt8(row["published"]) > 0 {
+			insertBatchData = append(insertBatchData, row)
+		}
+	}
+
+	mysqlRecords, err := BuildExhibitorRecordsFromBatchData(mysqlDB, insertBatchData, config)
 	if err != nil {
 		return fmt.Errorf("build MySQL records: %w", err)
 	}
-	if len(mysqlRecords) == 0 {
-		log.Println("No records built from MySQL, nothing to sync")
-		shared.WriteIncrementalLog("")
-		shared.WriteIncrementalLog("2. MYSQL RECORDS: 0")
-		shared.WriteIncrementalLog(fmt.Sprintf("[%s] INCREMENTAL EVENT EXHIBITOR SYNC COMPLETED (no records)", time.Now().Format("2006-01-02 15:04:05")))
-		return nil
-	}
 
 	shared.WriteIncrementalLog("")
-	shared.WriteIncrementalLog(fmt.Sprintf("2. MYSQL RECORDS: %d (current state for scoped events)", len(mysqlRecords)))
+	shared.WriteIncrementalLog(fmt.Sprintf("2. MYSQL RECORDS: %d to insert (modified rows with published>0)", len(mysqlRecords)))
 
 	tableName := shared.GetTableNameWithDB(shared.GetClickHouseTableName("event_exhibitor_ch", config), config)
 
-	chRowsByEvent, err := fetchEventExhibitorChRowsForEventIDs(clickhouseConn, scopeEventIDs, tableName)
-	if err != nil {
-		return fmt.Errorf("fetch ClickHouse rows: %w", err)
-	}
-
-	toDelete, toInsert := computeEventExhibitorDiff(mysqlRecords, chRowsByEvent)
+	toInsert := mysqlRecords
 
 	shared.WriteIncrementalLog("")
 	shared.WriteIncrementalLog("3. DIFF:")
-	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to DELETE (in CH but not in MySQL): %d", len(toDelete)))
-	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to INSERT (current MySQL state): %d", len(toInsert)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to DELETE (modified only): %d", len(toDelete)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   Rows to INSERT (modified only, published>0): %d", len(toInsert)))
 
 	if len(toDelete) > 0 {
 		nativeConn, err := shared.SetupNativeProtocolConnectionForOptimize(config)
@@ -92,8 +89,6 @@ func ProcessIncrementalEventExhibitor(mysqlDB *sql.DB, clickhouseConn driver.Con
 	}
 
 	if len(toInsert) > 0 {
-		insertQuery := fmt.Sprintf(`INSERT INTO %s (company_id, company_uuid, company_id_name, edition_id, event_id, company_website, ...)`, tableName)
-		log.Printf("[Query] %s", insertQuery)
 		log.Printf("[INSERT] Inserting %d records into %s", len(toInsert), tableName)
 		shared.WriteIncrementalLog("")
 		shared.WriteIncrementalLog(fmt.Sprintf("5. INSERT: %d records into event_exhibitor_ch", len(toInsert)))
@@ -122,7 +117,7 @@ func ProcessIncrementalEventExhibitor(mysqlDB *sql.DB, clickhouseConn driver.Con
 	duration := endTime.Sub(startTime)
 	shared.WriteIncrementalLog("")
 	shared.WriteIncrementalLog("SUMMARY:")
-	shared.WriteIncrementalLog(fmt.Sprintf("   Events reconciled: %d", len(scopeEventIDs)))
+	shared.WriteIncrementalLog(fmt.Sprintf("   Modified rows reconciled: %d", len(modifiedBatchData)))
 	shared.WriteIncrementalLog(fmt.Sprintf("   Rows deleted: %d", len(toDelete)))
 	shared.WriteIncrementalLog(fmt.Sprintf("   Rows inserted: %d", len(toInsert)))
 	shared.WriteIncrementalLog(fmt.Sprintf("   Duration: %v", duration.Round(time.Millisecond)))
@@ -133,82 +128,17 @@ func ProcessIncrementalEventExhibitor(mysqlDB *sql.DB, clickhouseConn driver.Con
 	return nil
 }
 
-func fetchIncrementalScopeEventExhibitor(db *sql.DB) ([]int64, error) {
-	query := `
-		SELECT DISTINCT event_id
-		FROM event_exhibitor
-		WHERE modified >= CURDATE() - INTERVAL 1 DAY
-		ORDER BY event_id
-	`
-	log.Printf("[Query] %s", strings.TrimSpace(query))
-	rows, err := db.Query(query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var eventIDs []int64
-	for rows.Next() {
-		var eventID int64
-		if err := rows.Scan(&eventID); err != nil {
-			return nil, err
-		}
-		eventIDs = append(eventIDs, eventID)
-	}
-	return eventIDs, rows.Err()
-}
-
-// fetchEventExhibitorChRowsForEventIDs returns map[eventID][]exhibitorTuple - all (event_id, edition_id, exhibitorSourceId) in ClickHouse for the given events.
-func fetchEventExhibitorChRowsForEventIDs(conn driver.Conn, eventIDs []int64, tableName string) (map[int64][]exhibitorTuple, error) {
-	if len(eventIDs) == 0 {
-		return make(map[int64][]exhibitorTuple), nil
-	}
-
-	placeholders := make([]string, len(eventIDs))
-	args := make([]interface{}, len(eventIDs))
-	for i, id := range eventIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-
-	query := fmt.Sprintf(
-		`SELECT event_id, edition_id, exhibitorSourceId FROM %s FINAL WHERE event_id IN (%s)`,
-		tableName,
-		strings.Join(placeholders, ","),
-	)
-	log.Printf("[Query] %s", query)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	rows, err := conn.Query(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	result := make(map[int64][]exhibitorTuple)
-	for rows.Next() {
-		var eventID, editionID, exhibitorSourceID uint32
-		if err := rows.Scan(&eventID, &editionID, &exhibitorSourceID); err != nil {
-			return nil, err
-		}
-		eid := int64(eventID)
-		result[eid] = append(result[eid], exhibitorTuple{
+func extractExhibitorTuplesFromBatchData(batchData []map[string]interface{}) []exhibitorTuple {
+	var tuples []exhibitorTuple
+	for _, row := range batchData {
+		eventID := shared.ConvertToUInt32(row["event_id"])
+		editionID := shared.ConvertToUInt32(row["edition_id"])
+		exhibitorSourceID := shared.ConvertToUInt32(row["id"])
+		tuples = append(tuples, exhibitorTuple{
 			EventID: eventID, EditionID: editionID, ExhibitorSourceID: exhibitorSourceID,
 		})
 	}
-	return result, rows.Err()
-}
-
-func computeEventExhibitorDiff(mysqlRecords []ExhibitorRecord, chRowsByEvent map[int64][]exhibitorTuple) (toDelete []exhibitorTuple, toInsert []ExhibitorRecord) {
-	for _, chTuples := range chRowsByEvent {
-		for _, t := range chTuples {
-			toDelete = append(toDelete, t)
-		}
-	}
-	toInsert = mysqlRecords
-	return toDelete, toInsert
+	return tuples
 }
 
 func deleteEventExhibitorRowsByPrimaryKey(conn driver.Conn, tuples []exhibitorTuple, tableName string) error {
