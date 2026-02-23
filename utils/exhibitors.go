@@ -548,3 +548,262 @@ func extractExhibitorEventIDs(exhibitorData []map[string]interface{}) []int64 {
 
 	return eventIDs
 }
+
+func buildExhibitorChDataForEventIDs(db *sql.DB, eventIDs []int64) ([]map[string]interface{}, error) {
+	if len(eventIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT id, company_id, company_name, event_id, edition_id, country, city, website, created, published
+		FROM event_exhibitor
+		WHERE event_id IN (%s) AND published > 0
+		ORDER BY event_id, edition_id, id`, strings.Join(placeholders, ","))
+	log.Printf("[Query] %s", query)
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, err
+		}
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			if values[i] != nil {
+				row[col] = values[i]
+			} else {
+				row[col] = nil
+			}
+		}
+		results = append(results, row)
+	}
+	return results, rows.Err()
+}
+
+// BuildEventExhibitorChRecordsForEventIDs fetches all exhibitors for the given event IDs
+// and builds ExhibitorRecords with social and city data. Used for incremental sync.
+func BuildEventExhibitorChRecordsForEventIDs(db *sql.DB, eventIDs []int64, config shared.Config) ([]ExhibitorRecord, error) {
+	batchData, err := buildExhibitorChDataForEventIDs(db, eventIDs)
+	if err != nil {
+		return nil, err
+	}
+	if len(batchData) == 0 {
+		return nil, nil
+	}
+	var exhibitorCompanyIDs []int64
+	seenCompanyIDs := make(map[int64]bool)
+	for _, exhibitor := range batchData {
+		if companyID, ok := exhibitor["company_id"].(int64); ok && companyID > 0 {
+			if !seenCompanyIDs[companyID] {
+				exhibitorCompanyIDs = append(exhibitorCompanyIDs, companyID)
+				seenCompanyIDs[companyID] = true
+			}
+		}
+	}
+	socialData := fetchExhibitorSocialData(db, exhibitorCompanyIDs)
+
+	var exhibitorCityIDs []int64
+	seenCityIDs := make(map[int64]bool)
+	for _, exhibitor := range batchData {
+		if cityID, ok := exhibitor["city"].(int64); ok && cityID > 0 {
+			if !seenCityIDs[cityID] {
+				exhibitorCityIDs = append(exhibitorCityIDs, cityID)
+				seenCityIDs[cityID] = true
+			}
+		}
+	}
+	var cityLookup map[int64]map[string]interface{}
+	if len(exhibitorCityIDs) > 0 {
+		cityData := shared.FetchCityDataParallel(db, exhibitorCityIDs, config.NumWorkers)
+		cityLookup = make(map[int64]map[string]interface{})
+		for _, city := range cityData {
+			if cityID, ok := city["id"].(int64); ok {
+				cityLookup[cityID] = city
+			}
+		}
+	}
+
+	now := time.Now().Format("2006-01-02 15:04:05")
+	var exhibitorRecords []ExhibitorRecord
+	for _, exhibitor := range batchData {
+		var companyDomain string
+		if website, ok := exhibitor["website"].(string); ok && website != "" {
+			companyDomain = shared.ExtractDomainFromWebsite(website)
+		} else if website, ok := exhibitor["website"].([]byte); ok && len(website) > 0 {
+			companyDomain = shared.ExtractDomainFromWebsite(string(website))
+		}
+
+		var facebookID, linkedinID, twitterID interface{}
+		if companyID, ok := exhibitor["company_id"].(int64); ok && socialData != nil {
+			if social, exists := socialData[companyID]; exists {
+				facebookID = social["facebook_id"]
+				linkedinID = social["linkedin_id"]
+				twitterID = social["twitter_id"]
+			}
+		}
+
+		var companyCityName *string
+		if cityID, ok := exhibitor["city"].(int64); ok && cityLookup != nil {
+			if city, exists := cityLookup[cityID]; exists && city["name"] != nil {
+				nameStr := shared.SafeConvertToString(city["name"])
+				companyCityName = &nameStr
+			}
+		}
+
+		var companyState *uint32
+		var companyStateName *string
+		if cityID, ok := exhibitor["city"].(int64); ok && cityLookup != nil {
+			if city, exists := cityLookup[cityID]; exists {
+				if city["state_id"] != nil {
+					if stateID, ok := city["state_id"].(int64); ok && stateID > 0 {
+						stateIDUint32 := uint32(stateID)
+						companyState = &stateIDUint32
+					}
+				}
+				if city["state"] != nil {
+					stateStr := shared.SafeConvertToString(city["state"])
+					if strings.TrimSpace(stateStr) != "" {
+						companyStateName = &stateStr
+					}
+				}
+			}
+		}
+
+		companyID := shared.ConvertToUInt32Ptr(exhibitor["company_id"])
+		editionID := shared.ConvertToUInt32(exhibitor["edition_id"])
+		eventID := shared.ConvertToUInt32(exhibitor["event_id"])
+		exhibitorSourceID := shared.ConvertToUInt32(exhibitor["id"])
+
+		exhibitorRecords = append(exhibitorRecords, ExhibitorRecord{
+			CompanyID:         companyID,
+			CompanyUUID:       shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.ConvertToUInt32(exhibitor["company_id"]), shared.ConvertToString(exhibitor["created"]))),
+			CompanyIDName:     shared.GetCompanyNameOrDefault(exhibitor["company_name"]),
+			EditionID:         editionID,
+			EventID:           eventID,
+			CompanyWebsite:    shared.ConvertToStringPtr(exhibitor["website"]),
+			CompanyDomain:     shared.ConvertToStringPtr(companyDomain),
+			CompanyCountry:    shared.ToUpperNullableString(shared.ConvertToStringPtr(exhibitor["country"])),
+			CompanyState:      companyState,
+			CompanyStateName:  companyStateName,
+			CompanyCity:       shared.ConvertToUInt32Ptr(exhibitor["city"]),
+			CompanyCityName:   companyCityName,
+			FacebookID:        shared.ConvertToStringPtr(facebookID),
+			LinkedinID:        shared.ConvertToStringPtr(linkedinID),
+			TwitterID:         shared.ConvertToStringPtr(twitterID),
+			Created:           shared.SafeConvertToDateTimeString(exhibitor["created"]),
+			Version:           1,
+			LastUpdatedAt:     now,
+			Published:         shared.SafeConvertToInt8(exhibitor["published"]),
+			ExhibitorSourceID: exhibitorSourceID,
+		})
+	}
+	return exhibitorRecords, nil
+}
+
+func InsertEventExhibitorChDataIntoTable(clickhouseConn driver.Conn, records []ExhibitorRecord, tableName string, numWorkers int) error {
+	if len(records) == 0 {
+		return nil
+	}
+	if numWorkers <= 1 {
+		return insertExhibitorChBatchIntoTable(clickhouseConn, records, tableName)
+	}
+	batchSize := (len(records) + numWorkers - 1) / numWorkers
+	results := make(chan error, numWorkers)
+	semaphore := make(chan struct{}, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		start := i * batchSize
+		end := start + batchSize
+		if end > len(records) {
+			end = len(records)
+		}
+		if start >= len(records) {
+			break
+		}
+		semaphore <- struct{}{}
+		go func(start, end int) {
+			defer func() { <-semaphore }()
+			batch := records[start:end]
+			results <- insertExhibitorChBatchIntoTable(clickhouseConn, batch, tableName)
+		}(start, end)
+	}
+	for i := 0; i < numWorkers && i*batchSize < len(records); i++ {
+		if err := <-results; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertExhibitorChBatchIntoTable(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord, tableName string) error {
+	if len(exhibitorRecords) == 0 {
+		return nil
+	}
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error {
+			return shared.CheckClickHouseConnectionAlive(clickhouseConn)
+		},
+		3,
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	query := fmt.Sprintf(`
+		INSERT INTO %s (
+			company_id, company_uuid, company_id_name, edition_id, event_id, company_website,
+			company_domain, company_country, company_state, company_state_name, company_city, company_city_name, facebook_id,
+			linkedin_id, twitter_id, created, version, last_updated_at, published, exhibitorSourceId
+		)`, tableName)
+	batch, err := clickhouseConn.PrepareBatch(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to prepare batch for %s: %w", tableName, err)
+	}
+	for _, record := range exhibitorRecords {
+		if err := batch.Append(
+			record.CompanyID,
+			record.CompanyUUID,
+			record.CompanyIDName,
+			record.EditionID,
+			record.EventID,
+			record.CompanyWebsite,
+			record.CompanyDomain,
+			record.CompanyCountry,
+			record.CompanyState,
+			record.CompanyStateName,
+			record.CompanyCity,
+			record.CompanyCityName,
+			record.FacebookID,
+			record.LinkedinID,
+			record.TwitterID,
+			record.Created,
+			record.Version,
+			record.LastUpdatedAt,
+			record.Published,
+			record.ExhibitorSourceID,
+		); err != nil {
+			return fmt.Errorf("failed to append record: %w", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to send batch: %w", err)
+	}
+	return nil
+}
