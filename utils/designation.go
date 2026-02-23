@@ -30,6 +30,7 @@ func safeConvertToString(value interface{}) string {
 type EventDesignationChRecord struct {
 	EventID         uint32  `ch:"event_id"`
 	EditionID       uint32  `ch:"edition_id"`
+	SourceVisitorID uint32  `ch:"sourceVisitorId"`
 	DesignationID   uint32  `ch:"designation_id"`
 	DesignationUUID *string `ch:"designation_uuid"`
 	DisplayName     string  `ch:"display_name"`
@@ -46,6 +47,11 @@ type DesignationData struct {
 	Department  string
 	Role        string
 	Created     interface{}
+}
+
+type EventEditionPair struct {
+	EventID   uint32
+	EditionID uint32
 }
 
 func FetchDesignationDisplayNameData(db *sql.DB, designationIDs []uint32) (map[uint32]DesignationData, error) {
@@ -126,11 +132,12 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 
 		if _, exists := aggregatedData[key]; !exists {
 			aggregatedData[key] = map[string]interface{}{
-				"event":          row["event"],
-				"edition":        row["edition"],
-				"designation_id": row["designation_id"],
-				"created":        row["created"],
-				"total_visitors": 0,
+				"event":            row["event"],
+				"edition":          row["edition"],
+				"designation_id":   row["designation_id"],
+				"created":          row["created"],
+				"total_visitors":   0,
+				"source_visitor_id": row["id"], // use first visitor id as sourceVisitorId
 			}
 		}
 
@@ -153,8 +160,7 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 	for _, row := range aggregatedSlice {
 		if designationID, ok := row["designation_id"]; ok && designationID != nil {
 			if designationIDVal, ok := designationID.(int64); ok {
-				designationIDUint := uint32(designationIDVal)
-				designationIDSet[designationIDUint] = true
+				designationIDSet[uint32(designationIDVal)] = true
 			}
 		}
 	}
@@ -204,6 +210,12 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 			}
 		}
 
+		if sourceVisitorID, ok := row["source_visitor_id"]; ok && sourceVisitorID != nil {
+			if val, ok := sourceVisitorID.(int64); ok {
+				record.SourceVisitorID = uint32(val)
+			}
+		}
+
 		if designationID, ok := row["designation_id"]; ok && designationID != nil {
 			if designationIDVal, ok := designationID.(int64); ok {
 				designationIDUint := uint32(designationIDVal)
@@ -234,6 +246,86 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 	}
 
 	return records
+}
+
+// InsertEventDesignationChDataIntoTable inserts records into the specified table. Used for incremental sync.
+func InsertEventDesignationChDataIntoTable(clickhouseConn driver.Conn, records []EventDesignationChRecord, tableName string, numWorkers int) error {
+	if len(records) == 0 {
+		return nil
+	}
+	if numWorkers <= 1 {
+		return insertEventDesignationChBatchIntoTable(clickhouseConn, records, tableName)
+	}
+	batchSize := len(records) / numWorkers
+	if batchSize == 0 {
+		batchSize = 1
+	}
+	var wg sync.WaitGroup
+	errorsChan := make(chan error, numWorkers)
+	semaphore := make(chan struct{}, numWorkers)
+	for i := 0; i < numWorkers; i++ {
+		start := i * batchSize
+		end := start + batchSize
+		if i == numWorkers-1 {
+			end = len(records)
+		}
+		if start >= len(records) {
+			break
+		}
+		wg.Add(1)
+		semaphore <- struct{}{}
+		go func(start, end int) {
+			defer wg.Done()
+			defer func() { <-semaphore }()
+			batch := records[start:end]
+			if err := insertEventDesignationChBatchIntoTable(clickhouseConn, batch, tableName); err != nil {
+				errorsChan <- err
+			}
+		}(start, end)
+	}
+	wg.Wait()
+	close(errorsChan)
+	for err := range errorsChan {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertEventDesignationChBatchIntoTable(clickhouseConn driver.Conn, records []EventDesignationChRecord, tableName string) error {
+	if len(records) == 0 {
+		return nil
+	}
+	connectionCheckErr := shared.RetryWithBackoff(
+		func() error { return shared.CheckClickHouseConnectionAlive(clickhouseConn) },
+		3,
+	)
+	if connectionCheckErr != nil {
+		return fmt.Errorf("ClickHouse connection is not alive after retries: %w", connectionCheckErr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	query := fmt.Sprintf(`
+		INSERT INTO %s (event_id, edition_id, sourceVisitorId, designation_id, designation_uuid, display_name, department, role, total_visitors, version, last_updated_at)
+	`, tableName)
+	batch, err := clickhouseConn.PrepareBatch(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to prepare ClickHouse batch for %s: %w", tableName, err)
+	}
+	for _, record := range records {
+		if err := batch.Append(
+			record.EventID, record.EditionID, record.SourceVisitorID, record.DesignationID, record.DesignationUUID,
+			record.DisplayName, record.Department, record.Role, record.TotalVisitors,
+			record.Version, record.LastUpdatedAt,
+		); err != nil {
+			return fmt.Errorf("failed to append record: %w", err)
+		}
+	}
+	if err := batch.Send(); err != nil {
+		return fmt.Errorf("failed to send batch: %w", err)
+	}
+	return nil
 }
 
 func InsertEventDesignationChDataIntoClickHouse(clickhouseConn driver.Conn, eventDesignationRecords []EventDesignationChRecord, numWorkers int) error {
@@ -309,7 +401,7 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO testing_db.event_designation_temp (
-			event_id, edition_id, designation_id, designation_uuid, display_name, department, role, total_visitors, version, last_updated_at
+			event_id, edition_id, sourceVisitorId, designation_id, designation_uuid, display_name, department, role, total_visitors, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -326,6 +418,7 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 		err := batch.Append(
 			record.EventID,         // event_id: UInt32
 			record.EditionID,       // edition_id: UInt32
+			record.SourceVisitorID, // sourceVisitorId: UInt32
 			record.DesignationID,   // designation_id: UInt32
 			record.DesignationUUID, // designation_uuid: Nullable(UUID)
 			record.DisplayName,     // display_name: LowCardinality(String)
@@ -337,8 +430,8 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 		)
 		if err != nil {
 			log.Printf("ERROR: Failed to append record to batch: %v", err)
-			log.Printf("ERROR Record data: EventID=%d, EditionID=%d, DesignationID=%d, DesignationUUID=%s, DisplayName=%s, Department=%s, Role=%s, TotalVisitors=%d, Version=%d",
-				record.EventID, record.EditionID, record.DesignationID, uuidStr, record.DisplayName, record.Department, record.Role, record.TotalVisitors, record.Version)
+			log.Printf("ERROR Record data: EventID=%d, EditionID=%d, SourceVisitorID=%d, DesignationID=%d, DesignationUUID=%s",
+				record.EventID, record.EditionID, record.SourceVisitorID, record.DesignationID, uuidStr)
 			return fmt.Errorf("failed to append record to batch: %v", err)
 		}
 	}
@@ -352,87 +445,51 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 	return nil
 }
 
+const defaultDesignationPairBatchSize = 5000
+
 func ProcessEventDesignationOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
 	log.Println("=== Starting event_designation_ch ONLY Processing ===")
 
-	totalRecords, minID, maxID, err := shared.GetTotalRecordsAndIDRange(mysqlDB, "event_visitor")
-	if err != nil {
-		log.Fatal("Failed to get total records and ID range from event_visitor:", err)
+	pairBatchSize := config.BatchSize
+	if pairBatchSize <= 0 {
+		pairBatchSize = defaultDesignationPairBatchSize
+		log.Printf("Using default batch size: %d (event-edition pairs per batch)", pairBatchSize)
+	} else {
+		log.Printf("Using batch size: %d (event-edition pairs per batch, from -batch flag)", pairBatchSize)
 	}
 
-	log.Printf("Total event_visitor records: %d, Min ID: %d, Max ID: %d", totalRecords, minID, maxID)
+	log.Printf("Processing by (event, edition) pair batches - correct aggregation, bounded memory")
 
-	if config.NumChunks <= 0 {
-		config.NumChunks = 5
-	}
+	batchNum := 0
+	lastEvent, lastEdition := uint32(0), uint32(0)
 
-	chunkSize := (maxID - minID + 1) / config.NumChunks
-	if chunkSize == 0 {
-		chunkSize = 1
-	}
-
-	log.Printf("Processing event_designation_ch data in %d chunks with chunk size: %d", config.NumChunks, chunkSize)
-
-	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, config.NumWorkers)
-
-	log.Printf("Starting %d chunks with %d workers", config.NumChunks, config.NumWorkers)
-
-	for i := 0; i < config.NumChunks; i++ {
-		startID := minID + (i * chunkSize)
-		endID := startID + chunkSize - 1
-		if i == config.NumChunks-1 {
-			endID = maxID
-		}
-
-		if i > 0 {
-			delay := 3 * time.Second
-			log.Printf("Waiting %v before launching event_designation_ch chunk %d...", delay, i+1)
-			time.Sleep(delay)
-		}
-
-		log.Printf("Launching event_designation_ch chunk %d with ID range %d-%d", i+1, startID, endID)
-
-		wg.Add(1)
-		semaphore <- struct{}{}
-		go func(chunkNum, start, end int) {
-			defer wg.Done()
-			defer func() { <-semaphore }()
-			ProcessEventDesignationChunk(mysqlDB, clickhouseConn, config, start, end, chunkNum)
-		}(i+1, startID, endID)
-	}
-
-	wg.Wait()
-	log.Println("=== Event Designation Processing Complete ===")
-}
-
-func ProcessEventDesignationChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID, endID int, chunkNum int) {
-	log.Printf("Processing event_designation_ch chunk %d: ID range %d-%d", chunkNum, startID, endID)
-
-	totalRecords := endID - startID + 1
-	processed := 0
-
-	offset := 0
 	for {
-		batchData, err := BuildEventDesignationMigrationData(mysqlDB, startID, endID, config.BatchSize)
+		batchNum++
+		pairs, err := fetchEventEditionPairsBatch(mysqlDB, int(lastEvent), int(lastEdition), pairBatchSize)
 		if err != nil {
-			log.Printf("EventDesignation chunk %d batch error: %v", chunkNum, err)
-			return
+			log.Fatalf("Failed to fetch event-edition pairs batch %d: %v", batchNum, err)
 		}
-
-		if len(batchData) == 0 {
-			log.Printf("EventDesignation chunk %d: No more data to process, breaking loop", chunkNum)
+		if len(pairs) == 0 {
+			log.Printf("No more (event, edition) pairs, done after %d batches", batchNum-1)
 			break
 		}
 
-		processed += len(batchData)
-		progress := float64(processed) / float64(totalRecords) * 100
-		log.Printf("EventDesignation chunk %d: Retrieved %d records in batch (%.1f%% complete)", chunkNum, len(batchData), progress)
+		batchData, err := buildEventDesignationChDataForEventEditionPairs(mysqlDB, pairs)
+		if err != nil {
+			log.Fatalf("Failed to fetch visitors for batch %d: %v", batchNum, err)
+		}
+
+		if len(batchData) == 0 {
+			lastEvent, lastEdition = pairs[len(pairs)-1].EventID, pairs[len(pairs)-1].EditionID
+			if len(pairs) < pairBatchSize {
+				break
+			}
+			continue
+		}
 
 		records := ConvertToEventDesignationChRecords(batchData, mysqlDB)
-
 		if len(records) > 0 {
-			log.Printf("EventDesignation chunk %d: Attempting to insert %d records into event_designation_ch...", chunkNum, len(records))
+			log.Printf("Batch %d: %d pairs -> %d raw visitors -> %d aggregated records", batchNum, len(pairs), len(batchData), len(records))
 
 			attemptCount := 0
 			insertErr := shared.RetryWithBackoff(
@@ -442,38 +499,111 @@ func ProcessEventDesignationChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 						for i := range records {
 							records[i].LastUpdatedAt = now
 						}
-						log.Printf("EventDesignation chunk %d: Updated last_updated_at for retry attempt %d", chunkNum, attemptCount+1)
 					}
 					attemptCount++
 					return InsertEventDesignationChDataIntoClickHouse(clickhouseConn, records, config.ClickHouseWorkers)
 				},
 				3,
 			)
-
 			if insertErr != nil {
-				log.Printf("EventDesignation chunk %d insertion failed: %v", chunkNum, insertErr)
-				return
-			}
-
-			log.Printf("EventDesignation chunk %d: Successfully inserted %d records", chunkNum, len(records))
-		}
-
-		if len(batchData) > 0 {
-			lastID := batchData[len(batchData)-1]["id"]
-			if lastID != nil {
-				if id, ok := lastID.(int64); ok {
-					startID = int(id) + 1
-				}
+				log.Fatalf("Batch %d insert failed: %v", batchNum, insertErr)
 			}
 		}
 
-		offset += len(batchData)
-		if len(batchData) < config.BatchSize {
+		lastEvent, lastEdition = pairs[len(pairs)-1].EventID, pairs[len(pairs)-1].EditionID
+		if len(pairs) < pairBatchSize {
 			break
 		}
 	}
 
-	log.Printf("EventDesignation chunk %d: Completed processing %d records", chunkNum, processed)
+	log.Println("=== Event Designation Processing Complete ===")
+}
+
+// fetchEventEditionPairsBatch returns up to batchSize (event, edition) pairs using keyset pagination.
+func fetchEventEditionPairsBatch(db *sql.DB, lastEvent, lastEdition int, batchSize int) ([]EventEditionPair, error) {
+	query := `
+		SELECT DISTINCT ev.event AS event_id, ev.edition AS edition_id
+		FROM event_visitor ev
+		WHERE ev.evisitor = 0
+		  AND ev.published = 1
+		  AND ev.designation_id IS NOT NULL
+		  AND (ev.event, ev.edition) > (?, ?)
+		ORDER BY ev.event, ev.edition
+		LIMIT ?
+	`
+	rows, err := db.Query(query, lastEvent, lastEdition, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pairs []EventEditionPair
+	for rows.Next() {
+		var p EventEditionPair
+		if err := rows.Scan(&p.EventID, &p.EditionID); err != nil {
+			return nil, err
+		}
+		pairs = append(pairs, p)
+	}
+	return pairs, rows.Err()
+}
+
+// Used for incremental sync.
+func BuildEventDesignationChRecordsForEventEditionPairs(db *sql.DB, pairs []EventEditionPair) ([]EventDesignationChRecord, error) {
+	rawData, err := buildEventDesignationChDataForEventEditionPairs(db, pairs)
+	if err != nil {
+		return nil, err
+	}
+	return ConvertToEventDesignationChRecords(rawData, db), nil
+}
+
+func buildEventDesignationChDataForEventEditionPairs(db *sql.DB, pairs []EventEditionPair) ([]map[string]interface{}, error) {
+	if len(pairs) == 0 {
+		return nil, nil
+	}
+	var tupleStrs []string
+	for _, p := range pairs {
+		tupleStrs = append(tupleStrs, fmt.Sprintf("(%d, %d)", p.EventID, p.EditionID))
+	}
+	query := fmt.Sprintf(`
+		SELECT ev.id, ev.event, ev.edition, ev.designation_id, d.created
+		FROM event_visitor ev
+		JOIN designation d ON ev.designation_id = d.id
+		WHERE ev.evisitor = 0
+		  AND ev.published = 1
+		  AND ev.designation_id IS NOT NULL
+		  AND (ev.event, ev.edition) IN (%s)
+		ORDER BY ev.event, ev.edition, ev.designation_id, ev.id
+	`, strings.Join(tupleStrs, ","))
+	log.Printf("[Query] %s", strings.TrimSpace(query))
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return nil, err
+		}
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			row[col] = values[i]
+		}
+		results = append(results, row)
+	}
+	return results, rows.Err()
 }
 
 func BuildEventDesignationMigrationData(mysqlDB *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {

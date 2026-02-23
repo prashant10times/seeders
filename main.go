@@ -1870,6 +1870,7 @@ func main() {
 	var incrementalEventTypeOnly bool
 	var incrementalCategoryOnly bool
 	var incrementalProductOnly bool
+	var incrementalDesignationOnly bool
 	var holidaysOnly bool
 	var alertsOnly bool
 	var allScripts bool
@@ -1902,6 +1903,7 @@ func main() {
 	flag.BoolVar(&incrementalEventTypeOnly, "eventtype-incremental", false, "Incremental sync for event_type_ch (only changed since yesterday) (default: false)")
 	flag.BoolVar(&incrementalCategoryOnly, "eventcategory-incremental", false, "Incremental sync for event_category_ch (only changed since yesterday) (default: false)")
 	flag.BoolVar(&incrementalProductOnly, "eventproduct-incremental", false, "Incremental sync for event_product_ch (only changed since yesterday) (default: false)")
+	flag.BoolVar(&incrementalDesignationOnly, "eventdesignation-incremental", false, "Incremental sync for event_designation_ch (only changed since yesterday) (default: false)")
 	flag.BoolVar(&holidaysOnly, "holidays", false, "Process holidays into allevent_ch (automatically handles event types) (default: false)")
 	flag.BoolVar(&alertsOnly, "alerts", false, "Process alerts from GDAC API into alerts_ch (default: false)")
 	flag.BoolVar(&allScripts, "all", false, "Run all seeding scripts in order: location, eventtype, allevent, category, product, ranking, designation, holidays, alerts, exhibitor, speaker, sponsor, visitors, visitorspread (default: false)")
@@ -2071,6 +2073,8 @@ func main() {
 		log.Printf("Mode: INCREMENTAL EVENT CATEGORY (changed since yesterday)")
 	} else if incrementalProductOnly {
 		log.Printf("Mode: INCREMENTAL EVENT PRODUCT (changed since yesterday)")
+	} else if incrementalDesignationOnly {
+		log.Printf("Mode: INCREMENTAL EVENT DESIGNATION (changed since yesterday)")
 	} else if holidaysOnly {
 		log.Printf("Mode: HOLIDAYS ONLY")
 	} else if daywiseOnly {
@@ -2117,6 +2121,8 @@ func main() {
 		log.Printf("Elasticsearch: Skipped (not needed for event category incremental)")
 	} else if incrementalProductOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for event product incremental)")
+	} else if incrementalDesignationOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for event designation incremental)")
 	} else if daywiseOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for day-wise economic impact)")
 	}
@@ -2140,7 +2146,7 @@ func main() {
 		return
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly {
+	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -2165,6 +2171,8 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event category incremental)")
 		} else if incrementalProductOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event product incremental)")
+		} else if incrementalDesignationOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event designation incremental)")
 		} else if eventCategoryEventChOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event_category_ch processing)")
 		} else if eventProductChOnly {
@@ -2397,7 +2405,9 @@ func main() {
 		utils.ProcessEventDesignationOnly(mysqlDB, clickhouseDB, utilsConfig)
 
 		log.Println("Optimizing event_designation_ch table...")
-		if err := shared.OptimizeSingleTable(clickhouseDB, "event_designation_ch", config, errorLogFile); err != nil {
+		optimizeConfig := config
+		optimizeConfig.UseTempTables = true // Optimize temp table where data was just inserted
+		if err := shared.OptimizeSingleTable(clickhouseDB, "event_designation_ch", optimizeConfig, errorLogFile); err != nil {
 			logErrorToFile("Event Designation Optimization", err)
 			log.Printf("⚠️  Error optimizing event_designation_ch table: %v", err)
 			log.Printf("⚠️  Continuing with table swap...")
@@ -2464,6 +2474,13 @@ func main() {
 			log.Fatalf("Incremental event product sync failed: %v", err)
 		}
 		log.Println("✓ Incremental event product sync completed successfully")
+	} else if incrementalDesignationOnly {
+		utilsConfig := config
+		if err := utils.ProcessIncrementalEventDesignation(mysqlDB, clickhouseDB, utilsConfig); err != nil {
+			logErrorToFile("Incremental Event Designation", err)
+			log.Fatalf("Incremental event designation sync failed: %v", err)
+		}
+		log.Println("✓ Incremental event designation sync completed successfully")
 	} else if allEventOnly {
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Ensure Temp Table (All Event)", err)

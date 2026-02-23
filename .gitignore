@@ -45,3 +45,4 @@ alerts_country_processing.log
 /failed_batches/*
 seeder.log
 incremental.log
+datacheck.py
