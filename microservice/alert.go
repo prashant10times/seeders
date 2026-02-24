@@ -396,6 +396,12 @@ var alertBufferAreas = map[string]map[string]struct {
 	},
 }
 
+var degeneratePolygonRadiusKm = map[string]int{
+	"GREEN":  10,
+	"ORANGE": 50,
+	"RED":    100,
+}
+
 var alertRecoveryDurations = map[string]map[string]int{
 	"CYCLONES": {
 		"GREEN":  2,
@@ -1423,6 +1429,44 @@ func convertRingToClickHousePolygonWithDiagnostic(ring interface{}) (rawPoints [
 	return rawPoints, valid
 }
 
+
+func tryExtractCentroidFromDegeneratePolygon(feature GeoJSONFeature) (centerLat, centerLon float64, ok bool) {
+	var rawPoints []struct {
+		Lon, Lat float64
+	}
+	switch feature.Geometry.Type {
+	case "Polygon":
+		coords, ok := feature.Geometry.Coordinates.([]interface{})
+		if !ok || len(coords) == 0 {
+			return 0, 0, false
+		}
+		rawPoints = extractPointsFromRing(coords[0])
+	case "MultiPolygon":
+		coords, ok := feature.Geometry.Coordinates.([]interface{})
+		if !ok || len(coords) == 0 {
+			return 0, 0, false
+		}
+		polygon, ok := coords[0].([]interface{})
+		if !ok || len(polygon) == 0 {
+			return 0, 0, false
+		}
+		ring, ok := polygon[0].([]interface{})
+		if !ok || len(ring) == 0 {
+			return 0, 0, false
+		}
+		rawPoints = extractPointsFromRing(ring)
+	default:
+		return 0, 0, false
+	}
+	if len(rawPoints) == 0 {
+		return 0, 0, false
+	}
+	if validatePoints(rawPoints) {
+		return 0, 0, false // valid polygon, not degenerate
+	}
+	return rawPoints[0].Lat, rawPoints[0].Lon, true
+}
+
 func convertFeatureToClickHousePolygon(feature GeoJSONFeature, alertID string, polygonSourceURL string, gdacSearchURL string, class string) (string, error) {
 	switch feature.Geometry.Type {
 	case "Polygon":
@@ -1714,50 +1758,91 @@ func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJS
 				if feature.Geometry.Type == "MultiPolygon" {
 					polygonStrs, err := convertMultiPolygonToClickHouse(feature, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL)
 					if err != nil {
-						log.Printf("WARNING: Failed to convert MultiPolygon (same as PostGIS would return empty): %v (class: %s, alertID: %s, polygonSourceURL: %s, gdacSearchURL: %s)", err, class, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL)
-						LogPolygonError(metadata.AlertID, metadata.GDACSearchURL, metadata.GeometryLink)
-						break
+						if centerLat, centerLon, ok := tryExtractCentroidFromDegeneratePolygon(feature); ok {
+							radiusKm := 10
+							if r, exists := degeneratePolygonRadiusKm[featureAlertLevel]; exists {
+								radiusKm = r
+							}
+							radiusMeters := radiusKm * 1000
+							endDate := featureEndDateWithRecovery
+							if addBuffer && bufferAlertLevel != "" && bufferEndDateWithRecovery != "" {
+								endDate = bufferEndDateWithRecovery
+							}
+							eventIDs, err = queryEventsWithinPolygon(clickhouseConn, true, centerLat, centerLon, radiusMeters, "", metadata.StartDate, endDate, lastEventID)
+							if err != nil {
+								log.Printf("ERROR: Failed to query events for degenerate polygon (centroid fallback): %v", err)
+								break
+							}
+							log.Printf("INFO: Degenerate MultiPolygon for alertID %s (class: %s) - using centroid (%f, %f) with %dkm radius", metadata.AlertID, class, centerLat, centerLon, radiusKm)
+						} else {
+							log.Printf("WARNING: Failed to convert MultiPolygon (same as PostGIS would return empty): %v (class: %s, alertID: %s, polygonSourceURL: %s, gdacSearchURL: %s)", err, class, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL)
+							LogPolygonError(metadata.AlertID, metadata.GDACSearchURL, metadata.GeometryLink)
+							break
+						}
+					} else {
+						polygonsToQuery = polygonStrs
 					}
-					polygonsToQuery = polygonStrs
 				} else {
 					polygonStr, err := convertFeatureToClickHousePolygon(feature, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL, class)
 					if err != nil {
-						log.Printf("WARNING: Failed to convert polygon (same as PostGIS would return empty): %v (geometry type: %s, class: %s, alertID: %s, polygonSourceURL: %s, gdacSearchURL: %s)", err, feature.Geometry.Type, class, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL)
-						LogPolygonError(metadata.AlertID, metadata.GDACSearchURL, metadata.GeometryLink)
-						break
-					}
-					polygonsToQuery = []string{polygonStr}
-				}
-
-				endDate := featureEndDateWithRecovery
-				if addBuffer && bufferAlertLevel != "" && bufferEndDateWithRecovery != "" {
-					endDate = bufferEndDateWithRecovery
-				}
-
-				for _, polygonStr := range polygonsToQuery {
-					polygonEventIDs, err := queryEventsWithinPolygon(clickhouseConn, false, 0, 0, 0, polygonStr, metadata.StartDate, endDate, lastEventID)
-					if err != nil {
-						errStr := err.Error()
-						if strings.Contains(errStr, "INVALID_POLYGON:") {
-							log.Printf("WARNING: Invalid polygon detected (same as PostGIS would return empty) - skipping this polygon (class: %s, alertID: %s, polygonSourceURL: %s, gdacSearchURL: %s)", class, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL)
+						if centerLat, centerLon, ok := tryExtractCentroidFromDegeneratePolygon(feature); ok {
+							radiusKm := 10
+							if r, exists := degeneratePolygonRadiusKm[featureAlertLevel]; exists {
+								radiusKm = r
+							}
+							radiusMeters := radiusKm * 1000
+							endDate := featureEndDateWithRecovery
+							if addBuffer && bufferAlertLevel != "" && bufferEndDateWithRecovery != "" {
+								endDate = bufferEndDateWithRecovery
+							}
+							eventIDs, err = queryEventsWithinPolygon(clickhouseConn, true, centerLat, centerLon, radiusMeters, "", metadata.StartDate, endDate, lastEventID)
+							if err != nil {
+								log.Printf("ERROR: Failed to query events for degenerate polygon (centroid fallback): %v", err)
+								break
+							}
+							log.Printf("INFO: Degenerate polygon for alertID %s (class: %s) - using centroid (%f, %f) with %dkm radius", metadata.AlertID, class, centerLat, centerLon, radiusKm)
+						} else {
+							log.Printf("WARNING: Failed to convert polygon (same as PostGIS would return empty): %v (geometry type: %s, class: %s, alertID: %s, polygonSourceURL: %s, gdacSearchURL: %s)", err, feature.Geometry.Type, class, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL)
 							LogPolygonError(metadata.AlertID, metadata.GDACSearchURL, metadata.GeometryLink)
+							break
+						}
+					} else {
+						polygonsToQuery = []string{polygonStr}
+					}
+				}
+
+				if len(polygonsToQuery) > 0 {
+					endDate := featureEndDateWithRecovery
+					if addBuffer && bufferAlertLevel != "" && bufferEndDateWithRecovery != "" {
+						endDate = bufferEndDateWithRecovery
+					}
+
+					for _, polygonStr := range polygonsToQuery {
+						polygonEventIDs, err := queryEventsWithinPolygon(clickhouseConn, false, 0, 0, 0, polygonStr, metadata.StartDate, endDate, lastEventID)
+						if err != nil {
+							errStr := err.Error()
+							if strings.Contains(errStr, "INVALID_POLYGON:") {
+								log.Printf("WARNING: Invalid polygon detected (same as PostGIS would return empty) - skipping this polygon (class: %s, alertID: %s, polygonSourceURL: %s, gdacSearchURL: %s)", class, metadata.AlertID, metadata.GeometryLink, metadata.GDACSearchURL)
+								LogPolygonError(metadata.AlertID, metadata.GDACSearchURL, metadata.GeometryLink)
+								continue
+							}
+							log.Printf("ERROR: Failed to query events for polygon: %v", err)
 							continue
 						}
-						log.Printf("ERROR: Failed to query events for polygon: %v", err)
-						continue
+						allEventIDs = append(allEventIDs, polygonEventIDs...)
 					}
-					allEventIDs = append(allEventIDs, polygonEventIDs...)
-				}
 
-				seen := make(map[uint32]bool)
-				var uniqueEventIDs []uint32
-				for _, id := range allEventIDs {
-					if !seen[id] {
-						seen[id] = true
-						uniqueEventIDs = append(uniqueEventIDs, id)
+					seen := make(map[uint32]bool)
+					var uniqueEventIDs []uint32
+					for _, id := range allEventIDs {
+						if !seen[id] {
+							seen[id] = true
+							uniqueEventIDs = append(uniqueEventIDs, id)
+						}
 					}
+					eventIDs = uniqueEventIDs
 				}
-				eventIDs = uniqueEventIDs
+				// When polygonsToQuery was empty, degenerate fallback already set eventIDs above
 			}
 
 			for _, eventID := range eventIDs {
