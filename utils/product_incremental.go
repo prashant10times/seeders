@@ -142,6 +142,7 @@ func fetchIncrementalScopeEventProduct(db *sql.DB) ([]int64, error) {
 		SELECT DISTINCT event
 		FROM event_products
 		WHERE modified >= CURDATE() - INTERVAL 1 DAY
+		   OR created >= CURDATE() - INTERVAL 1 DAY
 		ORDER BY event
 	`
 	log.Printf("[Query] %s", strings.TrimSpace(query))

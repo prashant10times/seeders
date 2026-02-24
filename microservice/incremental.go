@@ -263,7 +263,9 @@ func fetchIncrementalScope(db *sql.DB) ([]EventEditionPair, error) {
 		FROM event_edition ee
 		INNER JOIN event e ON ee.event = e.id
 		WHERE ee.modified >= CURDATE() - INTERVAL 1 DAY
+		   OR ee.created >= CURDATE() - INTERVAL 1 DAY
 		   OR e.modified >= CURDATE() - INTERVAL 1 DAY
+		   OR e.created >= CURDATE() - INTERVAL 1 DAY
 		ORDER BY ee.event, ee.id
 	`
 	rows, err := db.Query(query)

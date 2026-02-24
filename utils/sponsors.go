@@ -306,6 +306,7 @@ func buildSponsorsChDataForModifiedRows(db *sql.DB) ([]map[string]interface{}, e
 		SELECT id, company_id, name, event_id, event_edition, created, published
 		FROM event_sponsors
 		WHERE modified >= CURDATE() - INTERVAL 1 DAY
+		   OR created >= CURDATE() - INTERVAL 1 DAY
 		ORDER BY event_id, event_edition, id`
 	log.Printf("[Query] %s", strings.TrimSpace(query))
 	rows, err := db.Query(query)

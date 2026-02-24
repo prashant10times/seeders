@@ -549,13 +549,12 @@ func extractExhibitorEventIDs(exhibitorData []map[string]interface{}) []int64 {
 	return eventIDs
 }
 
-// buildExhibitorChDataForModifiedRows fetches rows where modified >= yesterday (includes published=0 for soft deletes).
-// Used by incremental sync to scope only modified records.
 func buildExhibitorChDataForModifiedRows(db *sql.DB) ([]map[string]interface{}, error) {
 	query := `
 		SELECT id, company_id, company_name, event_id, edition_id, country, city, website, created, published
 		FROM event_exhibitor
 		WHERE modified >= CURDATE() - INTERVAL 1 DAY
+		   OR created >= CURDATE() - INTERVAL 1 DAY
 		ORDER BY event_id, edition_id, id`
 	log.Printf("[Query] %s", strings.TrimSpace(query))
 	rows, err := db.Query(query)

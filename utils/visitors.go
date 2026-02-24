@@ -647,13 +647,14 @@ func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords [
 	return nil
 }
 
-// buildVisitorChDataForModifiedRows fetches rows where modified >= yesterday (includes published=0 for soft deletes).
-// Used by incremental sync to scope only modified records.
+// buildVisitorChDataForModifiedRows fetches rows where modified >= yesterday OR created >= yesterday (includes published=0 for soft deletes).
+// Used by incremental sync to scope only modified or newly created records.
 func buildVisitorChDataForModifiedRows(db *sql.DB) ([]map[string]interface{}, error) {
 	query := `
 		SELECT id, user, event, edition, visitor_company, visitor_designation, visitor_city, visitor_country, published
 		FROM event_visitor
 		WHERE modified >= CURDATE() - INTERVAL 1 DAY
+		   OR created >= CURDATE() - INTERVAL 1 DAY
 		ORDER BY event, edition, id`
 	log.Printf("[Query] %s", strings.TrimSpace(query))
 	rows, err := db.Query(query)

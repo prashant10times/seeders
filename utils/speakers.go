@@ -380,13 +380,14 @@ func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 	results <- fmt.Sprintf("Speakers chunk %d: Completed successfully", chunkNum)
 }
 
-// buildSpeakersChDataForModifiedRows fetches rows where modified >= yesterday (includes published=0 for soft deletes).
-// Used by incremental sync to scope only modified records.
+// buildSpeakersChDataForModifiedRows fetches rows where modified >= yesterday OR created >= yesterday (includes published=0 for soft deletes).
+// Used by incremental sync to scope only modified or newly created records.
 func buildSpeakersChDataForModifiedRows(db *sql.DB) ([]map[string]interface{}, error) {
 	query := `
 		SELECT id, user_id, event, edition, speaker_name, title, speaker_profile, company_id, published
 		FROM event_speaker
 		WHERE modified >= CURDATE() - INTERVAL 1 DAY
+		   OR created >= CURDATE() - INTERVAL 1 DAY
 		ORDER BY event, edition, id`
 	log.Printf("[Query] %s", strings.TrimSpace(query))
 	rows, err := db.Query(query)

@@ -135,7 +135,7 @@ func fetchIncrementalScopeEventDesignation(db *sql.DB) ([]EventEditionPair, erro
 	query := `
 		SELECT DISTINCT ev.event AS event_id, ev.edition AS edition_id
 		FROM event_visitor ev
-		WHERE ev.modified >= CURDATE() - INTERVAL 1 DAY
+		WHERE (ev.modified >= CURDATE() - INTERVAL 1 DAY OR ev.created >= CURDATE() - INTERVAL 1 DAY)
 		  AND ev.evisitor = 0
 		  AND ev.published = 1
 		  AND ev.designation_id IS NOT NULL
