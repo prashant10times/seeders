@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -445,51 +446,38 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 	return nil
 }
 
-const defaultDesignationPairBatchSize = 5000
+const defaultDesignationBatchSize = 5000
 
 func ProcessEventDesignationOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
 	log.Println("=== Starting event_designation_ch ONLY Processing ===")
 
-	pairBatchSize := config.BatchSize
-	if pairBatchSize <= 0 {
-		pairBatchSize = defaultDesignationPairBatchSize
-		log.Printf("Using default batch size: %d (event-edition pairs per batch)", pairBatchSize)
+	batchSize := config.BatchSize
+	if batchSize <= 0 {
+		batchSize = defaultDesignationBatchSize
+		log.Printf("Using default batch size: %d (event_visitor rows per batch)", batchSize)
 	} else {
-		log.Printf("Using batch size: %d (event-edition pairs per batch, from -batch flag)", pairBatchSize)
+		log.Printf("Using batch size: %d (event_visitor rows per batch, from -batch flag)", batchSize)
 	}
 
-	log.Printf("Processing by (event, edition) pair batches - correct aggregation, bounded memory")
+	log.Printf("Processing by event_visitor.id (ID-based keyset pagination) - bounded memory")
 
 	batchNum := 0
-	lastEvent, lastEdition := uint32(0), uint32(0)
+	lastID := int64(0)
 
 	for {
 		batchNum++
-		pairs, err := fetchEventEditionPairsBatch(mysqlDB, int(lastEvent), int(lastEdition), pairBatchSize)
+		batchData, newLastID, err := fetchEventDesignationChDataByIDBatch(mysqlDB, lastID, batchSize)
 		if err != nil {
-			log.Fatalf("Failed to fetch event-edition pairs batch %d: %v", batchNum, err)
+			log.Fatalf("Failed to fetch event_visitor batch %d: %v", batchNum, err)
 		}
-		if len(pairs) == 0 {
-			log.Printf("No more (event, edition) pairs, done after %d batches", batchNum-1)
-			break
-		}
-
-		batchData, err := buildEventDesignationChDataForEventEditionPairs(mysqlDB, pairs)
-		if err != nil {
-			log.Fatalf("Failed to fetch visitors for batch %d: %v", batchNum, err)
-		}
-
 		if len(batchData) == 0 {
-			lastEvent, lastEdition = pairs[len(pairs)-1].EventID, pairs[len(pairs)-1].EditionID
-			if len(pairs) < pairBatchSize {
-				break
-			}
-			continue
+			log.Printf("No more event_visitor rows, done after %d batches", batchNum-1)
+			break
 		}
 
 		records := ConvertToEventDesignationChRecords(batchData, mysqlDB)
 		if len(records) > 0 {
-			log.Printf("Batch %d: %d pairs -> %d raw visitors -> %d aggregated records", batchNum, len(pairs), len(batchData), len(records))
+			log.Printf("Batch %d: %d raw visitors -> %d aggregated records (lastID=%d)", batchNum, len(batchData), len(records), newLastID)
 
 			attemptCount := 0
 			insertErr := shared.RetryWithBackoff(
@@ -510,8 +498,8 @@ func ProcessEventDesignationOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, co
 			}
 		}
 
-		lastEvent, lastEdition = pairs[len(pairs)-1].EventID, pairs[len(pairs)-1].EditionID
-		if len(pairs) < pairBatchSize {
+		lastID = newLastID
+		if len(batchData) < batchSize {
 			break
 		}
 	}
@@ -519,33 +507,79 @@ func ProcessEventDesignationOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, co
 	log.Println("=== Event Designation Processing Complete ===")
 }
 
-// fetchEventEditionPairsBatch returns up to batchSize (event, edition) pairs using keyset pagination.
-func fetchEventEditionPairsBatch(db *sql.DB, lastEvent, lastEdition int, batchSize int) ([]EventEditionPair, error) {
+// fetchEventDesignationChDataByIDBatch fetches event_visitor rows using ID-based keyset pagination.
+// Returns raw rows and the max ID seen (for next batch). Use lastID=0 for first batch.
+func fetchEventDesignationChDataByIDBatch(db *sql.DB, lastID int64, batchSize int) ([]map[string]interface{}, int64, error) {
 	query := `
-		SELECT DISTINCT ev.event AS event_id, ev.edition AS edition_id
+		SELECT
+			ev.id,
+			ev.event,
+			ev.edition,
+			ev.designation_id,
+			d.created
 		FROM event_visitor ev
+		JOIN designation d ON ev.designation_id = d.id
 		WHERE ev.evisitor = 0
 		  AND ev.published = 1
 		  AND ev.designation_id IS NOT NULL
-		  AND (ev.event, ev.edition) > (?, ?)
-		ORDER BY ev.event, ev.edition
+		  AND ev.id > ?
+		ORDER BY ev.id
 		LIMIT ?
 	`
-	rows, err := db.Query(query, lastEvent, lastEdition, batchSize)
+	rows, err := db.Query(query, lastID, batchSize)
 	if err != nil {
-		return nil, err
+		return nil, lastID, fmt.Errorf("failed to query event_visitor for designation data: %w", err)
 	}
 	defer rows.Close()
 
-	var pairs []EventEditionPair
-	for rows.Next() {
-		var p EventEditionPair
-		if err := rows.Scan(&p.EventID, &p.EditionID); err != nil {
-			return nil, err
-		}
-		pairs = append(pairs, p)
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, lastID, fmt.Errorf("failed to get columns: %w", err)
 	}
-	return pairs, rows.Err()
+
+	var results []map[string]interface{}
+	var maxID int64 = lastID
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		valuePtrs := make([]interface{}, len(columns))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			log.Printf("Error scanning event_visitor row for designation: %v", err)
+			continue
+		}
+		row := make(map[string]interface{})
+		for i, col := range columns {
+			val := values[i]
+			if val != nil {
+				row[col] = val
+			} else {
+				row[col] = nil
+			}
+		}
+		results = append(results, row)
+		if idVal, ok := row["id"]; ok && idVal != nil {
+			if idInt := rowIDToInt64(idVal); idInt > maxID {
+				maxID = idInt
+			}
+		}
+	}
+	return results, maxID, rows.Err()
+}
+
+func rowIDToInt64(v interface{}) int64 {
+	switch val := v.(type) {
+	case int64:
+		return val
+	case int32:
+		return int64(val)
+	case []uint8:
+		n, _ := strconv.ParseInt(string(val), 10, 64)
+		return n
+	default:
+		return 0
+	}
 }
 
 // Used for incremental sync.
@@ -620,7 +654,7 @@ func BuildEventDesignationMigrationData(mysqlDB *sql.DB, startID, endID int, bat
 			AND ev.published = 1
 			AND ev.designation_id IS NOT NULL
 			AND ev.id >= %d AND ev.id <= %d
-		ORDER BY id
+		ORDER BY ev.id
 		LIMIT %d`, startID, endID, batchSize)
 
 	rows, err := mysqlDB.Query(query)

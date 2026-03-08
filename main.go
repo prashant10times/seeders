@@ -9,6 +9,8 @@ import (
 	"os"
 	"time"
 
+	"seeders/company"
+	"seeders/eventdata"
 	"seeders/microservice"
 	"seeders/shared"
 	"seeders/utils"
@@ -620,6 +622,13 @@ func main() {
 	var clickHouseWorkers int
 
 	var showHelp bool
+	var companyOnly bool
+	var companyCategoryOnly bool
+	var companyProductOnly bool
+	var companySpeakerOnly bool
+	var companyVisitorOnly bool
+	var companyEventDataOnly bool
+	var eventCompanyOnly bool
 	var exhibitorOnly bool
 	var sponsorsOnly bool
 	var visitorsOnly bool
@@ -659,6 +668,13 @@ func main() {
 	flag.IntVar(&numWorkers, "workers", 5, "Number of parallel workers (default: 5)")
 	flag.IntVar(&clickHouseWorkers, "clickhouse-workers", 3, "Number of parallel ClickHouse insertion workers (default: 3)")
 
+	flag.BoolVar(&companyOnly, "company", false, "Process only company data into allCompany_ch (default: false)")
+	flag.BoolVar(&companyCategoryOnly, "company-category", false, "Process only company_category data from company_interests into company_category_ch (default: false)")
+	flag.BoolVar(&companyProductOnly, "company-product", false, "Process only company_product data from company_interests (interest=product) into company_product_ch (default: false)")
+	flag.BoolVar(&companySpeakerOnly, "company-speaker", false, "Process only company_speaker data from event_speaker into company_speaker_ch (default: false)")
+	flag.BoolVar(&companyVisitorOnly, "company-visitor", false, "Process only company_visitor data from event_visitor into company_visitor_ch (default: false)")
+	flag.BoolVar(&companyEventDataOnly, "company-event-data", false, "Process only company event data (event+edition dimension) into companyEventData_ch (default: false)")
+	flag.BoolVar(&eventCompanyOnly, "event-company", false, "Process only event–company participation mapping into event_company_ch (default: false)")
 	flag.BoolVar(&exhibitorOnly, "exhibitor", false, "Process only exhibitor data (default: false)")
 	flag.BoolVar(&sponsorsOnly, "sponsors", false, "Process only sponsors data (default: false)")
 	flag.BoolVar(&visitorsOnly, "visitors", false, "Process only visitors data (default: false)")
@@ -861,7 +877,17 @@ func main() {
 	}
 
 	log.Printf("=== Data Migration Configuration ===")
-	if exhibitorOnly {
+	if companyOnly {
+		log.Printf("Mode: COMPANY ONLY")
+	} else if companyCategoryOnly {
+		log.Printf("Mode: COMPANY CATEGORY ONLY")
+	} else if companyProductOnly {
+		log.Printf("Mode: COMPANY PRODUCT ONLY")
+	} else if companySpeakerOnly {
+		log.Printf("Mode: COMPANY SPEAKER ONLY")
+	} else if companyVisitorOnly {
+		log.Printf("Mode: COMPANY VISITOR ONLY")
+	} else if exhibitorOnly {
 		log.Printf("Mode: EXHIBITOR ONLY")
 	} else if sponsorsOnly {
 		log.Printf("Mode: SPONSORS ONLY")
@@ -925,7 +951,17 @@ func main() {
 		log.Printf("Mode: LOCATION SUB-VENUES ONLY")
 	}
 
-	if sponsorsOnly {
+	if companyOnly {
+		log.Printf("Elasticsearch: Required for company (COMPANY_INDEX from .env)")
+	} else if companyCategoryOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for company category)")
+	} else if companyProductOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for company product)")
+	} else if companySpeakerOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for company speaker)")
+	} else if companyVisitorOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for company visitor)")
+	} else if sponsorsOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for sponsors)")
 	} else if speakersOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for speakers)")
@@ -983,7 +1019,7 @@ func main() {
 		return
 	}
 
-	if !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly && !incrementalExhibitorOnly && !incrementalSpeakerOnly && !incrementalSponsorOnly && !incrementalVisitorOnly && !incrementalAlertsOnly && !alertsOnly {
+	if !companyOnly && !companyCategoryOnly && !companyProductOnly && !companySpeakerOnly && !companyVisitorOnly && !companyEventDataOnly && !eventCompanyOnly && !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly && !incrementalExhibitorOnly && !incrementalSpeakerOnly && !incrementalSponsorOnly && !incrementalVisitorOnly && !incrementalAlertsOnly && !alertsOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -996,7 +1032,24 @@ func main() {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
 	} else {
-		if sponsorsOnly {
+		if companyOnly {
+			if config.CompanyIndex == "" {
+				log.Fatal("COMPANY_INDEX is required for company seeding (set in .env)")
+			}
+			if err := utils.TestElasticsearchConnection(esClient, config.CompanyIndex); err != nil {
+				log.Fatalf("Elasticsearch connection test failed for %s: %v", config.CompanyIndex, err)
+			}
+		} else if companyCategoryOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for company category processing)")
+		} else if companyProductOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for company product processing)")
+		} else if companySpeakerOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for company speaker processing)")
+		} else if companyVisitorOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for company visitor processing)")
+		} else if companyEventDataOnly || eventCompanyOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for company event data / event-company processing)")
+		} else if sponsorsOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for sponsors processing)")
 		} else if speakersOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for speakers processing)")
@@ -1043,7 +1096,189 @@ func main() {
 		}
 	}
 
-	if exhibitorOnly {
+	if companyOnly {
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "allCompany_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Company)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+			CompanyIndex:      config.CompanyIndex,
+			CompanyV1Index:    config.CompanyV1Index,
+		}
+		company.ProcessCompanyOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
+
+		log.Println("Swapping allCompany_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "allCompany_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Company Table Swap", err)
+			log.Fatalf("Failed to swap allCompany_ch: %v", err)
+		}
+		log.Println("✓ allCompany_ch swapped successfully")
+	} else if companyCategoryOnly {
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "company_category_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Company Category)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		company.ProcessCompanyCategoryOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		log.Println("Optimizing company_category_ch table...")
+		optimizeConfig := config
+		optimizeConfig.UseTempTables = true // Optimize temp table where data was just inserted
+		if err := shared.OptimizeSingleTable(clickhouseDB, "company_category_ch", optimizeConfig, errorLogFile); err != nil {
+			logErrorToFile("Company Category Optimization", err)
+			log.Printf("⚠️  Error optimizing company_category_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ company_category_ch optimized successfully")
+		}
+
+		log.Println("Swapping company_category_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "company_category_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Company Category Table Swap", err)
+			log.Fatalf("Failed to swap company_category_ch: %v", err)
+		}
+		log.Println("✓ company_category_ch swapped successfully")
+	} else if companyProductOnly {
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "company_product_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Company Product)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		company.ProcessCompanyProductOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		log.Println("Optimizing company_product_ch table...")
+		optimizeConfig := config
+		optimizeConfig.UseTempTables = true // Optimize temp table where data was just inserted
+		if err := shared.OptimizeSingleTable(clickhouseDB, "company_product_ch", optimizeConfig, errorLogFile); err != nil {
+			logErrorToFile("Company Product Optimization", err)
+			log.Printf("⚠️  Error optimizing company_product_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ company_product_ch optimized successfully")
+		}
+
+		log.Println("Swapping company_product_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "company_product_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Company Product Table Swap", err)
+			log.Fatalf("Failed to swap company_product_ch: %v", err)
+		}
+		log.Println("✓ company_product_ch swapped successfully")
+	} else if companySpeakerOnly {
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "company_speaker_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Company Speaker)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		company.ProcessCompanySpeakerOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		log.Println("Optimizing company_speaker_ch table...")
+		optimizeConfig := config
+		optimizeConfig.UseTempTables = true // Optimize temp table where data was just inserted
+		if err := shared.OptimizeSingleTable(clickhouseDB, "company_speaker_ch", optimizeConfig, errorLogFile); err != nil {
+			logErrorToFile("Company Speaker Optimization", err)
+			log.Printf("⚠️  Error optimizing company_speaker_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ company_speaker_ch optimized successfully")
+		}
+
+		log.Println("Swapping company_speaker_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "company_speaker_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Company Speaker Table Swap", err)
+			log.Fatalf("Failed to swap company_speaker_ch: %v", err)
+		}
+		log.Println("✓ company_speaker_ch swapped successfully")
+	} else if companyVisitorOnly {
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "company_visitor_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Company Visitor)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		company.ProcessCompanyVisitorOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		log.Println("Optimizing company_visitor_ch table...")
+		optimizeConfig := config
+		optimizeConfig.UseTempTables = true // Optimize temp table where data was just inserted
+		if err := shared.OptimizeSingleTable(clickhouseDB, "company_visitor_ch", optimizeConfig, errorLogFile); err != nil {
+			logErrorToFile("Company Visitor Optimization", err)
+			log.Printf("⚠️  Error optimizing company_visitor_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ company_visitor_ch optimized successfully")
+		}
+
+		log.Println("Swapping company_visitor_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "company_visitor_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Company Visitor Table Swap", err)
+			log.Fatalf("Failed to swap company_visitor_ch: %v", err)
+		}
+		log.Println("✓ company_visitor_ch swapped successfully")
+	} else if companyEventDataOnly {
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "companyEventData_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Company Event Data)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		eventdata.ProcessCompanyEventDataOnly(mysqlDB, clickhouseDB, utilsConfig)
+		log.Println("Swapping companyEventData_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "companyEventData_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Company Event Data Table Swap", err)
+			log.Fatalf("Failed to swap companyEventData_ch: %v", err)
+		}
+		log.Println("✓ companyEventData_ch swapped successfully")
+	} else if eventCompanyOnly {
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_company_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Event Company)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		eventdata.ProcessEventCompanyOnly(mysqlDB, clickhouseDB, utilsConfig)
+		log.Println("Swapping event_company_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "event_company_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Event Company Table Swap", err)
+			log.Fatalf("Failed to swap event_company_ch: %v", err)
+		}
+		log.Println("✓ event_company_ch swapped successfully")
+	} else if exhibitorOnly {
 		// Ensure temp table exists
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_exhibitor_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Ensure Temp Table (Exhibitor)", err)

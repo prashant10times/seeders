@@ -2943,6 +2943,11 @@ func determinealleventType(editionStartDate, currentEditionStartDate interface{}
 	}
 }
 
+
+func DetermineEditionType(editionStartDate, currentEditionStartDate interface{}, editionID, currentEditionID int64) *string {
+	return determinealleventType(editionStartDate, currentEditionStartDate, editionID, currentEditionID)
+}
+
 // determineMaturity determines the maturity level based on total_edition count
 // new: 1 edition, growing: 2-3 editions, established: 4-8 editions, flagship: 9+ editions
 func determinealleventMaturity(totalEdition interface{}) *string {

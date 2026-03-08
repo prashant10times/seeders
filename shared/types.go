@@ -32,6 +32,8 @@ type Config struct {
 	ElasticsearchHost    string `envconfig:"ELASTICSEARCH_HOST" required:"true"`
 	ElasticsearchPort    string `envconfig:"ELASTICSEARCH_PORT" required:"true"`
 	ElasticsearchIndex   string `envconfig:"ELASTICSEARCH_INDEX" required:"true"`
+	CompanyIndex         string `envconfig:"COMPANY_INDEX"`   // ES index for company interest data (e.g. interest_data_v2)
+	CompanyV1Index       string `envconfig:"COMPANY_SECONDARY_INDEX"` // ES index for company_v1 (total_organized_b2b, total_organized_b2c, ft_ex_upe)
 
 	MySQLDSN               string
 	ClickhouseDSN          string
@@ -91,6 +93,24 @@ func SafeConvertToDateTimeString(value interface{}) string {
 	str := SafeConvertToString(value)
 	if str == "" {
 		return "1970-01-01 00:00:00"
+	}
+	return str
+}
+
+// SafeClickHouseDateTimeString returns a datetime string valid for ClickHouse (no zero month/day).
+// Invalid or zero datetimes (e.g. "0000-00-00 00:00:00" from MySQL) return "1970-01-01 00:00:00"; otherwise the original value is returned.
+func SafeClickHouseDateTimeString(value interface{}) string {
+	const fallback = "1970-01-01 00:00:00"
+	str := SafeConvertToString(value)
+	if str == "" {
+		return fallback
+	}
+	if strings.Contains(str, "0000-00-00") {
+		return fallback
+	}
+	_, err := time.Parse("2006-01-02 15:04:05", str)
+	if err != nil {
+		return fallback
 	}
 	return str
 }

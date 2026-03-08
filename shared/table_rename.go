@@ -50,6 +50,7 @@ func GetAllTableMappings(config Config) []TableMapping {
 
 	return []TableMapping{
 		{"alerts_ch", "alerts_temp", fmt.Sprintf("alerts_ch_backup_%s", timestamp)},
+		{"allCompany_ch", "allCompany_temp", fmt.Sprintf("allCompany_ch_backup_%s", timestamp)},
 		{"allevent_ch", "allevent_temp", fmt.Sprintf("allevent_ch_backup_%s", timestamp)},
 		{"event_category_ch", "event_category_temp", fmt.Sprintf("event_category_ch_backup_%s", timestamp)},
 		{"event_designation_ch", "event_designation_temp", fmt.Sprintf("event_designation_ch_backup_%s", timestamp)},
@@ -69,6 +70,7 @@ func GetAllTableMappings(config Config) []TableMapping {
 func GetMainTableNames() []string {
 	return []string{
 		"alerts_ch",
+		"allCompany_ch",
 		"allevent_ch",
 		"event_daywiseEconomicImpact_ch", // Day-wise economic impact data (normalized table)
 		"event_category_ch",
