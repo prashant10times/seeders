@@ -464,13 +464,33 @@ type FetchAlertRequest struct {
 	ToDate   *string
 }
 
+func backoffSecondsFor403(attempt int, resp *http.Response) time.Duration {
+	if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
+		if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	base := []int{15, 30, 60}
+	if attempt < len(base) {
+		return time.Duration(base[attempt]) * time.Second
+	}
+	return 60 * time.Second
+}
+
 func makeRequest(client *http.Client, url string, maxRetries int, backoffFactor int) ([]byte, int, error) {
 	var lastErr error
 	var lastStatusCode int
+	var lastResp *http.Response
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
-			waitTime := time.Duration(backoffFactor) * time.Duration(1<<uint(attempt-1)) * time.Second
-			log.Printf("Retrying request to %s (attempt %d/%d) after %v", url, attempt+1, maxRetries, waitTime)
+			var waitTime time.Duration
+			if lastStatusCode == 403 && lastResp != nil {
+				waitTime = backoffSecondsFor403(attempt-1, lastResp)
+				log.Printf("Rate limited (403) - retrying request to %s (attempt %d/%d) after %v", url, attempt+1, maxRetries, waitTime)
+			} else {
+				waitTime = time.Duration(backoffFactor) * time.Duration(1<<uint(attempt-1)) * time.Second
+				log.Printf("Retrying request to %s (attempt %d/%d) after %v", url, attempt+1, maxRetries, waitTime)
+			}
 			time.Sleep(waitTime)
 		}
 
@@ -479,15 +499,19 @@ func makeRequest(client *http.Client, url string, maxRetries int, backoffFactor 
 			lastErr = fmt.Errorf("request failed: %w", err)
 			continue
 		}
-		defer resp.Body.Close()
 
 		statusCode := resp.StatusCode
+		lastStatusCode = statusCode
+		lastResp = resp
+
 		if statusCode == 204 {
+			resp.Body.Close()
 			return nil, statusCode, nil
 		}
 
 		if statusCode == 200 {
 			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
 			if err != nil {
 				lastErr = fmt.Errorf("failed to read response body: %w", err)
 				continue
@@ -495,7 +519,10 @@ func makeRequest(client *http.Client, url string, maxRetries int, backoffFactor 
 			return body, statusCode, nil
 		}
 
-		lastStatusCode = statusCode
+		// Consume body before close so connection can be reused
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
 		if statusCode == 403 {
 			lastErr = fmt.Errorf("rate limited (403)")
 			log.Printf("Rate limited (403) for %s, will retry", url)
@@ -767,12 +794,15 @@ func getAlerts(httpClient *http.Client, gdacBaseURL, gdacEndpoint string, payloa
 		}
 
 		resultsChan := make(chan result, len(requests))
-		semaphore := make(chan struct{}, 10)
+		// Reduced concurrency (3) to avoid GDAC rate limits
+		semaphore := make(chan struct{}, 3)
 		var wg sync.WaitGroup
 
 		for _, req := range requests {
 			wg.Add(1)
 			semaphore <- struct{}{}
+			// Small delay between launching requests to avoid burst rate limiting
+			time.Sleep(200 * time.Millisecond)
 
 			go func(request FetchAlertRequest) {
 				defer func() {
@@ -845,8 +875,8 @@ func getAlerts(httpClient *http.Client, gdacBaseURL, gdacEndpoint string, payloa
 		}
 
 		if len(payloads) > 0 {
-			log.Printf("Rate limit exceeded. Waiting 10 seconds before retrying...")
-			time.Sleep(10 * time.Second)
+			log.Printf("Rate limit exceeded. Waiting 30 seconds before retrying...")
+			time.Sleep(30 * time.Second)
 		}
 
 		if len(pending) > 0 {
@@ -1131,7 +1161,8 @@ func insertLocationPolygonsBatch(clickhouseConn driver.Conn, polygonRecords []Lo
 }
 
 func fetchAndProcessPolygon(httpClient *http.Client, alertID, geometryLink string) (*LocationPolygonRecord, error) {
-	body, statusCode, err := makeRequest(httpClient, geometryLink, 3, 2)
+	// Polygon/geometry API is rate-limited; use more retries (5) for 403 backoff
+	body, statusCode, err := makeRequest(httpClient, geometryLink, 5, 2)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch polygon: %w", err)
 	}
@@ -1202,10 +1233,11 @@ func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metada
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	requestCounter := 0
-	var counterMu sync.Mutex
+		// Rate limit: at least 1s between starting each polygon request to avoid GDAC 403
+		var lastPolygonRequestTime time.Time
+		var polygonRequestMu sync.Mutex
 
-	var alertEventTypeID uint32
+		var alertEventTypeID uint32
 	existingID, found := getAlertEventTypeIDFromExisting(clickhouseConn, eventTypeTableName)
 	if found {
 		alertEventTypeID = existingID
@@ -1248,16 +1280,14 @@ func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metada
 					wg.Done()
 				}()
 
-				counterMu.Lock()
-				requestCounter++
-				currentCount := requestCounter
-				shouldSleep := currentCount%10 == 0 && currentCount > 0
-				counterMu.Unlock()
-
-				if shouldSleep {
-					log.Printf("Rate limiting: sleeping for 1 second after %d requests", currentCount)
-					time.Sleep(1 * time.Second)
+				// Enforce at least 1s between starting each polygon request to avoid GDAC rate limits
+				polygonRequestMu.Lock()
+				elapsed := time.Since(lastPolygonRequestTime)
+				if elapsed < 1*time.Second {
+					time.Sleep(1*time.Second - elapsed)
 				}
+				lastPolygonRequestTime = time.Now()
+				polygonRequestMu.Unlock()
 
 				polygon, err := fetchAndProcessPolygon(httpClient, link.AlertID, link.GeometryLink)
 				if err != nil {
