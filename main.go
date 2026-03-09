@@ -109,7 +109,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: true,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 1/14: PROCESSING LOCATION")
+				log.Println("STEP 1/15: PROCESSING LOCATION")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				locConfig := shared.Config{
 					BatchSize:         config.BatchSize,
@@ -122,7 +122,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				nextID = microservice.ProcessLocationCitiesCh(mysqlDB, clickhouseDB, locConfig, nextID)
 				nextID = microservice.ProcessLocationVenuesCh(mysqlDB, clickhouseDB, locConfig, nextID)
 				microservice.ProcessLocationSubVenuesCh(mysqlDB, clickhouseDB, locConfig, nextID)
-				log.Println("✓ STEP 1/14 (LOCATION) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 1/15 (LOCATION) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -133,7 +133,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 2/14: PROCESSING EVENT TYPE")
+				log.Println("STEP 2/15: PROCESSING EVENT TYPE")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				utilsConfig := shared.Config{
 					BatchSize:         config.BatchSize,
@@ -142,7 +142,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					ClickHouseWorkers: config.ClickHouseWorkers,
 				}
 				utils.ProcessEventTypeEventChOnly(mysqlDB, clickhouseDB, utilsConfig)
-				log.Println("✓ STEP 2/14 (EVENT TYPE) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 2/15 (EVENT TYPE) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -153,7 +153,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: true,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 3/14: PROCESSING ALL EVENT")
+				log.Println("STEP 3/15: PROCESSING ALL EVENT")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				utilsConfig := config
 				utilsConfig.UseTempTables = true // When running -all, read from temp tables
@@ -168,7 +168,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					return fmt.Errorf("failed batches still remain - rerun script to retry")
 				}
 
-				log.Println("✓ STEP 3/14 (ALL EVENT) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 3/15 (ALL EVENT) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -179,7 +179,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 4/14: PROCESSING EVENT CATEGORY")
+				log.Println("STEP 4/15: PROCESSING EVENT CATEGORY")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				utilsConfig := shared.Config{
 					BatchSize:         config.BatchSize,
@@ -188,7 +188,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					ClickHouseWorkers: config.ClickHouseWorkers,
 				}
 				utils.ProcessEventCategoryEventChOnly(mysqlDB, clickhouseDB, utilsConfig)
-				log.Println("✓ STEP 4/14 (EVENT CATEGORY) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 4/15 (EVENT CATEGORY) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -199,7 +199,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 5/14: PROCESSING EVENT PRODUCT")
+				log.Println("STEP 5/15: PROCESSING EVENT PRODUCT")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				utilsConfig := shared.Config{
 					BatchSize:         config.BatchSize,
@@ -208,7 +208,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					ClickHouseWorkers: config.ClickHouseWorkers,
 				}
 				utils.ProcessEventProductChOnly(mysqlDB, clickhouseDB, utilsConfig)
-				log.Println("✓ STEP 5/14 (EVENT PRODUCT) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 5/15 (EVENT PRODUCT) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -219,7 +219,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 6/14: PROCESSING EVENT RANKING")
+				log.Println("STEP 6/15: PROCESSING EVENT RANKING")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				utilsConfig := shared.Config{
 					BatchSize:         config.BatchSize,
@@ -228,7 +228,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					ClickHouseWorkers: config.ClickHouseWorkers,
 				}
 				utils.ProcessEventRankingOnly(mysqlDB, clickhouseDB, utilsConfig)
-				log.Println("✓ STEP 6/14 (EVENT RANKING) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 6/15 (EVENT RANKING) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -239,7 +239,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 7/14: PROCESSING EVENT DESIGNATION")
+				log.Println("STEP 7/15: PROCESSING EVENT DESIGNATION")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				utilsConfig := shared.Config{
 					BatchSize:         config.BatchSize,
@@ -248,7 +248,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					ClickHouseWorkers: config.ClickHouseWorkers,
 				}
 				utils.ProcessEventDesignationOnly(mysqlDB, clickhouseDB, utilsConfig)
-				log.Println("✓ STEP 7/14 (EVENT DESIGNATION) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 7/15 (EVENT DESIGNATION) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -259,7 +259,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 8/14: PROCESSING EXHIBITOR")
+				log.Println("STEP 8/15: PROCESSING EXHIBITOR")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				utilsConfig := shared.Config{
 					BatchSize:         config.BatchSize,
@@ -268,7 +268,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					ClickHouseWorkers: config.ClickHouseWorkers,
 				}
 				utils.ProcessExhibitorOnly(mysqlDB, clickhouseDB, utilsConfig)
-				log.Println("✓ STEP 8/14 (EXHIBITOR) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 8/15 (EXHIBITOR) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -279,10 +279,10 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 9/14: PROCESSING SPEAKER")
+				log.Println("STEP 9/15: PROCESSING SPEAKER")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				utils.ProcessSpeakersOnly(mysqlDB, clickhouseDB, config)
-				log.Println("✓ STEP 9/14 (SPEAKER) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 9/15 (SPEAKER) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -293,7 +293,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 10/14: PROCESSING SPONSOR")
+				log.Println("STEP 10/15: PROCESSING SPONSOR")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				utilsConfig := shared.Config{
 					BatchSize:         config.BatchSize,
@@ -302,7 +302,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					ClickHouseWorkers: config.ClickHouseWorkers,
 				}
 				utils.ProcessSponsorsOnly(mysqlDB, clickhouseDB, utilsConfig)
-				log.Println("✓ STEP 10/14 (SPONSOR) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 10/15 (SPONSOR) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -313,10 +313,10 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 11/14: PROCESSING VISITORS")
+				log.Println("STEP 11/15: PROCESSING VISITORS")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				utils.ProcessVisitorsOnly(mysqlDB, clickhouseDB, config)
-				log.Println("✓ STEP 11/14 (VISITORS) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 11/15 (VISITORS) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -327,7 +327,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 12/14: PROCESSING VISITOR SPREAD")
+				log.Println("STEP 12/15: PROCESSING VISITOR SPREAD")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				utilsConfig := shared.Config{
 					BatchSize:          config.BatchSize,
@@ -337,7 +337,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					ElasticsearchIndex: config.ElasticsearchIndex,
 				}
 				utils.ProcessVisitorSpreadOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
-				log.Println("✓ STEP 12/14 (VISITOR SPREAD) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 12/15 (VISITOR SPREAD) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -348,7 +348,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 13/14: PROCESSING HOLIDAYS")
+				log.Println("STEP 13/15: PROCESSING HOLIDAYS")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				holidayConfig := shared.Config{
 					BatchSize:         config.BatchSize,
@@ -359,18 +359,48 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 					ClickhouseDB:      config.ClickhouseDB,
 				}
 				microservice.ProcessHolidays(mysqlDB, clickhouseDB, holidayConfig)
-				log.Println("✓ STEP 13/14 (HOLIDAYS) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 13/15 (HOLIDAYS) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
 		},
-		// 13. Alerts
+		// 14. Company Classification
+		{
+			name:     "Company Classification",
+			critical: false,
+			run: func() error {
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				log.Println("STEP 14/15: PROCESSING COMPANY CLASSIFICATION")
+				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+				utilsConfig := shared.Config{
+					BatchSize:         config.BatchSize,
+					NumChunks:         config.NumChunks,
+					NumWorkers:        config.NumWorkers,
+					ClickHouseWorkers: config.ClickHouseWorkers,
+				}
+				company.ProcessCompanyClassificationOnly(mysqlDB, clickhouseDB, utilsConfig)
+				log.Println("Optimizing company_classification_ch table...")
+				optimizeConfig := config
+				optimizeConfig.UseTempTables = true
+				if err := shared.OptimizeSingleTable(clickhouseDB, "company_classification_ch", optimizeConfig, errorLogFile); err != nil {
+					logErrorToFile("Company Classification Optimization", err)
+					log.Printf("⚠️  Error optimizing company_classification_ch table: %v", err)
+					log.Printf("⚠️  Continuing (swap will happen in batch at end)...")
+				} else {
+					log.Println("✓ company_classification_ch optimized successfully")
+				}
+				log.Println("✓ STEP 14/15 (COMPANY CLASSIFICATION) COMPLETED SUCCESSFULLY (swap deferred to batch)")
+				log.Println("")
+				return nil
+			},
+		},
+		// 15. Alerts
 		{
 			name:     "Alerts",
 			critical: false,
 			run: func() error {
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Println("STEP 14/14: PROCESSING ALERTS")
+				log.Println("STEP 15/15: PROCESSING ALERTS")
 				log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 				gdacBaseURL := os.Getenv("gdac_base_url")
 				gdacEndpoint := os.Getenv("gdac_event_search_endpoint")
@@ -402,7 +432,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				if err := microservice.ProcessAlertsFromAPI(clickhouseDB, gdacBaseURL, gdacEndpoint, validCountries, alertConfig); err != nil {
 					return err
 				}
-				log.Println("✓ STEP 14/14 (ALERTS) COMPLETED SUCCESSFULLY")
+				log.Println("✓ STEP 15/15 (ALERTS) COMPLETED SUCCESSFULLY")
 				log.Println("")
 				return nil
 			},
@@ -496,6 +526,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 		"event_sponsors_ch",
 		"event_visitors_ch",
 		"event_visitorSpread_ch",
+		"company_classification_ch",
 		"alerts_ch",
 		"location_polygons_ch",
 	}
@@ -562,7 +593,9 @@ func runAllIncrementalSequential(mysqlDB *sql.DB, clickhouseDB driver.Conn, esCl
 		name string
 		run  func() error
 	}{
-		{"allevent-incremental", func() error { return microservice.ProcessIncrementalAllevent(mysqlDB, clickhouseDB, esClient, utilsConfig) }},
+		{"allevent-incremental", func() error {
+			return microservice.ProcessIncrementalAllevent(mysqlDB, clickhouseDB, esClient, utilsConfig)
+		}},
 		{"eventtype-incremental", func() error { return utils.ProcessIncrementalEventType(mysqlDB, clickhouseDB, utilsConfig) }},
 		{"eventcategory-incremental", func() error { return utils.ProcessIncrementalEventCategory(mysqlDB, clickhouseDB, utilsConfig) }},
 		{"eventproduct-incremental", func() error { return utils.ProcessIncrementalEventProduct(mysqlDB, clickhouseDB, utilsConfig) }},
@@ -624,6 +657,7 @@ func main() {
 	var showHelp bool
 	var companyOnly bool
 	var companyCategoryOnly bool
+	var companyClassificationOnly bool
 	var companyProductOnly bool
 	var companySpeakerOnly bool
 	var companyVisitorOnly bool
@@ -670,6 +704,7 @@ func main() {
 
 	flag.BoolVar(&companyOnly, "company", false, "Process only company data into allCompany_ch (default: false)")
 	flag.BoolVar(&companyCategoryOnly, "company-category", false, "Process only company_category data from company_interests into company_category_ch (default: false)")
+	flag.BoolVar(&companyClassificationOnly, "company-classification", false, "Process only company_classification data from company_classification_mapping into company_classification_ch (default: false)")
 	flag.BoolVar(&companyProductOnly, "company-product", false, "Process only company_product data from company_interests (interest=product) into company_product_ch (default: false)")
 	flag.BoolVar(&companySpeakerOnly, "company-speaker", false, "Process only company_speaker data from event_speaker into company_speaker_ch (default: false)")
 	flag.BoolVar(&companyVisitorOnly, "company-visitor", false, "Process only company_visitor data from event_visitor into company_visitor_ch (default: false)")
@@ -881,6 +916,8 @@ func main() {
 		log.Printf("Mode: COMPANY ONLY")
 	} else if companyCategoryOnly {
 		log.Printf("Mode: COMPANY CATEGORY ONLY")
+	} else if companyClassificationOnly {
+		log.Printf("Mode: COMPANY CLASSIFICATION ONLY")
 	} else if companyProductOnly {
 		log.Printf("Mode: COMPANY PRODUCT ONLY")
 	} else if companySpeakerOnly {
@@ -955,6 +992,8 @@ func main() {
 		log.Printf("Elasticsearch: Required for company (COMPANY_INDEX from .env)")
 	} else if companyCategoryOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for company category)")
+	} else if companyClassificationOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for company classification)")
 	} else if companyProductOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for company product)")
 	} else if companySpeakerOnly {
@@ -1019,7 +1058,7 @@ func main() {
 		return
 	}
 
-	if !companyOnly && !companyCategoryOnly && !companyProductOnly && !companySpeakerOnly && !companyVisitorOnly && !companyEventDataOnly && !eventCompanyOnly && !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly && !incrementalExhibitorOnly && !incrementalSpeakerOnly && !incrementalSponsorOnly && !incrementalVisitorOnly && !incrementalAlertsOnly && !alertsOnly {
+	if !companyOnly && !companyCategoryOnly && !companyClassificationOnly && !companyProductOnly && !companySpeakerOnly && !companyVisitorOnly && !companyEventDataOnly && !eventCompanyOnly && !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly && !incrementalExhibitorOnly && !incrementalSpeakerOnly && !incrementalSponsorOnly && !incrementalVisitorOnly && !incrementalAlertsOnly && !alertsOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -1041,6 +1080,8 @@ func main() {
 			}
 		} else if companyCategoryOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for company category processing)")
+		} else if companyClassificationOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for company classification processing)")
 		} else if companyProductOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for company product processing)")
 		} else if companySpeakerOnly {
@@ -1149,6 +1190,37 @@ func main() {
 			log.Fatalf("Failed to swap company_category_ch: %v", err)
 		}
 		log.Println("✓ company_category_ch swapped successfully")
+	} else if companyClassificationOnly {
+		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "company_classification_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Ensure Temp Table (Company Classification)", err)
+			log.Fatalf("Failed to ensure temp table exists: %v", err)
+		}
+
+		utilsConfig := shared.Config{
+			BatchSize:         config.BatchSize,
+			NumChunks:         config.NumChunks,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
+		}
+		company.ProcessCompanyClassificationOnly(mysqlDB, clickhouseDB, utilsConfig)
+
+		log.Println("Optimizing company_classification_ch table...")
+		optimizeConfig := config
+		optimizeConfig.UseTempTables = true
+		if err := shared.OptimizeSingleTable(clickhouseDB, "company_classification_ch", optimizeConfig, errorLogFile); err != nil {
+			logErrorToFile("Company Classification Optimization", err)
+			log.Printf("⚠️  Error optimizing company_classification_ch table: %v", err)
+			log.Printf("⚠️  Continuing with table swap...")
+		} else {
+			log.Println("✓ company_classification_ch optimized successfully")
+		}
+
+		log.Println("Swapping company_classification_ch table...")
+		if err := shared.SwapSingleTable(clickhouseDB, "company_classification_ch", config, errorLogFile); err != nil {
+			logErrorToFile("Company Classification Table Swap", err)
+			log.Fatalf("Failed to swap company_classification_ch: %v", err)
+		}
+		log.Println("✓ company_classification_ch swapped successfully")
 	} else if companyProductOnly {
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "company_product_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Ensure Temp Table (Company Product)", err)
@@ -1630,7 +1702,7 @@ func main() {
 			logErrorToFile("Ensure Temp Table (All Event)", err)
 			log.Fatalf("Failed to ensure allevent temp table exists: %v", err)
 		}
-		
+
 		if err := shared.EnsureSingleTempTableExists(clickhouseDB, "event_daywiseEconomicImpact_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Ensure Temp Table (Day-Wise Economic Impact)", err)
 			log.Fatalf("Failed to ensure day-wise economic impact temp table exists: %v", err)
@@ -1661,7 +1733,7 @@ func main() {
 		} else {
 			log.Println("✓ allevent_ch optimized successfully")
 		}
-		
+
 		log.Println("Optimizing event_daywiseEconomicImpact_ch table...")
 		if err := shared.OptimizeSingleTable(clickhouseDB, "event_daywiseEconomicImpact_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Day-Wise Economic Impact Optimization", err)
@@ -1677,7 +1749,7 @@ func main() {
 			log.Fatalf("Failed to swap allevent_ch: %v", err)
 		}
 		log.Println("✓ allevent_ch swapped successfully")
-		
+
 		log.Println("Swapping event_daywiseEconomicImpact_ch table...")
 		if err := shared.SwapSingleTable(clickhouseDB, "event_daywiseEconomicImpact_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Day-Wise Economic Impact Table Swap", err)
@@ -1857,8 +1929,8 @@ func main() {
 		utilsConfig := shared.Config{
 			BatchSize:         config.BatchSize,
 			NumChunks:         config.NumChunks,
-			NumWorkers:         config.NumWorkers,
-			ClickHouseWorkers:  config.ClickHouseWorkers,
+			NumWorkers:        config.NumWorkers,
+			ClickHouseWorkers: config.ClickHouseWorkers,
 		}
 		microservice.ProcessDayWiseEconomicImpactOnly(mysqlDB, clickhouseDB, utilsConfig)
 

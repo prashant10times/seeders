@@ -114,6 +114,12 @@ func GetTableOptimizeConfigs() map[string]TableOptimizeConfig {
 			PartitionExpression:   "",
 			DuplicateCheckColumns: []string{"eventId", "editionId", "id"},
 		},
+		"company_classification_ch": {
+			TableName:             "company_classification_ch",
+			TempTableName:         "company_classification_temp",
+			PartitionExpression:   "",
+			DuplicateCheckColumns: []string{"classification_type", "classification_name", "source_id"},
+		},
 	}
 }
 
