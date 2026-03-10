@@ -542,7 +542,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 	return alleventRecord{
 		EventID:            shared.SafeConvertToUInt32(record["event_id"]),
 		EventUUID:          decodeStr("event_uuid"),
-		EventName:          decodeStr("event_name"),
+		EventName:          strings.TrimSpace(decodeStr("event_name")),
 		EventAbbrName:      decodeNullableStr("event_abbr_name"),
 		EventDescription:   decodeNullableStr("event_description"),
 		EventPunchline:     decodeNullableStr("event_punchline"),
