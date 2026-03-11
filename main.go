@@ -1088,8 +1088,12 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for company speaker processing)")
 		} else if companyVisitorOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for company visitor processing)")
-		} else if companyEventDataOnly || eventCompanyOnly {
-			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for company event data / event-company processing)")
+		} else if companyEventDataOnly {
+			if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
+				log.Fatalf("Elasticsearch connection test failed (required for company event data): %v", err)
+			}
+		} else if eventCompanyOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event-company processing)")
 		} else if sponsorsOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for sponsors processing)")
 		} else if speakersOnly {
@@ -1320,12 +1324,13 @@ func main() {
 			log.Fatalf("Failed to ensure temp table exists: %v", err)
 		}
 		utilsConfig := shared.Config{
-			BatchSize:         config.BatchSize,
-			NumChunks:         config.NumChunks,
-			NumWorkers:        config.NumWorkers,
-			ClickHouseWorkers: config.ClickHouseWorkers,
+			BatchSize:          config.BatchSize,
+			NumChunks:          config.NumChunks,
+			NumWorkers:         config.NumWorkers,
+			ClickHouseWorkers:  config.ClickHouseWorkers,
+			ElasticsearchIndex: config.ElasticsearchIndex,
 		}
-		eventdata.ProcessCompanyEventDataOnly(mysqlDB, clickhouseDB, utilsConfig)
+		eventdata.ProcessCompanyEventDataOnly(mysqlDB, clickhouseDB, esClient, utilsConfig)
 		log.Println("Swapping companyEventData_ch table...")
 		if err := shared.SwapSingleTable(clickhouseDB, "companyEventData_ch", config, errorLogFile); err != nil {
 			logErrorToFile("Company Event Data Table Swap", err)

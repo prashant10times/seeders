@@ -545,7 +545,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EventName:          strings.TrimSpace(decodeStr("event_name")),
 		EventAbbrName:      decodeNullableStr("event_abbr_name"),
 		EventDescription:   decodeNullableStr("event_description"),
-		EventPunchline:     decodeNullableStr("event_punchline"),
+		EventPunchline:     decodeNullableStr("event_eventpunchline"),
 		StartDate:          decodeBase64Date(record["start_date"]),
 		EndDate:            decodeBase64Date(record["end_date"]),
 		EditionID:          shared.SafeConvertToUInt32(record["edition_id"]),
