@@ -709,9 +709,9 @@ func mergeCompanyV1IntoRecord(rec *CompanyRecord, v1 map[string]interface{}) {
 	rec.TotalEventsB2B = esUint32(v1, "total_organized_b2b")
 	rec.TotalEventsB2C = esUint32(v1, "total_organized_b2c")
 	rec.FutureExpectedUpcomingEventCount = esUint32(v1, "ft_ex_upe")
-	rec.TotalVisitors = esUint32(v1, "total_visitors")
-	rec.TotalVisitorsB2C = esUint32(v1, "total_visitors_b2c")
-	rec.TotalVisitorsB2B = esUint32(v1, "total_visitors_b2b")
+	rec.TotalVisitors = esUint32(v1, "total_visitor")
+	rec.TotalVisitorsB2C = esUint32(v1, "total_visitor_b2c")
+	rec.TotalVisitorsB2B = esUint32(v1, "total_visitor_b2b")
 }
 
 // esStringSlice returns []string from an ES _source field (array of strings or single string).
