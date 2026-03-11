@@ -646,7 +646,7 @@ func fetchCompanyV1ESBatch(esClient *elasticsearch.Client, indexName string, com
 			},
 		},
 		"size":  len(companyIDs),
-		"_source": []string{"id", "total_organized_b2b", "total_organized_b2c", "ft_ex_upe", "total_visitors", "total_visitors_b2c", "total_visitors_b2b"},
+		"_source": []string{"id", "total_organized_b2b", "total_organized_b2c", "ft_ex_upe", "total_visitor", "total_visitor_b2c", "total_visitor_b2b"},
 	}
 	queryJSON, _ := json.Marshal(query)
 	log.Printf("[ES company_v1] index=%s query=%s", indexName, string(queryJSON))
