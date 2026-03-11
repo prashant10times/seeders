@@ -47,6 +47,9 @@ import (
 //    │↳    `modified` DateTime,                                       ↴│
 //    │↳    `totalEvents` UInt32,                                      ↴│
 //    │↳    `totalLeads` UInt32,                                       ↴│
+//    │↳    `totalVisitors` UInt32,                                     ↴│
+//    │↳    `totalVisitorsB2C` UInt32,                                  ↴│
+//    │↳    `totalVisitorsB2B` UInt32,                                  ↴│
 //    │↳    `score` UInt32,                                            ↴│
 //    │↳    `onboarded` DateTime,                                      ↴│
 //    │↳    `firstLogin` DateTime,                                     ↴│
@@ -91,6 +94,9 @@ type CompanyRecord struct {
 	TotalEvents         uint32  `ch:"totalEvents"`
 	TotalEventsB2B      uint32  `ch:"totalEventsB2B"`
 	TotalEventsB2C      uint32  `ch:"totalEventsB2C"`
+	TotalVisitors       uint32  `ch:"totalVisitors"`
+	TotalVisitorsB2C    uint32  `ch:"totalVisitorsB2C"`
+	TotalVisitorsB2B    uint32  `ch:"totalVisitorsB2B"`
 	TotalLeads          uint32  `ch:"totalLeads"`
 	Score               uint32  `ch:"score"`
 	FutureExpectedUpcomingEventCount uint32  `ch:"futureExpectedUpcomingEventCount"`
@@ -640,7 +646,7 @@ func fetchCompanyV1ESBatch(esClient *elasticsearch.Client, indexName string, com
 			},
 		},
 		"size":  len(companyIDs),
-		"_source": []string{"id", "total_organized_b2b", "total_organized_b2c", "ft_ex_upe"},
+		"_source": []string{"id", "total_organized_b2b", "total_organized_b2c", "ft_ex_upe", "total_visitors", "total_visitors_b2c", "total_visitors_b2b"},
 	}
 	queryJSON, _ := json.Marshal(query)
 	log.Printf("[ES company_v1] index=%s query=%s", indexName, string(queryJSON))
@@ -703,6 +709,9 @@ func mergeCompanyV1IntoRecord(rec *CompanyRecord, v1 map[string]interface{}) {
 	rec.TotalEventsB2B = esUint32(v1, "total_organized_b2b")
 	rec.TotalEventsB2C = esUint32(v1, "total_organized_b2c")
 	rec.FutureExpectedUpcomingEventCount = esUint32(v1, "ft_ex_upe")
+	rec.TotalVisitors = esUint32(v1, "total_visitors")
+	rec.TotalVisitorsB2C = esUint32(v1, "total_visitors_b2c")
+	rec.TotalVisitorsB2B = esUint32(v1, "total_visitors_b2b")
 }
 
 // esStringSlice returns []string from an ES _source field (array of strings or single string).
@@ -805,6 +814,7 @@ func insertCompanyDataSingleWorker(clickhouseConn driver.Conn, records []Company
 			companyInstagram, companyFacebook, companyYoutube,
 			companyPublished, created, modified,
 			totalEvents, totalEventsB2B, totalEventsB2C, totalLeads, score, onboarded,
+			totalVisitors, totalVisitorsB2C, totalVisitorsB2B,
 			futureExpectedUpcomingEventCount, companyCurrentIntent, topEventCountryZone,
 			firstLogin, lastLogin, lastEventAdded, lastUpdatedAt,
 			upcomingEvents, upcomingEventsB2B, upcomingEventsB2C,
@@ -836,6 +846,7 @@ func insertCompanyDataSingleWorker(clickhouseConn driver.Conn, records []Company
 			r.CompanyInstagram, r.CompanyFacebook, r.CompanyYoutube,
 			r.CompanyPublished, r.Created, r.Modified,
 			r.TotalEvents, r.TotalEventsB2B, r.TotalEventsB2C, r.TotalLeads, r.Score, r.Onboarded,
+			r.TotalVisitors, r.TotalVisitorsB2C, r.TotalVisitorsB2B,
 			r.FutureExpectedUpcomingEventCount, companyCurrentIntent, r.TopEventCountryZone,
 			r.FirstLogin, r.LastLogin, r.LastEventAdded, r.LastUpdatedAt,
 			r.UpcomingEvents, r.UpcomingEventsB2B, r.UpcomingEventsB2C,
