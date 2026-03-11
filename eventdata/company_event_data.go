@@ -21,6 +21,7 @@ import (
 type CompanyEventDataRecord struct {
 	EventID             uint32  `ch:"eventId"`
 	EditionID           uint32  `ch:"editionId"`
+	EditionCompanyID    *uint32 `ch:"editionCompanyId"`
 	EventName           *string `ch:"eventName"`
 	EventDescription    *string `ch:"eventDescription"`
 	EditionVenue        *uint32 `ch:"editionVenue"`
@@ -322,6 +323,7 @@ func buildCompanyEventDataMigrationData(db *sql.DB, startID, endID int, batchSiz
 		SELECT
 			e.id                  AS eventId,
 			ee.id                 AS editionId,
+			ee.company_id         AS editionCompanyId,
 			ee.city               AS editionCity,
 			ct.name               AS editionCityName,
 			ct.state              AS editionStateName,
@@ -426,6 +428,7 @@ func mapRowToCompanyEventDataRecord(
 	return CompanyEventDataRecord{
 		EventID:               shared.ConvertToUInt32(row["eventId"]),
 		EditionID:             shared.ConvertToUInt32(row["editionId"]),
+		EditionCompanyID:      shared.ConvertToUInt32Ptr(row["editionCompanyId"]),
 		EventName:             eventName,
 		EventDescription:      eventDescription,
 		EditionVenue:          shared.ConvertToUInt32Ptr(row["editionVenue"]),
@@ -508,7 +511,7 @@ func insertCompanyEventDataSingleWorker(clickhouseConn driver.Conn, records []Co
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO companyEventData_temp (
-			eventId, editionId, eventName, eventDescription, editionVenue, editionVenueName, editionCity, editionCityName, editionStateName, editionCountry, editionAudience, editionFunctionality, editionType,
+			eventId, editionId, editionCompanyId, eventName, eventDescription, editionVenue, editionVenueName, editionCity, editionCityName, editionStateName, editionCountry, editionAudience, editionFunctionality, editionType,
 			eventStatus, eventPublished, editionStartDate, editionEndDate, editionWebsite, created, lastUpdatedAt
 		)
 	`)
@@ -517,7 +520,7 @@ func insertCompanyEventDataSingleWorker(clickhouseConn driver.Conn, records []Co
 	}
 	for _, r := range records {
 		err := batch.Append(
-			r.EventID, r.EditionID, r.EventName, r.EventDescription, r.EditionVenue, r.EditionVenueName, r.EditionCity, r.EditionCityName, r.EditionStateName, r.EditionCountry, r.EditionAudience, r.EditionFunctionality, r.EditionType,
+			r.EventID, r.EditionID, r.EditionCompanyID, r.EventName, r.EventDescription, r.EditionVenue, r.EditionVenueName, r.EditionCity, r.EditionCityName, r.EditionStateName, r.EditionCountry, r.EditionAudience, r.EditionFunctionality, r.EditionType,
 			r.EventStatus, r.EventPublished, r.EditionStartDate, r.EditionEndDate, r.EditionWebsite, r.Created, r.LastUpdatedAt,
 		)
 		if err != nil {
