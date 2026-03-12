@@ -6970,16 +6970,15 @@ func retryFailedBatchesAfterCompletion(
 		}
 	}
 
-	// Helper function to ensure log file is flushed and synced before returning
 	ensureLogFlushed := func() {
 		if logWriter != nil {
-			logWriter.Sync() // Ensure data is written to disk
+			logWriter.Sync()
 		}
 	}
 
 	dir := "failed_batches"
 
-	maxAttempts := 3
+	maxAttempts := 5
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		jsonFiles, err := filepath.Glob(filepath.Join(dir, "failed_batches_chunk_*_batch_*.json"))
