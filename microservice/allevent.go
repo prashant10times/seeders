@@ -6710,19 +6710,8 @@ func buildAlleventRecord(
 			record["event_economic_breakdown"] = "{}"
 		}
 
-		if dayWiseJSON, ok := economicData["dayWiseJSON"].(string); ok && dayWiseJSON != "" {
-			record["event_economic_dayWiseEconomicImpact"] = dayWiseJSON
-		} else if rawJSON, ok := economicData["rawJSON"].(string); ok && rawJSON != "" {
-			record["event_economic_dayWiseEconomicImpact"] = rawJSON
-		} else {
-			record["event_economic_dayWiseEconomicImpact"] = "{}"
-		}
-
-		if rawJSON, ok := economicData["rawJSON"].(string); ok {
-			record["event_economic_impact"] = rawJSON
-		} else {
-			record["event_economic_impact"] = "{}"
-		}
+		record["event_economic_dayWiseEconomicImpact"] = "{}"
+		record["event_economic_impact"] = "{}"
 	} else {
 		record["event_economic_breakdown"] = "{}"
 		record["event_economic_dayWiseEconomicImpact"] = "{}"
