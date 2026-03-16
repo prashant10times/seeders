@@ -4755,6 +4755,10 @@ func writeFailedBatchToJSON(records []map[string]interface{}, batchNum int, chun
 			}
 		}
 		if currentFile != nil {
+			// Sync before close to ensure all data is persisted to disk before opening next part
+			if err := currentFile.Sync(); err != nil {
+				return fmt.Errorf("failed to sync file before close: %w", err)
+			}
 			if err := currentFile.Close(); err != nil {
 				return fmt.Errorf("failed to close file: %w", err)
 			}
@@ -4890,8 +4894,12 @@ func writeFailedBatchToJSON(records []map[string]interface{}, batchNum int, chun
 				return fmt.Errorf("failed to flush buffer before large record write: %w", err)
 			}
 			// Single atomic write: record + newline together
-			if _, err := currentFile.Write(recordWithNewline); err != nil {
+			n, err := currentFile.Write(recordWithNewline)
+			if err != nil {
 				return fmt.Errorf("failed to write large record to file: %w", err)
+			}
+			if n != len(recordWithNewline) {
+				return fmt.Errorf("incomplete write for large record: wrote %d of %d bytes", n, len(recordWithNewline))
 			}
 			// Sync to disk for large records to ensure data is persisted
 			if err := currentFile.Sync(); err != nil {
@@ -4899,12 +4907,20 @@ func writeFailedBatchToJSON(records []map[string]interface{}, batchNum int, chun
 			}
 		} else {
 			// For smaller records, use buffered write (single atomic operation)
-			if _, err := currentWriter.Write(recordWithNewline); err != nil {
+			n, err := currentWriter.Write(recordWithNewline)
+			if err != nil {
 				return fmt.Errorf("failed to write record to file: %w", err)
 			}
-			// Flush immediately after each record to prevent truncation if process is interrupted
+			if n != len(recordWithNewline) {
+				return fmt.Errorf("incomplete write for record: wrote %d of %d bytes", n, len(recordWithNewline))
+			}
+			// Flush to move data from buffer to OS
 			if err := currentWriter.Flush(); err != nil {
 				return fmt.Errorf("failed to flush after writing record: %w", err)
+			}
+			// Sync to disk after each record - ensures no data loss if process is interrupted
+			if err := currentFile.Sync(); err != nil {
+				return fmt.Errorf("failed to sync record to disk: %w", err)
 			}
 		}
 		currentFileSize += recordSize
@@ -4948,13 +4964,12 @@ func readFailedBatchFromJSON(filepath string) ([]map[string]interface{}, error) 
 	var records []map[string]interface{}
 	scanner := bufio.NewScanner(file)
 
-	// Increase buffer size to handle large JSON records (default is 64KB)
-	// Set to 10MB to handle very large records
 	const maxCapacity = 50 * 1024 * 1024 // 50MB
 	buf := make([]byte, 0, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 
 	lineNum := 0
+	skippedCount := 0
 
 	for scanner.Scan() {
 		lineNum++
@@ -4964,70 +4979,43 @@ func readFailedBatchFromJSON(filepath string) ([]map[string]interface{}, error) 
 			continue
 		}
 
-		// Debug: Check if json.Valid passes but Unmarshal fails (indicates trailing data)
 		isValid := json.Valid([]byte(line))
 
 		var record map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			errMsg := err.Error()
 
-			// If json.Valid passed but Unmarshal failed, there's trailing data after valid JSON
 			if isValid && strings.Contains(errMsg, "end of file expected") {
-				// Find where valid JSON ends and trailing data begins
 				decoder := json.NewDecoder(strings.NewReader(line))
 				var temp map[string]interface{}
 				decodeErr := decoder.Decode(&temp)
 				if decodeErr == nil {
-					// Valid JSON was decoded, check what's left
-					remaining, _ := decoder.Token()
-					log.Printf("ERROR: Line %d in %s has trailing data after valid JSON", lineNum, filepath)
-					log.Printf("  Valid JSON decoded successfully (%d keys)", len(temp))
-					log.Printf("  Trailing data: %v", remaining)
-					log.Printf("  Line length: %d bytes", len(line))
-					firstChars := 200
-					if len(line) < firstChars {
-						firstChars = len(line)
-					}
-					log.Printf("  First 200 chars: %s", line[:firstChars])
-					lastChars := 200
-					if len(line) < lastChars {
-						lastChars = len(line)
-					}
-					startIdx := len(line) - lastChars
-					if startIdx < 0 {
-						startIdx = 0
-					}
-					log.Printf("  Last 200 chars: %s", line[startIdx:])
-
-					// Try to find the end of valid JSON
-					for i := len(line) - 1; i >= 0; i-- {
-						testLine := line[:i+1]
-						if json.Valid([]byte(testLine)) {
-							if json.Unmarshal([]byte(testLine), &temp) == nil {
-								log.Printf("  Valid JSON ends at position %d (trailing: %d bytes)", i+1, len(line)-i-1)
-								if i+1 < len(line) {
-									log.Printf("  Trailing content: %q", line[i+1:])
-								}
-								break
-							}
-						}
-					}
+					log.Printf("WARNING: Line %d in %s has trailing data after valid JSON - using valid prefix (%d keys)", lineNum, filepath, len(temp))
+					records = append(records, temp)
+					continue
 				}
-				return nil, fmt.Errorf("line %d has trailing data after valid JSON: %w", lineNum, err)
 			}
 
-			// Handle other JSON errors
 			if strings.Contains(errMsg, "unexpected end of JSON input") {
-				log.Printf("WARNING: Truncated JSON record on line %d in file %s", lineNum, filepath)
+				skippedCount++
 				if len(line) > 100 {
-					log.Printf("  Last 100 chars: ...%s", line[len(line)-100:])
+					log.Printf("WARNING: Skipping truncated JSON on line %d in %s (last 100 chars: ...%s)", lineNum, filepath, line[len(line)-100:])
 				} else {
-					log.Printf("  Line content: %s", line)
+					log.Printf("WARNING: Skipping truncated JSON on line %d in %s (content: %s)", lineNum, filepath, line)
 				}
-				return nil, fmt.Errorf("truncated JSON on line %d: %w", lineNum, err)
+				continue
 			}
 
-			return nil, fmt.Errorf("failed to unmarshal JSON on line %d: %w", lineNum, err)
+			if strings.Contains(errMsg, "in string escape code") || strings.Contains(errMsg, "invalid character") {
+				skippedCount++
+				log.Printf("WARNING: Skipping malformed JSON on line %d in %s: %v", lineNum, filepath, err)
+				continue
+			}
+
+			// For other unmarshal errors, skip and continue to maximize recovery
+			skippedCount++
+			log.Printf("WARNING: Skipping unparseable JSON on line %d in %s: %v", lineNum, filepath, err)
+			continue
 		}
 
 		if !isValid {
@@ -5039,6 +5027,10 @@ func readFailedBatchFromJSON(filepath string) ([]map[string]interface{}, error) 
 
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("failed to read JSON file %s: %w", filepath, err)
+	}
+
+	if skippedCount > 0 {
+		log.Printf("Recovered %d records from %s (skipped %d malformed line(s))", len(records), filepath, skippedCount)
 	}
 
 	return records, nil
