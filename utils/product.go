@@ -280,7 +280,7 @@ func buildEventProductChDataForEventIDs(db *sql.DB, eventIDs []int64) ([]map[str
 			p.created as product_created
 		FROM event_products ep
 		INNER JOIN product p ON ep.product = p.id
-		WHERE ep.published IN (0, 1)
+		WHERE ep.published > 0
 		AND ep.event IN (%s)
 		ORDER BY ep.event, ep.edition, p.id`, strings.Join(placeholders, ","))
 	log.Printf("[Query] %s", query)
