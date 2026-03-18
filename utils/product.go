@@ -220,6 +220,8 @@ func buildEventProductChMigrationData(db *sql.DB, startID, endID int, batchSize 
 		ORDER BY ep.id 
 		LIMIT %d`, startID, endID, batchSize)
 
+	log.Printf("[Query] %s", query)
+
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err

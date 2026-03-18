@@ -37,7 +37,9 @@ type CompanyEventDataRecord struct {
 	EventPublished      int8    `ch:"eventPublished"`
 	EditionStartDate    string  `ch:"editionStartDate"`
 	EditionEndDate      string  `ch:"editionEndDate"`
-	EditionWebsite      *string `ch:"editionWebsite"`
+	EditionWebsite      *string  `ch:"editionWebsite"`
+	EventCategories     []string `ch:"eventCategories"`
+	EventTypes          []string `ch:"eventTypes"`
 	Created             string  `ch:"created"`
 	LastUpdatedAt       string  `ch:"lastUpdatedAt"`
 }
@@ -179,6 +181,87 @@ func fetchCompanyEventDataElasticsearchData(esClient *elasticsearch.Client, inde
 	return results
 }
 
+// fetchCompanyEventDataCategoryNames fetches category names for events from event_category + category.
+// Only includes categories where category.published > 0 (published categories for an event).
+func fetchCompanyEventDataCategoryNames(db *sql.DB, eventIDs []int64) map[int64][]string {
+	if len(eventIDs) == 0 {
+		return make(map[int64][]string)
+	}
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT ec.event, c.name
+		FROM event_category ec
+		INNER JOIN category c ON ec.category = c.id
+		WHERE ec.event IN (%s) AND c.published > 0
+	`, strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("Warning: Failed to fetch category names for company event data: %v", err)
+		return make(map[int64][]string)
+	}
+	defer rows.Close()
+
+	categoryMap := make(map[int64][]string)
+	for rows.Next() {
+		var eventID int64
+		var categoryName sql.NullString
+		if err := rows.Scan(&eventID, &categoryName); err != nil {
+			continue
+		}
+		if categoryName.Valid && categoryName.String != "" {
+			categoryMap[eventID] = append(categoryMap[eventID], categoryName.String)
+		}
+	}
+	return categoryMap
+}
+
+// fetchCompanyEventDataEventTypeNames fetches event type names for events from event_type_event + event_type.
+// Only includes event types where event_type_event.published > 0 and event.event_audience = event_type.event_audience (per event_type_ch logic).
+func fetchCompanyEventDataEventTypeNames(db *sql.DB, eventIDs []int64) map[int64][]string {
+	if len(eventIDs) == 0 {
+		return make(map[int64][]string)
+	}
+	placeholders := make([]string, len(eventIDs))
+	args := make([]interface{}, len(eventIDs))
+	for i, id := range eventIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := fmt.Sprintf(`
+		SELECT ee.event_id, et.name
+		FROM event_type_event ee
+		INNER JOIN event_type et ON ee.eventtype_id = et.id
+		INNER JOIN event e ON ee.event_id = e.id
+		WHERE ee.event_id IN (%s) AND ee.published > 0 AND e.event_audience = et.event_audience
+	`, strings.Join(placeholders, ","))
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("Warning: Failed to fetch event type names for company event data: %v", err)
+		return make(map[int64][]string)
+	}
+	defer rows.Close()
+
+	typeMap := make(map[int64][]string)
+	for rows.Next() {
+		var eventID int64
+		var typeName sql.NullString
+		if err := rows.Scan(&eventID, &typeName); err != nil {
+			continue
+		}
+		if typeName.Valid && typeName.String != "" {
+			typeMap[eventID] = append(typeMap[eventID], typeName.String)
+		}
+	}
+	return typeMap
+}
+
 func fetchCurrentEditionMap(db *sql.DB) (map[int64]int64, error) {
 	query := `
 		SELECT id, event_edition
@@ -247,6 +330,8 @@ func processCompanyEventDataChunk(
 		if esClient != nil && config.ElasticsearchIndex != "" && len(eventIDs) > 0 {
 			esData = fetchCompanyEventDataElasticsearchData(esClient, config.ElasticsearchIndex, eventIDs)
 		}
+		categoryNamesMap := fetchCompanyEventDataCategoryNames(mysqlDB, eventIDs)
+		eventTypeNamesMap := fetchCompanyEventDataEventTypeNames(mysqlDB, eventIDs)
 
 		// Attach current_edition_id to each row and build currentEditionStartDates / currentEditionIDs from this batch
 		currentEditionStartDates := make(map[int64]interface{})
@@ -268,7 +353,7 @@ func processCompanyEventDataChunk(
 
 		var records []CompanyEventDataRecord
 		for _, row := range batchData {
-			rec := mapRowToCompanyEventDataRecord(row, lastUpdatedAt, currentEditionStartDates, currentEditionIDs, esData)
+			rec := mapRowToCompanyEventDataRecord(row, lastUpdatedAt, currentEditionStartDates, currentEditionIDs, esData, categoryNamesMap, eventTypeNamesMap)
 			records = append(records, rec)
 		}
 
@@ -384,6 +469,8 @@ func mapRowToCompanyEventDataRecord(
 	currentEditionStartDates map[int64]interface{},
 	currentEditionIDs map[int64]int64,
 	esData map[int64]map[string]interface{},
+	categoryNamesMap map[int64][]string,
+	eventTypeNamesMap map[int64][]string,
 ) CompanyEventDataRecord {
 	eventID := rowInt64(row, "eventId")
 	editionID := rowInt64(row, "editionId")
@@ -425,6 +512,20 @@ func mapRowToCompanyEventDataRecord(
 		}
 	}
 
+	eventCategories := []string{}
+	if categoryNamesMap != nil {
+		if cats := categoryNamesMap[eventID]; len(cats) > 0 {
+			eventCategories = cats
+		}
+	}
+
+	eventTypes := []string{}
+	if eventTypeNamesMap != nil {
+		if types := eventTypeNamesMap[eventID]; len(types) > 0 {
+			eventTypes = types
+		}
+	}
+
 	return CompanyEventDataRecord{
 		EventID:               shared.ConvertToUInt32(row["eventId"]),
 		EditionID:             shared.ConvertToUInt32(row["editionId"]),
@@ -445,6 +546,8 @@ func mapRowToCompanyEventDataRecord(
 		EditionStartDate:      editionStartDate,
 		EditionEndDate:        editionEndDate,
 		EditionWebsite:        shared.ConvertToStringPtr(row["editionWebsite"]),
+		EventCategories:       eventCategories,
+		EventTypes:            eventTypes,
 		Created:               shared.SafeClickHouseDateTimeString(row["created"]),
 		LastUpdatedAt:         lastUpdatedAt,
 	}
@@ -512,7 +615,7 @@ func insertCompanyEventDataSingleWorker(clickhouseConn driver.Conn, records []Co
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO companyEventData_temp (
 			eventId, editionId, editionCompanyId, eventName, eventDescription, editionVenue, editionVenueName, editionCity, editionCityName, editionStateName, editionCountry, editionAudience, editionFunctionality, editionType,
-			eventStatus, eventPublished, editionStartDate, editionEndDate, editionWebsite, created, lastUpdatedAt
+			eventStatus, eventPublished, editionStartDate, editionEndDate, editionWebsite, eventCategories, eventTypes, created, lastUpdatedAt
 		)
 	`)
 	if err != nil {
@@ -521,7 +624,7 @@ func insertCompanyEventDataSingleWorker(clickhouseConn driver.Conn, records []Co
 	for _, r := range records {
 		err := batch.Append(
 			r.EventID, r.EditionID, r.EditionCompanyID, r.EventName, r.EventDescription, r.EditionVenue, r.EditionVenueName, r.EditionCity, r.EditionCityName, r.EditionStateName, r.EditionCountry, r.EditionAudience, r.EditionFunctionality, r.EditionType,
-			r.EventStatus, r.EventPublished, r.EditionStartDate, r.EditionEndDate, r.EditionWebsite, r.Created, r.LastUpdatedAt,
+			r.EventStatus, r.EventPublished, r.EditionStartDate, r.EditionEndDate, r.EditionWebsite, r.EventCategories, r.EventTypes, r.Created, r.LastUpdatedAt,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to append record: %v", err)
