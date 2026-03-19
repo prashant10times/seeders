@@ -677,6 +677,9 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		YoYGrowth:                    shared.SafeConvertToNullableUInt32(record["yoyGrowth"]),
 		FutureExpectedStartDate:      decodeBase64NullableDate(record["futureExpexctedStartDate"]),
 		FutureExpectedEndDate:        decodeBase64NullableDate(record["futureExpexctedEndDate"]),
+		CurrentEditionId:            decodeNullableStr("currentEditionId"),
+		CurrentEditionStartDate:      decodeBase64NullableDate(record["currentEditionStartDate"]),
+		CurrentEditionEndDate:        decodeBase64NullableDate(record["currentEditionEndDate"]),
 		PredictionScore: func() *int32 {
 			if val, exists := record["predictionScore"]; exists && val != nil {
 				if scoreInt32Ptr, ok := val.(*int32); ok {
@@ -829,6 +832,9 @@ type alleventRecord struct {
 	YoYGrowth                       *uint32  `ch:"yoyGrowth"`                            // Nullable(UInt32)
 	FutureExpectedStartDate         *string  `ch:"futureExpexctedStartDate"`             // Nullable(Date)
 	FutureExpectedEndDate           *string  `ch:"futureExpexctedEndDate"`               // Nullable(Date)
+	CurrentEditionId                *string  `ch:"currentEditionId"`                    // Nullable(UUID) - only for past editions
+	CurrentEditionStartDate         *string  `ch:"currentEditionStartDate"`              // Nullable(Date) - only for past editions
+	CurrentEditionEndDate           *string  `ch:"currentEditionEndDate"`                // Nullable(Date) - only for past editions
 	PredictionScore                 *int32   `ch:"predictionScore"`                      // Nullable(Int32) DEFAULT 0
 	PrimaryEventType                *string  `ch:"PrimaryEventType"`                     // Nullable(UUID)
 	VerifiedOn                      *string  `ch:"verifiedOn"`                           // Nullable(Date)
@@ -4401,7 +4407,7 @@ func insertalleventDataChunkWithTable(clickhouseConn driver.Conn, records []map[
 			event_pricing, tickets, timings, event_logo, event_estimatedVisitors, estimatedVisitorsMean, estimatedSize, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, repeatSentiment, reputationChangePercentage, audienceZone,
 			inboundPercentage, inboundAttendance, internationalPercentage, internationalAttendance,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
-			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, futureExpexctedStartDate, futureExpexctedEndDate, predictionScore, PrimaryEventType, verifiedOn, last_updated_at, version
+			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, futureExpexctedStartDate, futureExpexctedEndDate, currentEditionId, currentEditionStartDate, currentEditionEndDate, predictionScore, PrimaryEventType, verifiedOn, last_updated_at, version
 		)
 	`, tableName)
 
@@ -4547,6 +4553,9 @@ func insertalleventDataChunkWithTable(clickhouseConn driver.Conn, records []map[
 			alleventRecord.YoYGrowth,                       // yoyGrowth: Nullable(UInt32)
 			alleventRecord.FutureExpectedStartDate,         // futureExpexctedStartDate: Nullable(Date)
 			alleventRecord.FutureExpectedEndDate,           // futureExpexctedEndDate: Nullable(Date)
+			alleventRecord.CurrentEditionId,                // currentEditionId: Nullable(UUID)
+			alleventRecord.CurrentEditionStartDate,         // currentEditionStartDate: Nullable(Date)
+			alleventRecord.CurrentEditionEndDate,           // currentEditionEndDate: Nullable(Date)
 			alleventRecord.PredictionScore,                 // predictionScore: Nullable(Int32) DEFAULT 0
 			alleventRecord.PrimaryEventType,                // PrimaryEventType: Nullable(UUID)
 			alleventRecord.VerifiedOn,                      // verifiedOn: Nullable(Date)
@@ -6057,9 +6066,12 @@ func buildAlleventRecord(
 		"edition_followers":      esInfoMap["event_following"],
 		"event_exhibitor":        esInfoMap["event_exhibitors"],
 		"edition_exhibitor":      esInfoMap["edition_exhibitor"],
-		"exhibitors_upper_bound": nil,
-		"exhibitors_lower_bound": nil,
-		"exhibitors_mean":        nil,
+		"exhibitors_upper_bound":    nil,
+		"exhibitors_lower_bound":    nil,
+		"exhibitors_mean":           nil,
+		"currentEditionId":          nil,
+		"currentEditionStartDate":   nil,
+		"currentEditionEndDate":     nil,
 		"event_sponsor":          esInfoMap["event_totalSponsor"],
 		"edition_sponsor":        esInfoMap["edition_sponsor"],
 		"event_speaker":          esInfoMap["event_speakers"],
@@ -6733,6 +6745,17 @@ func buildAlleventRecord(
 		}
 		if mean != nil {
 			record["exhibitors_mean"] = uint32(*mean)
+		}
+
+		currentEditionUUID := shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s",
+			shared.ConvertToUInt32(currentEdition["edition_id"]),
+			decodeBase64DateTime(currentEdition["edition_created"])))
+		record["currentEditionId"] = &currentEditionUUID
+		if startDate := decodeBase64Date(currentEdition["edition_start_date"]); startDate != "" {
+			record["currentEditionStartDate"] = &startDate
+		}
+		if endDate := decodeBase64Date(currentEdition["edition_end_date"]); endDate != "" {
+			record["currentEditionEndDate"] = &endDate
 		}
 	}
 
