@@ -2686,6 +2686,16 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 							return dateI.Before(dateJ)
 						})
 
+						var currentEdition map[string]interface{}
+						if currentEditionIDs[eventID] > 0 {
+							for _, e := range editions {
+								if eid, ok := e["edition_id"].(int64); ok && eid == currentEditionIDs[eventID] {
+									currentEdition = e
+									break
+								}
+							}
+						}
+
 						for _, edition := range editions {
 							company, venue, city, companyCity, venueCity := resolveRelatedDataForEdition(
 								edition,
@@ -2759,6 +2769,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								editionType,
 								currentEditionIDs[eventID],
 								editions,
+								currentEdition,
 								editionCountryISO,
 								editionDomain,
 								companyDomain,
@@ -5654,6 +5665,16 @@ func rebuildRecordsForFailedBatch(
 			venueIDLookup,
 		)
 
+		var currentEdition map[string]interface{}
+		if currentEditionIDs[actualEventID] > 0 {
+			for _, e := range allevents[actualEventID] {
+				if eid, ok := e["edition_id"].(int64); ok && eid == currentEditionIDs[actualEventID] {
+					currentEdition = e
+					break
+				}
+			}
+		}
+
 		record := buildAlleventRecord(
 			eventData,
 			targetEdition,
@@ -5673,6 +5694,7 @@ func rebuildRecordsForFailedBatch(
 			editionType,
 			currentEditionIDs[actualEventID],
 			allevents[actualEventID],
+			currentEdition,
 			editionCountryISO,
 			editionDomain,
 			companyDomain,
@@ -5873,6 +5895,7 @@ func buildAlleventRecord(
 	editionType *string,
 	currentEditionID int64,
 	allEditions []map[string]interface{},
+	currentEdition map[string]interface{},
 	editionCountryISO string,
 	editionDomain string,
 	companyDomain string,
@@ -6629,8 +6652,7 @@ func buildAlleventRecord(
 		record["edition_type"] = "NA"
 	}
 
-	// Set event_editions count for current editions
-	if editionType != nil && *editionType == "current_edition" {
+	if editionType != nil && (*editionType == "current_edition" || *editionType == "past_edition") {
 		if len(allEditions) > 0 {
 			eventEditionsCount := uint32(len(allEditions))
 			record["event_editions"] = eventEditionsCount
@@ -6639,6 +6661,79 @@ func buildAlleventRecord(
 		}
 	} else {
 		record["event_editions"] = nil
+	}
+
+	if editionType != nil && *editionType == "past_edition" && currentEdition != nil {
+		exhibitorsCountByOrganizer := currentEdition["current_edition_exhibitors_total"]
+		visitorLeads := esInfoMap["event_following"]
+		eventTypeSourceID := eventData["event_type"]
+
+		var exhibitorsCount *int64
+		if exhibitorsCountByOrganizer != nil {
+			if val, ok := exhibitorsCountByOrganizer.(int64); ok {
+				exhibitorsCount = &val
+			}
+		}
+
+		var visitorLeadsInt int64 = 0
+		if visitorLeads != nil {
+			if val, ok := visitorLeads.(uint32); ok {
+				visitorLeadsInt = int64(val)
+			}
+		}
+
+		var eventTypeID *int64
+		if eventTypeSourceID != nil {
+			if val, ok := eventTypeSourceID.(int64); ok {
+				eventTypeID = &val
+			}
+		}
+
+		var upperBound, lowerBound, mean *int64
+
+		if exhibitorsCount != nil && *exhibitorsCount >= 0 {
+			upperBound = exhibitorsCount
+			lowerBound = exhibitorsCount
+		} else {
+			if eventTypeID != nil && *eventTypeID == 1 {
+				if visitorLeadsInt == 0 {
+					upper := int64(100)
+					lower := int64(20)
+					upperBound = &upper
+					lowerBound = &lower
+				} else if visitorLeadsInt >= 1 && visitorLeadsInt <= 100 {
+					upper := int64(500)
+					lower := int64(100)
+					upperBound = &upper
+					lowerBound = &lower
+				} else {
+					upper := int64(1000)
+					lower := int64(500)
+					upperBound = &upper
+					lowerBound = &lower
+				}
+			} else {
+				upperBound = nil
+				lowerBound = nil
+			}
+		}
+
+		if upperBound != nil && lowerBound != nil {
+			meanVal := (*upperBound + *lowerBound) / 2
+			mean = &meanVal
+		} else {
+			mean = nil
+		}
+
+		if upperBound != nil {
+			record["exhibitors_upper_bound"] = uint32(*upperBound)
+		}
+		if lowerBound != nil {
+			record["exhibitors_lower_bound"] = uint32(*lowerBound)
+		}
+		if mean != nil {
+			record["exhibitors_mean"] = uint32(*mean)
+		}
 	}
 
 	// Determine event_format

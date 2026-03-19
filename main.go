@@ -483,10 +483,12 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 			}
 
 			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-			log.Printf("OPTIMIZING TABLE IMMEDIATELY AFTER INSERTION: %s", tableName)
+			log.Printf("OPTIMIZING TABLE IMMEDIATELY AFTER INSERTION: %s (temp table)", tableName)
 			log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-			if optimizeErr := shared.OptimizeSingleTable(clickhouseDB, tableName, config, errorLogFile); optimizeErr != nil {
+			optimizeConfig := config
+			optimizeConfig.UseTempTables = true // -all: Phase 1 inserts into temp tables, optimize those before swap
+			if optimizeErr := shared.OptimizeSingleTable(clickhouseDB, tableName, optimizeConfig, errorLogFile); optimizeErr != nil {
 				logErrorToFile("Optimize Single Table", optimizeErr)
 				log.Printf("⚠️  Warning: Error optimizing %s: %v", tableName, optimizeErr)
 				log.Printf("⚠️  Continuing with next table...")
@@ -1730,22 +1732,24 @@ func main() {
 			return // Exit early, don't proceed with optimization
 		}
 
-		log.Println("Optimizing allevent_ch table...")
-		if err := shared.OptimizeSingleTable(clickhouseDB, "allevent_ch", config, errorLogFile); err != nil {
+		log.Println("Optimizing allevent_temp table (where data was just inserted)...")
+		optimizeConfig := config
+		optimizeConfig.UseTempTables = true
+		if err := shared.OptimizeSingleTable(clickhouseDB, "allevent_ch", optimizeConfig, errorLogFile); err != nil {
 			logErrorToFile("All Event Optimization", err)
-			log.Printf("⚠️  Error optimizing allevent_ch table: %v", err)
+			log.Printf("⚠️  Error optimizing allevent_temp table: %v", err)
 			log.Printf("⚠️  Continuing with table swap...")
 		} else {
-			log.Println("✓ allevent_ch optimized successfully")
+			log.Println("✓ allevent_temp optimized successfully")
 		}
 
-		log.Println("Optimizing event_daywiseEconomicImpact_ch table...")
-		if err := shared.OptimizeSingleTable(clickhouseDB, "event_daywiseEconomicImpact_ch", config, errorLogFile); err != nil {
+		log.Println("Optimizing event_daywiseEconomicImpact_temp table (where data was just inserted)...")
+		if err := shared.OptimizeSingleTable(clickhouseDB, "event_daywiseEconomicImpact_ch", optimizeConfig, errorLogFile); err != nil {
 			logErrorToFile("Day-Wise Economic Impact Optimization", err)
-			log.Printf("⚠️  Error optimizing event_daywiseEconomicImpact_ch table: %v", err)
+			log.Printf("⚠️  Error optimizing event_daywiseEconomicImpact_temp table: %v", err)
 			log.Printf("⚠️  Continuing with table swap...")
 		} else {
-			log.Println("✓ event_daywiseEconomicImpact_ch optimized successfully")
+			log.Println("✓ event_daywiseEconomicImpact_temp optimized successfully")
 		}
 
 		log.Println("Swapping allevent_ch table...")

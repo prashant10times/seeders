@@ -423,11 +423,22 @@ func buildIncrementalRecords(
 			cityIDLookup, stateIDLookup, stateUUIDLookup, cityStateUUIDLookup, venueIDLookup,
 		)
 
+		var currentEdition map[string]interface{}
+		if currentEditionIDs[eventID] > 0 {
+			for _, e := range editions {
+				if eid, ok := e["edition_id"].(int64); ok && eid == currentEditionIDs[eventID] {
+					currentEdition = e
+					break
+				}
+			}
+		}
+
 		record := buildAlleventRecord(
 			eventData, targetEdition, company, venue, city, companyCity, venueCity,
 			esInfoMap, processedEconomicData[eventID], estimateDataMap[eventID],
 			eventTypesMap, categoryNamesMap, ticketDataMap, timingDataMap,
 			eventID, editionType, currentEditionIDs[eventID], editions,
+			currentEdition,
 			editionCountryISO, editionDomain, companyDomain,
 			editionCityLocationChID, companyCityLocationChID, venueCityLocationChID,
 			editionCityStateLocationChID, venueLocationChID,
