@@ -405,7 +405,7 @@ func buildIncrementalRecords(
 			esInfoMap = make(map[string]interface{})
 		}
 
-		editionDomain, companyDomain := extractDomainsForEdition(targetEdition, company)
+		editionDomain, companyDomain := extractDomainsForEdition(eventData, company)
 
 		editionType := determinealleventType(
 			targetEdition["edition_start_date"],

@@ -1255,7 +1255,7 @@ func fetchEditionsByEditionIDsBatch(db *sql.DB, editionIDs []int64) []map[string
 	editionQuery := fmt.Sprintf(`
 		SELECT 
 			event, id as edition_id, city as edition_city, 
-			company_id, venue as venue_id, website as edition_website, 
+			company_id, venue as venue_id,
 			created as edition_created, start_date as edition_start_date,
 			end_date as edition_end_date,
 			exhibitors_total, online_event as is_online
@@ -1399,7 +1399,7 @@ func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]int
 	editionQuery := fmt.Sprintf(`
 		SELECT 
 			event, id as edition_id, city as edition_city, 
-			company_id, venue as venue_id, website as edition_website, 
+			company_id, venue as venue_id,
 			created as edition_created, start_date as edition_start_date,
 			end_date as edition_end_date,
 			exhibitors_total, online_event as is_online
@@ -1472,6 +1472,7 @@ func fetchalleventEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]i
 	query := fmt.Sprintf(`
 		SELECT e.id, e.name as event_name, e.abbr_name, e.punchline, e.start_date, e.end_date, 
 		       e.country, e.published, e.status, e.event_audience, e.functionality, e.brand_id, e.created, e.modified, e.event_type, e.score, e.url, e.multi_city, e.verified,
+		       e.website as event_website,
 		       eb.id as brand_id_from_table, eb.created as brand_created
 		FROM event e
 		LEFT JOIN event_brands eb ON e.brand_id = eb.id
@@ -2736,7 +2737,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 
 							esInfoMap := esData[eventID]
 
-							editionDomain, companyDomain := extractDomainsForEdition(edition, company)
+							editionDomain, companyDomain := extractDomainsForEdition(eventData, company)
 
 							editionType := determinealleventType(
 								edition["edition_start_date"],
@@ -5673,7 +5674,7 @@ func rebuildRecordsForFailedBatch(
 			esInfoMap = make(map[string]interface{})
 		}
 
-		editionDomain, companyDomain := extractDomainsForEdition(targetEdition, company)
+		editionDomain, companyDomain := extractDomainsForEdition(eventData, company)
 
 		editionType := determinealleventType(
 			targetEdition["edition_start_date"],
@@ -5890,15 +5891,12 @@ func computeAllLocationIDs(
 	return editionCityLocationChID, companyCityLocationChID, venueCityLocationChID, editionCityStateLocationChID, venueLocationChID
 }
 
-// extractDomainsForEdition extracts edition and company domains
-// This centralizes the domain extraction logic
 func extractDomainsForEdition(
-	edition map[string]interface{},
+	eventData map[string]interface{},
 	company map[string]interface{},
 ) (editionDomain string, companyDomain string) {
-	editionWebsite := edition["edition_website"]
-	if editionWebsite != nil {
-		editionDomain = shared.ExtractDomainFromWebsite(editionWebsite)
+	if eventData != nil && eventData["event_website"] != nil {
+		editionDomain = shared.ExtractDomainFromWebsite(eventData["event_website"])
 	}
 
 	if company != nil && company["company_website"] != nil {
@@ -6084,7 +6082,7 @@ func buildAlleventRecord(
 		}(),
 		"editions_audiance_type": eventData["event_audience"],
 		"edition_functionality":  eventData["functionality"],
-		"edition_website":        decodeBase64NullableStringIfNeeded(edition["edition_website"]),
+		"edition_website":        decodeBase64NullableStringIfNeeded(eventData["event_website"]),
 		"edition_domain":         editionDomain,
 		"event_followers":        esInfoMap["event_following"],
 		"edition_followers":      esInfoMap["event_following"],
