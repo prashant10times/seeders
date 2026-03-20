@@ -325,6 +325,30 @@ func parseDateLenient(s string) (time.Time, error) {
 	return time.Parse("2006-01-02", datePart)
 }
 
+// when the edition start is strictly after today, the ES predicted start must be on or after edition_start + 3 months.
+// When the edition is not upcoming, returns true
+func esPredPassesUpcomingPlusThree(editionStartDateStr string, esPredStart *string) bool {
+	if editionStartDateStr == "" || esPredStart == nil || strings.TrimSpace(*esPredStart) == "" {
+		return true
+	}
+	editionStart, errEd := parseDateLenient(editionStartDateStr)
+	predStart, errPr := parseDateLenient(*esPredStart)
+	if errEd != nil || errPr != nil {
+		return true
+	}
+	loc := editionStart.Location()
+	now := time.Now().In(loc)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	editionDay := time.Date(editionStart.Year(), editionStart.Month(), editionStart.Day(), 0, 0, 0, 0, loc)
+	if !editionDay.After(today) {
+		return true
+	}
+	threshold := editionStart.AddDate(0, 3, 0)
+	predDay := time.Date(predStart.Year(), predStart.Month(), predStart.Day(), 0, 0, 0, 0, predStart.Location())
+	thDay := time.Date(threshold.Year(), threshold.Month(), threshold.Day(), 0, 0, 0, 0, threshold.Location())
+	return !predDay.Before(thDay)
+}
+
 func decodeBase64DateTime(value interface{}) string {
 	str := shared.SafeConvertToString(value)
 	if str == "" {
@@ -6193,6 +6217,9 @@ func buildAlleventRecord(
 				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
 					now := time.Now()
 					if startDate.Before(predStartDate) && endDate.Before(predEndDate) && (predEndDate.After(now) || predEndDate.Equal(now)) {
+						if !esPredPassesUpcomingPlusThree(startDateStr, esPredStartDate) {
+							return nil
+						}
 						// Keep ES prediction: pred_start_date = pred_start_date
 						return esPredStartDate
 					}
@@ -6237,6 +6264,9 @@ func buildAlleventRecord(
 				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
 					now := time.Now()
 					if startDate.Before(predStartDate) && endDate.Before(predEndDate) && (predEndDate.After(now) || predEndDate.Equal(now)) {
+						if !esPredPassesUpcomingPlusThree(startDateStr, esPredStartDate) {
+							return nil
+						}
 						// Keep ES prediction: pred_end_date = pred_end_date
 						return esPredEndDate
 					}
@@ -6285,6 +6315,10 @@ func buildAlleventRecord(
 				if err1 == nil && err2 == nil && err3 == nil && err4 == nil {
 					now := time.Now()
 					if startDate.Before(predStartDate) && endDate.Before(predEndDate) && (predEndDate.After(now) || predEndDate.Equal(now)) {
+						if !esPredPassesUpcomingPlusThree(startDateStr, esPredStartDate) {
+							score := int32(0)
+							return &score
+						}
 						// Keep ES prediction: pred_score = pred_score
 						if esPredScore != nil {
 							if scoreFloat, ok := esPredScore.(float64); ok {
