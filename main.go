@@ -550,9 +550,19 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 	log.Println("BATCH SWAP: Swapping all tables (data sync complete)")
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+	if err := shared.DropDependentDictionariesForSwap(clickhouseDB, config, errorLogFile); err != nil {
+		logErrorToFile("Drop Dictionaries Before Swap", err)
+		log.Fatalf("Failed to drop dependent dictionaries before swap: %v", err)
+	}
+
 	if err := shared.SwapTables(clickhouseDB, allTableMappings, config, errorLogFile); err != nil {
 		logErrorToFile("Table Swap", err)
 		log.Fatalf("Failed to swap tables: %v", err)
+	}
+
+	if err := shared.CreateDictionariesAfterSwap(clickhouseDB, config, errorLogFile); err != nil {
+		logErrorToFile("Create Dictionaries After Swap", err)
+		log.Fatalf("Failed to recreate dictionaries after swap: %v", err)
 	}
 
 	log.Println("✓ All tables swapped successfully")

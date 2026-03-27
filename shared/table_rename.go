@@ -13,6 +13,98 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
+func DropDependentDictionariesForSwap(clickhouseConn driver.Conn, config Config, errorLogFile string) error {
+	log.Println("Dropping dependent dictionaries before table swap...")
+
+	dicts := []string{
+		"dict_location",
+		"dict_event_category",
+	}
+
+	for _, dictName := range dicts {
+		fullDictName := GetTableNameWithDB(dictName, config)
+
+		dropErr := RetryWithBackoff(
+			func() error {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				query := fmt.Sprintf("DROP DICTIONARY IF EXISTS %s", fullDictName)
+				if err := clickhouseConn.Exec(ctx, query); err != nil {
+					return fmt.Errorf("drop dictionary %s: %w", fullDictName, err)
+				}
+				return nil
+			},
+			3,
+		)
+		if dropErr != nil {
+			err := fmt.Errorf("failed to drop dictionary %s after retries: %w", fullDictName, dropErr)
+			logErrorToFile("Drop Dependent Dictionaries", err, errorLogFile)
+			return err
+		}
+
+		log.Printf("✓ Dropped dictionary (if existed): %s", fullDictName)
+	}
+
+	log.Println("✓ Dependent dictionaries dropped")
+	return nil
+}
+
+func CreateDictionariesAfterSwap(clickhouseConn driver.Conn, config Config, errorLogFile string) error {
+	log.Println("Recreating dictionaries after table swap...")
+
+	db := EscapeTableName(config.ClickhouseDB)
+
+	createStatements := []string{
+		fmt.Sprintf(`
+CREATE DICTIONARY %s.%s
+(
+    id UInt32,
+    iso Nullable(String),
+    id_uuid UUID,
+    location_type String
+)
+PRIMARY KEY id, location_type
+SOURCE(CLICKHOUSE(DATABASE '%s' TABLE 'location_ch'))
+LIFETIME(MIN 0 MAX 300)
+LAYOUT(COMPLEX_KEY_HASHED())
+`, db, EscapeTableName("dict_location"), config.ClickhouseDB),
+		fmt.Sprintf(`
+CREATE DICTIONARY %s.%s
+(
+    event UInt32,
+    name String,
+    category_uuid UUID
+)
+PRIMARY KEY event, name
+SOURCE(CLICKHOUSE(DATABASE '%s' TABLE 'event_category_ch' WHERE 'is_group = 1 AND published = 1'))
+LIFETIME(MIN 0 MAX 300)
+LAYOUT(COMPLEX_KEY_HASHED())
+`, db, EscapeTableName("dict_event_category"), config.ClickhouseDB),
+	}
+
+	for _, stmt := range createStatements {
+		createErr := RetryWithBackoff(
+			func() error {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				if err := clickhouseConn.Exec(ctx, stmt); err != nil {
+					return fmt.Errorf("create dictionary: %w", err)
+				}
+				return nil
+			},
+			3,
+		)
+		if createErr != nil {
+			err := fmt.Errorf("failed to create dictionaries after retries: %w", createErr)
+			logErrorToFile("Create Dictionaries After Swap", err, errorLogFile)
+			return err
+		}
+	}
+
+	log.Println("✓ Dictionaries recreated successfully")
+	return nil
+}
+
 type TableMapping struct {
 	Original string
 	Temp     string
