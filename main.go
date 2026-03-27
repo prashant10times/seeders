@@ -605,6 +605,9 @@ func runAllIncrementalSequential(mysqlDB *sql.DB, clickhouseDB driver.Conn, esCl
 		name string
 		run  func() error
 	}{
+		{"location-incremental", func() error {
+			return microservice.ProcessIncrementalLocation(mysqlDB, clickhouseDB, utilsConfig)
+		}},
 		{"allevent-incremental", func() error {
 			return microservice.ProcessIncrementalAllevent(mysqlDB, clickhouseDB, esClient, utilsConfig)
 		}},
@@ -702,6 +705,7 @@ func main() {
 	var incrementalSpeakerOnly bool
 	var incrementalSponsorOnly bool
 	var incrementalVisitorOnly bool
+	var incrementalLocationOnly bool
 	var holidaysOnly bool
 	var alertsOnly bool
 	var incrementalAlertsOnly bool
@@ -749,6 +753,7 @@ func main() {
 	flag.BoolVar(&incrementalSpeakerOnly, "eventspeaker-incremental", false, "Incremental sync for event_speaker_ch (only changed since yesterday) (default: false)")
 	flag.BoolVar(&incrementalSponsorOnly, "eventsponsor-incremental", false, "Incremental sync for event_sponsors_ch (only changed since yesterday) (default: false)")
 	flag.BoolVar(&incrementalVisitorOnly, "eventvisitor-incremental", false, "Incremental sync for event_visitors_ch (only changed since yesterday) (default: false)")
+	flag.BoolVar(&incrementalLocationOnly, "location-incremental", false, "Incremental sync for location_ch (new rows created since yesterday only) (default: false)")
 	flag.BoolVar(&holidaysOnly, "holidays", false, "Process holidays into allevent_ch (automatically handles event types) (default: false)")
 	flag.BoolVar(&alertsOnly, "alerts", false, "Process alerts from GDAC API into alerts_ch (default: false)")
 	flag.BoolVar(&incrementalAlertsOnly, "alerts-incremental", false, "Incremental alert sync: fetch yesterday only and upsert into alerts_ch, location_polygons_ch, event_type_ch (default: false)")
@@ -779,12 +784,14 @@ func main() {
 			incrementalSponsorOnly = true
 		case "eventvisitor-incremental":
 			incrementalVisitorOnly = true
+		case "location-incremental":
+			incrementalLocationOnly = true
 		case "alerts-incremental":
 			incrementalAlertsOnly = true
 		case "all-incremental":
 			allIncrementalOnly = true
 		default:
-			log.Fatalf("Unknown incremental task: %q. Valid: allevent-incremental, eventtype-incremental, eventcategory-incremental, eventproduct-incremental, eventdesignation-incremental, eventexhibitor-incremental, eventspeaker-incremental, eventsponsor-incremental, eventvisitor-incremental, alerts-incremental, all-incremental", *task)
+			log.Fatalf("Unknown incremental task: %q. Valid: allevent-incremental, eventtype-incremental, eventcategory-incremental, eventproduct-incremental, eventdesignation-incremental, eventexhibitor-incremental, eventspeaker-incremental, eventsponsor-incremental, eventvisitor-incremental, location-incremental, alerts-incremental, all-incremental", *task)
 		}
 	}
 
@@ -833,6 +840,8 @@ func main() {
 		log.Println("        Incremental sync for allevent (only changed since yesterday) (default: false)")
 		log.Println("  -eventtype-incremental")
 		log.Println("        Incremental sync for event_type_ch (only changed since yesterday) (default: false)")
+		log.Println("  -location-incremental")
+		log.Println("        Incremental sync for location_ch (new rows created since yesterday only) (default: false)")
 		log.Println("  -holiday-eventtypes")
 		log.Println("        Process only holiday event types into event_type_ch (default: false)")
 		log.Println("  -holidays")
@@ -978,6 +987,8 @@ func main() {
 		log.Printf("Mode: INCREMENTAL EVENT SPONSOR (changed since yesterday)")
 	} else if incrementalVisitorOnly {
 		log.Printf("Mode: INCREMENTAL EVENT VISITOR (changed since yesterday)")
+	} else if incrementalLocationOnly {
+		log.Printf("Mode: INCREMENTAL LOCATION (new rows created since yesterday)")
 	} else if incrementalAlertsOnly {
 		log.Printf("Mode: INCREMENTAL ALERTS (yesterday only, upsert)")
 	} else if allIncrementalOnly {
@@ -1042,6 +1053,8 @@ func main() {
 		log.Printf("Elasticsearch: Skipped (not needed for event product incremental)")
 	} else if incrementalDesignationOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for event designation incremental)")
+	} else if incrementalLocationOnly {
+		log.Printf("Elasticsearch: Skipped (not needed for location incremental)")
 	} else if daywiseOnly {
 		log.Printf("Elasticsearch: Skipped (not needed for day-wise economic impact)")
 	}
@@ -1070,7 +1083,7 @@ func main() {
 		return
 	}
 
-	if !companyOnly && !companyCategoryOnly && !companyClassificationOnly && !companyProductOnly && !companySpeakerOnly && !companyVisitorOnly && !companyEventDataOnly && !eventCompanyOnly && !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly && !incrementalExhibitorOnly && !incrementalSpeakerOnly && !incrementalSponsorOnly && !incrementalVisitorOnly && !incrementalAlertsOnly && !alertsOnly {
+	if !companyOnly && !companyCategoryOnly && !companyClassificationOnly && !companyProductOnly && !companySpeakerOnly && !companyVisitorOnly && !companyEventDataOnly && !eventCompanyOnly && !sponsorsOnly && !speakersOnly && !visitorsOnly && !exhibitorOnly && !eventTypeEventChOnly && !eventCategoryEventChOnly && !eventProductChOnly && !eventRankingOnly && !eventDesignationOnly && !locationCountriesOnly && !locationStatesOnly && !locationCitiesOnly && !locationVenuesOnly && !locationSubVenuesOnly && !locationAll && !holidaysOnly && !daywiseOnly && !incrementalEventTypeOnly && !incrementalCategoryOnly && !incrementalProductOnly && !incrementalDesignationOnly && !incrementalExhibitorOnly && !incrementalSpeakerOnly && !incrementalSponsorOnly && !incrementalVisitorOnly && !incrementalLocationOnly && !incrementalAlertsOnly && !alertsOnly {
 		if err := utils.TestElasticsearchConnection(esClient, config.ElasticsearchIndex); err != nil {
 			log.Fatalf("Elasticsearch connection test failed: %v", err)
 		}
@@ -1132,6 +1145,8 @@ func main() {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event sponsor incremental)")
 		} else if incrementalVisitorOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for event visitor incremental)")
+		} else if incrementalLocationOnly {
+			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for location_ch incremental processing)")
 		} else if incrementalAlertsOnly {
 			log.Println("WARNING: Skipping Elasticsearch connection test (not needed for alerts incremental)")
 		} else if alertsOnly {
@@ -1686,6 +1701,14 @@ func main() {
 			log.Fatalf("Incremental event visitor sync failed: %v", err)
 		}
 		log.Println("✓ Incremental event visitor sync completed successfully")
+	} else if incrementalLocationOnly {
+		utilsConfig := config
+		utilsConfig.UseTempTables = false
+		if err := microservice.ProcessIncrementalLocation(mysqlDB, clickhouseDB, utilsConfig); err != nil {
+			logErrorToFile("Incremental Location", err)
+			log.Fatalf("Incremental location sync failed: %v", err)
+		}
+		log.Println("✓ Incremental location sync completed successfully")
 	} else if incrementalAlertsOnly {
 		gdacBaseURL := os.Getenv("gdac_base_url")
 		gdacEndpoint := os.Getenv("gdac_event_search_endpoint")

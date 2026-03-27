@@ -72,8 +72,6 @@ import (
 	"seeders/shared"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -185,73 +183,10 @@ func ProcessLocationCountriesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 		now := time.Now()
 
 		for _, row := range batchData {
-			countryID := shared.SafeConvertToString(row["id_10x"])
-			created := shared.SafeConvertToString(row["created"])
-
-			if countryID == "" || created == "" {
+			rec, ok := buildCountryLocationRecord(row, currentID, now, countryCoordsLookup)
+			if !ok {
 				continue
 			}
-
-			normalizedID := normalizeNFC(strings.TrimSpace(countryID))
-			isoUpper := strings.ToUpper(normalizedID)
-
-			id10x := fmt.Sprintf("country-%s", isoUpper)
-			idInputString := fmt.Sprintf("%s-%s", strings.ToUpper(countryID), created)
-			idUUID := shared.GenerateUUIDFromString(idInputString)
-
-			name := shared.SafeConvertToNullableString(row["name"])
-			alias := shared.SafeConvertToNullableString(row["alias"])
-			phonecode := shared.SafeConvertToNullableString(row["phonecode"])
-			currency := shared.SafeConvertToNullableString(row["currency"])
-			continent := shared.SafeConvertToNullableString(row["continent"])
-			published := shared.SafeConvertToInt8(row["published"])
-			slug := shared.SafeConvertToNullableString(row["slug"])
-
-			var regions []string
-			if r := shared.SafeConvertToString(row["regions"]); r != "" {
-				if strings.Contains(r, ",") {
-					parts := strings.Split(r, ",")
-					for i := range parts {
-						parts[i] = strings.TrimSpace(parts[i])
-					}
-					regions = parts
-				} else {
-					regions = []string{r}
-				}
-			}
-
-			var latPtr *float64
-			var lonPtr *float64
-			if coords, ok := countryCoordsLookup[isoUpper]; ok {
-				latPtr = coords.Latitude
-				lonPtr = coords.Longitude
-			}
-
-			isoPtr := (*string)(nil)
-			if isoUpper != "" {
-				isoPtr = &isoUpper
-			}
-
-			rec := LocationChRecord{
-				IDUUID:        idUUID,
-				ID:            currentID,
-				ID10x:         id10x,
-				LocationType:  "COUNTRY",
-				Name:          name,
-				Alias:         alias,
-				Slug:          slug,
-				Phonecode:     phonecode,
-				Currency:      currency,
-				Continent:     continent,
-				Regions:       regions,
-				Latitude:      latPtr,
-				Longitude:     lonPtr,
-				Published:     published,
-				ISO:           isoPtr,
-				LastUpdatedAt: now,
-				Version:       1,
-			}
-
 			currentID++
 			records = append(records, rec)
 		}
@@ -531,71 +466,10 @@ func ProcessLocationStatesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 		now := time.Now()
 
 		for _, row := range batchData {
-			stateName := shared.SafeConvertToString(row["id_10x"])
-			countryISO := shared.SafeConvertToString(row["countryId"])
-
-			if stateName == "" || countryISO == "" {
+			rec, ok := buildStateLocationRecord(row, currentID, now, countryUUIDLookup, countryNameLookup, seenStates)
+			if !ok {
 				continue
 			}
-
-			countryISOUpper := strings.ToUpper(strings.TrimSpace(countryISO))
-			stateId := shared.SafeConvertToUInt32(row["id"])
-			id10x := fmt.Sprintf("state-%d-%s", stateId, countryISOUpper)
-
-			if seenStates[id10x] {
-				continue
-			}
-			seenStates[id10x] = true
-
-			// uuidInputString := fmt.Sprintf("%d-%s", stateId, countryISOUpper) OLD LOGIC
-			idUUID := shared.GenerateUUIDFromString(normalizeNFC(id10x))
-			log.Printf(`stateId: %d, countryISOUpper: %s, id10x: %s, idUUID: %s`, stateId, countryISOUpper, id10x, idUUID)
-			name := shared.SafeConvertToNullableString(row["name"])
-			alias := shared.SafeConvertToNullableString(row["alias"])
-			slug := shared.SafeConvertToNullableString(row["slug"])
-			geometry := shared.SafeConvertToNullableString(row["geometry"])
-			published := shared.SafeConvertToInt8(row["published"])
-
-			var latPtr, lonPtr *float64
-			if geometry != nil && *geometry != "" {
-				latPtr, lonPtr = parseGeometryLatLng(*geometry)
-			}
-
-			countryUUID := (*string)(nil)
-			countryName := (*string)(nil)
-			if uuid, ok := countryUUIDLookup[countryISOUpper]; ok {
-				countryUUID = &uuid
-			}
-			if name, ok := countryNameLookup[countryISOUpper]; ok {
-				caser := cases.Title(language.English)
-				nameTitle := caser.String(strings.ToLower(name))
-				countryName = &nameTitle
-			}
-
-			var isoPtr *string
-			if countryISOUpper != "NAN" {
-				isoPtr = &countryISOUpper
-			}
-
-			rec := LocationChRecord{
-				IDUUID:        idUUID,
-				ID:            currentID,
-				ID10x:         id10x,
-				LocationType:  "STATE",
-				Name:          name,
-				Alias:         alias,
-				Slug:          slug,
-				Geometry:      geometry,
-				Latitude:      latPtr,
-				Longitude:     lonPtr,
-				Published:     published,
-				ISO:           isoPtr,
-				CountryUUID:   countryUUID,
-				CountryName:   countryName,
-				LastUpdatedAt: now,
-				Version:       1,
-			}
-
 			currentID++
 			records = append(records, rec)
 		}
@@ -834,87 +708,10 @@ func ProcessLocationCitiesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 		now := time.Now()
 
 		for _, row := range batchData {
-			cityID := shared.SafeConvertToString(row["id_10x"])
-			created := shared.SafeConvertToString(row["created"])
-
-			if cityID == "" || created == "" {
+			rec, ok := buildCityLocationRecord(row, currentID, now, countryUUIDLookup, countryNameLookup)
+			if !ok {
 				continue
 			}
-
-			normalizedID := normalizeNFC(cityID)
-
-			idInputString := fmt.Sprintf("%s-%s", normalizedID, created)
-			idUUID := shared.GenerateUUIDFromString(idInputString)
-
-			id10x := fmt.Sprintf("city-%s", normalizedID)
-
-			name := shared.SafeConvertToNullableString(row["name"])
-			alias := shared.SafeConvertToNullableString(row["alias"])
-			slug := shared.SafeConvertToNullableString(row["slug"])
-			stateName := shared.SafeConvertToNullableString(row["state_name"])
-			countrySourceID := shared.SafeConvertToString(row["countryId"])
-			latitude := shared.SafeConvertToNullableFloat64(row["latitude"])
-			longitude := shared.SafeConvertToNullableFloat64(row["longitude"])
-			utcOffset := shared.SafeConvertToNullableString(row["utc_offset"])
-			timezone := shared.SafeConvertToNullableString(row["timezone"])
-			published := shared.SafeConvertToInt8(row["published"])
-
-			// Generate State UUID using same formula as when creating state records: "state-{stateId}-{COUNTRY_ISO}"
-			var stateUUID *string
-			if stateName != nil && *stateName != "" && countrySourceID != "" {
-				stateId := shared.SafeConvertToUInt32(row["state_id"])
-				if stateId > 0 {
-					countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
-					id10x := fmt.Sprintf("state-%d-%s", stateId, countryISOUpper)
-					uuid := shared.GenerateUUIDFromString(normalizeNFC(id10x))
-					stateUUID = &uuid
-				}
-			}
-
-			var countryUUID *string
-			var countryName *string
-			if countrySourceID != "" {
-				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
-				if uuid, ok := countryUUIDLookup[countryISOUpper]; ok {
-					countryUUID = &uuid
-				}
-				if name, ok := countryNameLookup[countryISOUpper]; ok {
-					caser := cases.Title(language.English)
-					nameTitle := caser.String(strings.ToLower(name))
-					countryName = &nameTitle
-				}
-			}
-
-			var isoPtr *string
-			if countrySourceID != "" {
-				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
-				if countryISOUpper != "NAN" {
-					isoPtr = &countryISOUpper
-				}
-			}
-
-			rec := LocationChRecord{
-				IDUUID:        idUUID,
-				ID:            currentID,
-				ID10x:         id10x,
-				LocationType:  "CITY",
-				Name:          name,
-				Alias:         alias,
-				Slug:          slug,
-				Latitude:      latitude,
-				Longitude:     longitude,
-				UTCOffset:     utcOffset,
-				Timezone:      timezone,
-				Published:     published,
-				ISO:           isoPtr,
-				StateUUID:     stateUUID,
-				StateName:     stateName,
-				CountryUUID:   countryUUID,
-				CountryName:   countryName,
-				LastUpdatedAt: now,
-				Version:       1,
-			}
-
 			currentID++
 			records = append(records, rec)
 		}
@@ -1219,115 +1016,10 @@ func ProcessLocationVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 		now := time.Now()
 
 		for _, row := range batchData {
-			venueID := shared.SafeConvertToString(row["id_10x"])
-			created := shared.SafeConvertToString(row["created"])
-
-			if venueID == "" || created == "" {
+			rec, ok := buildVenueLocationRecord(row, currentID, now, countryUUIDLookup, countryNameLookup, cityUUIDLookup, stateUUIDLookup)
+			if !ok {
 				continue
 			}
-
-			normalizedID := normalizeNFC(venueID)
-
-			idInputString := fmt.Sprintf("%s-%s", normalizedID, created)
-			idUUID := shared.GenerateUUIDFromString(idInputString)
-
-			id10x := fmt.Sprintf("venue-%s", normalizedID)
-
-			name := shared.SafeConvertToNullableString(row["name"])
-			address := shared.SafeConvertToNullableString(row["address"])
-			slug := shared.SafeConvertToNullableString(row["slug"])
-			website := shared.SafeConvertToNullableString(row["website"])
-			postalcode := shared.SafeConvertToNullableString(row["postalcode"])
-			latitude := shared.SafeConvertToNullableFloat64(row["latitude"])
-			longitude := shared.SafeConvertToNullableFloat64(row["longitude"])
-			cityName := shared.SafeConvertToNullableString(row["cityName"])
-			stateName := shared.SafeConvertToNullableString(row["stateName"])
-			cityIDStr := shared.SafeConvertToString(row["cityId"])
-			countrySourceID := shared.SafeConvertToString(row["countryId"])
-			cityLat := shared.SafeConvertToNullableFloat64(row["cityLat"])
-			cityLong := shared.SafeConvertToNullableFloat64(row["cityLong"])
-			published := shared.SafeConvertToInt8(row["published"])
-
-			if address != nil && *address != "" {
-				cleanAddr := strings.ReplaceAll(*address, "\n", " ")
-				address = &cleanAddr
-			}
-
-			var cityUUID *string
-			var cityID *uint32
-			if cityIDStr != "" {
-				if cityIDVal, err := strconv.ParseUint(cityIDStr, 10, 32); err == nil {
-					cityIDUint32 := uint32(cityIDVal)
-					cityID = &cityIDUint32
-				}
-				if uuid, ok := cityUUIDLookup[cityIDStr]; ok {
-					cityUUID = &uuid
-				}
-			}
-
-			// Lookup State UUID from existing state records using id_10x format: "state-{stateId}-{COUNTRY_ISO}"
-			var stateUUID *string
-			if stateName != nil && *stateName != "" && countrySourceID != "" {
-				stateId := shared.SafeConvertToUInt32(row["state_id"])
-				if stateId > 0 {
-					countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
-					id10x := fmt.Sprintf("state-%d-%s", stateId, countryISOUpper)
-					lookupKey := strings.TrimPrefix(id10x, "state-")
-					if uuid, ok := stateUUIDLookup[lookupKey]; ok {
-						stateUUID = &uuid
-					}
-				}
-			}
-
-			var countryUUID *string
-			var countryName *string
-			if countrySourceID != "" {
-				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
-				if uuid, ok := countryUUIDLookup[countryISOUpper]; ok {
-					countryUUID = &uuid
-				}
-				if name, ok := countryNameLookup[countryISOUpper]; ok {
-					caser := cases.Title(language.English)
-					nameTitle := caser.String(strings.ToLower(name))
-					countryName = &nameTitle
-				}
-			}
-
-			var isoPtr *string
-			if countrySourceID != "" {
-				countryISOUpper := strings.ToUpper(strings.TrimSpace(countrySourceID))
-				if countryISOUpper != "NAN" {
-					isoPtr = &countryISOUpper
-				}
-			}
-
-			rec := LocationChRecord{
-				IDUUID:        idUUID,
-				ID:            currentID,
-				ID10x:         id10x,
-				LocationType:  "VENUE",
-				Name:          name,
-				Address:       address,
-				Slug:          slug,
-				Latitude:      latitude,
-				Longitude:     longitude,
-				Website:       website,
-				Postalcode:    postalcode,
-				Published:     published,
-				ISO:           isoPtr,
-				StateUUID:     stateUUID,
-				StateName:     stateName,
-				CountryUUID:   countryUUID,
-				CountryName:   countryName,
-				CityID:        cityID,
-				CityUUID:      cityUUID,
-				CityName:      cityName,
-				CityLatitude:  cityLat,
-				CityLongitude: cityLong,
-				LastUpdatedAt: now,
-				Version:       1,
-			}
-
 			currentID++
 			records = append(records, rec)
 		}
@@ -1572,52 +1264,10 @@ func ProcessLocationSubVenuesCh(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 		now := time.Now()
 
 		for _, row := range batchData {
-			subVenueID := shared.SafeConvertToString(row["id_10x"])
-			created := shared.SafeConvertToString(row["created"])
-
-			if subVenueID == "" || created == "" {
+			record, ok := buildSubVenueLocationRecord(row, currentID, now, venueUUIDLookup)
+			if !ok {
 				continue
 			}
-
-			normalizedID := normalizeNFC(subVenueID)
-
-			idInputString := fmt.Sprintf("%s-%s", normalizedID, created)
-			idUUID := shared.GenerateUUIDFromString(idInputString)
-
-			id10x := fmt.Sprintf("sub_venue-%s", normalizedID)
-
-			name := shared.SafeConvertToNullableString(row["name"])
-			area := shared.SafeConvertToNullableFloat64(row["area"])
-			published := shared.SafeConvertToInt8(row["published"])
-			venueIDStr := shared.SafeConvertToString(row["venueId"])
-
-			if name != nil {
-				cleanedName := normalizeNFC(*name)
-				cleanedName = strings.ReplaceAll(cleanedName, "\\", "")
-				cleanedName = strings.ReplaceAll(cleanedName, "'", "''")
-				name = &cleanedName
-			}
-
-			var venueUUID *string
-			if venueIDStr != "" {
-				if uuid, found := venueUUIDLookup[venueIDStr]; found {
-					venueUUID = &uuid
-				}
-			}
-
-			record := LocationChRecord{
-				IDUUID:        idUUID,
-				ID:            currentID,
-				ID10x:         id10x,
-				LocationType:  "SUB_VENUE",
-				Name:          name,
-				Area:          area,
-				Published:     published,
-				VenueUUID:     venueUUID,
-				LastUpdatedAt: now,
-				Version:       1,
-			}
-
 			currentID++
 			records = append(records, record)
 		}
