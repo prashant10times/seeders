@@ -29,6 +29,12 @@ go.sum
 
 # env file
 .env
+.env.missing_event_ids
+.env.missing_event_ids.example
+
+# local logs/artifacts
+/logs/
+missing_event_ids*.log
 
 # Editor/IDE
 # .idea/
