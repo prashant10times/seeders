@@ -12,6 +12,7 @@ import (
 	"seeders/company"
 	"seeders/eventdata"
 	"seeders/microservice"
+	"seeders/notify"
 	"seeders/shared"
 	"seeders/utils"
 
@@ -49,11 +50,14 @@ func logErrorToFile(scriptName string, err error) {
 	log.Printf("ERROR logged to %s: %s - %v", errorLogFile, scriptName, err)
 }
 
-func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
+func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elasticsearch.Client, config shared.Config, notifyTo []string, jobName string) {
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("=== STARTING ALL SEEDING SCRIPTS IN ORDER ===")
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("")
+
+	notify.TryStarted(notifyTo, jobName)
+	startedAt := time.Now()
 
 	if err := os.Remove(errorLogFile); err != nil && !os.IsNotExist(err) {
 		log.Printf("WARNING: Failed to remove existing error log file: %v", err)
@@ -64,7 +68,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	if err := shared.EnsureTempTablesExist(clickhouseDB, config, errorLogFile); err != nil {
 		logErrorToFile("Ensure Temp Tables", err)
-		log.Fatalf("Failed to ensure temp tables exist: %v", err)
+		notify.Fatalf(notifyTo, jobName, "Failed to ensure temp tables exist: %v", err)
 	}
 	log.Println("✓ STEP 0 (PREPARE DATABASE) COMPLETED SUCCESSFULLY")
 	log.Println("")
@@ -457,7 +461,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 				log.Printf("FATAL ERROR in CRITICAL script: %s", script.name)
 				log.Printf("Error: %v", err)
 				log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-				log.Fatalf("Stopping execution due to critical error in %s: %v", script.name, err)
+				notify.Fatalf(notifyTo, jobName, "Stopping execution due to critical error in %s: %v", script.name, err)
 			} else {
 				logErrorToFile(script.name, err)
 				log.Printf("⚠️  Non-critical error in %s (logged to %s), continuing...", script.name, errorLogFile)
@@ -540,7 +544,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 
 	if err := shared.ValidateTempTables(clickhouseDB, allTableMappings, config, errorLogFile); err != nil {
 		logErrorToFile("Pre-Swap Validation", err)
-		log.Fatalf("Validation failed before swap: %v", err)
+		notify.Fatalf(notifyTo, jobName, "Validation failed before swap: %v", err)
 	}
 
 	log.Println("✓ All temp tables validated successfully, proceeding with batch swap")
@@ -552,17 +556,17 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 
 	if err := shared.DropDependentDictionariesForSwap(clickhouseDB, config, errorLogFile); err != nil {
 		logErrorToFile("Drop Dictionaries Before Swap", err)
-		log.Fatalf("Failed to drop dependent dictionaries before swap: %v", err)
+		notify.Fatalf(notifyTo, jobName, "Failed to drop dependent dictionaries before swap: %v", err)
 	}
 
 	if err := shared.SwapTables(clickhouseDB, allTableMappings, config, errorLogFile); err != nil {
 		logErrorToFile("Table Swap", err)
-		log.Fatalf("Failed to swap tables: %v", err)
+		notify.Fatalf(notifyTo, jobName, "Failed to swap tables: %v", err)
 	}
 
 	if err := shared.CreateDictionariesAfterSwap(clickhouseDB, config, errorLogFile); err != nil {
 		logErrorToFile("Create Dictionaries After Swap", err)
-		log.Fatalf("Failed to recreate dictionaries after swap: %v", err)
+		notify.Fatalf(notifyTo, jobName, "Failed to recreate dictionaries after swap: %v", err)
 	}
 
 	log.Println("✓ All tables swapped successfully")
@@ -580,6 +584,8 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 	}
 	log.Println("")
 
+	notify.TryCompleted(notifyTo, jobName, time.Since(startedAt))
+
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("=== ALL SEEDING SCRIPTS COMPLETED ===")
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -592,11 +598,14 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 	}
 }
 
-func runAllIncrementalSequential(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
+func runAllIncrementalSequential(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elasticsearch.Client, config shared.Config, notifyTo []string, jobName string) {
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("=== STARTING ALL INCREMENTAL SYNC (sequential) ===")
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("")
+
+	notify.TryStarted(notifyTo, jobName)
+	startedAt := time.Now()
 
 	utilsConfig := config
 	utilsConfig.UseTempTables = false
@@ -623,17 +632,17 @@ func runAllIncrementalSequential(mysqlDB *sql.DB, clickhouseDB driver.Conn, esCl
 			gdacBaseURL := os.Getenv("gdac_base_url")
 			gdacEndpoint := os.Getenv("gdac_event_search_endpoint")
 			if gdacBaseURL == "" {
-				log.Fatal("ERROR: GDAC_BASE_URL environment variable is not set")
+				return fmt.Errorf("GDAC_BASE_URL environment variable is not set")
 			}
 			if gdacEndpoint == "" {
-				log.Fatal("ERROR: GDAC_EVENT_SEARCH_ENDPOINT environment variable is not set")
+				return fmt.Errorf("GDAC_EVENT_SEARCH_ENDPOINT environment variable is not set")
 			}
 			validCountries, err := microservice.GetValidCountries()
 			if err != nil {
 				return fmt.Errorf("get valid countries: %w", err)
 			}
 			if len(validCountries) == 0 {
-				log.Fatal("ERROR: No valid countries found")
+				return fmt.Errorf("no valid countries found")
 			}
 			alertConfig := shared.Config{
 				BatchSize:         config.BatchSize,
@@ -652,11 +661,13 @@ func runAllIncrementalSequential(mysqlDB *sql.DB, clickhouseDB driver.Conn, esCl
 		log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 		if err := t.run(); err != nil {
 			logErrorToFile(t.name, err)
-			log.Fatalf("Incremental sync failed at %s: %v", t.name, err)
+			notify.Fatalf(notifyTo, jobName, "Incremental sync failed at %s: %v", t.name, err)
 		}
 		log.Printf("✓ %s completed", t.name)
 		log.Println("")
 	}
+
+	notify.TryCompleted(notifyTo, jobName, time.Since(startedAt))
 
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("=== ALL INCREMENTAL SYNC COMPLETED SUCCESSFULLY ===")
@@ -1074,12 +1085,12 @@ func main() {
 	}
 
 	if allScripts {
-		runAllScripts(mysqlDB, clickhouseDB, esClient, config)
+		runAllScripts(mysqlDB, clickhouseDB, esClient, config, notify.Recipients(), notify.JobName("Full refresh (all tables)"))
 		return
 	}
 
 	if allIncrementalOnly {
-		runAllIncrementalSequential(mysqlDB, clickhouseDB, esClient, config)
+		runAllIncrementalSequential(mysqlDB, clickhouseDB, esClient, config, notify.Recipients(), notify.JobName("Incremental refresh (all tasks)"))
 		return
 	}
 
