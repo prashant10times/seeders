@@ -491,11 +491,11 @@ func fetchLocationsFromClickHouse(clickhouseConn driver.Conn, id10xValues []stri
 	}
 
 	query := fmt.Sprintf(`
-		SELECT id, name, iso, id_10x
+		SELECT id, name, iso, id_10x, toString(id_uuid) AS id_uuid
 		FROM %s
 		WHERE id_10x IN (%s)
 	`, locationTable, strings.Join(quotedValues, ","))
-	log.Printf("[query] ClickHouse: SELECT id, name, iso, id_10x FROM %s WHERE id_10x IN (... %d values)", locationTable, len(id10xValues))
+	log.Printf("[query] ClickHouse: SELECT id, name, iso, id_10x, id_uuid FROM %s WHERE id_10x IN (... %d values)", locationTable, len(id10xValues))
 
 	rows, err := clickhouseConn.Query(ctx, query)
 	if err != nil {
@@ -511,16 +511,18 @@ func fetchLocationsFromClickHouse(clickhouseConn driver.Conn, id10xValues []stri
 		var name *string
 		var iso *string
 		var id10x string
+		var idUUID *string
 
-		if err := rows.Scan(&id, &name, &iso, &id10x); err != nil {
+		if err := rows.Scan(&id, &name, &iso, &id10x, &idUUID); err != nil {
 			log.Printf("Warning: Failed to scan location row: %v", err)
 			continue
 		}
 
 		locationMap[id10x] = map[string]interface{}{
-			"id":   id,
-			"name": name,
-			"iso":  iso,
+			"id":      id,
+			"name":    name,
+			"iso":     iso,
+			"id_uuid": idUUID,
 		}
 		foundIDs[id10x] = true
 	}
@@ -671,9 +673,9 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 		INSERT INTO %s (
 			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating,
 			start_date, end_date,
-			edition_id, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
+			edition_id, edition_country, edition_country_name, edition_country_longitude, edition_country_latitude, edition_country_uuid, edition_city, edition_city_uuid, edition_city_name, edition_city_state_id, edition_state_uuid, edition_city_state, edition_city_state_longitude, edition_city_state_latitude, edition_city_lat, edition_city_long,
 			company_id, company_name, company_domain, company_website, company_country, company_state, company_city, company_city_name,
-			venue_id, venue_name, venue_country, venue_city, venue_city_name, venue_lat, venue_long,
+			venue_id, venue_uuid, venue_name, venue_country, venue_address, venue_city, venue_city_name, venue_lat, venue_long,
 			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
 			edition_type, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
@@ -681,7 +683,7 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 			event_created, edition_created, event_hybrid, isBranded, maturity,
 			event_pricing, tickets, event_logo, event_estimatedVisitors, event_frequency, inboundScore, internationalScore, repeatSentimentChangePercentage, audienceZone,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
-			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, PrimaryEventType, version
+			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, PrimaryEventType, region, version
 		)
 	`, alleventTable)
 	log.Printf("[query] ClickHouse: INSERT INTO %s (event_id, event_uuid, ...) VALUES (batch of %d rows)", alleventTable, len(records))
@@ -704,10 +706,23 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 			record.EndDate,                         // end_date: Date
 			record.EditionID,                       // edition_id: UInt32
 			record.EditionCountry,                  // edition_country: FixedString(2)
+			record.EditionCountryName,              // edition_country_name
+			record.EditionCountryLongitude,         // edition_country_longitude
+			record.EditionCountryLatitude,          // edition_country_latitude
+			record.EditionCountryUUID,              // edition_country_uuid
 			record.EditionCity,                     // edition_city: UInt32
+			record.EditionCityUUID,                 // edition_city_uuid
 			record.EditionCityName,                 // edition_city_name: String
-			record.EditionCityStateID,              // edition_city_state_id: Nullable(UInt32)
+			func() uint32 {
+				if record.EditionCityStateID != nil {
+					return *record.EditionCityStateID
+				}
+				return 0
+			}(), // edition_city_state_id
+			record.EditionStateUUID,                // edition_state_uuid
 			record.EditionCityState,                // edition_city_state: String
+			record.EditionCityStateLongitude,       // edition_city_state_longitude
+			record.EditionCityStateLatitude,        // edition_city_state_latitude
 			record.EditionCityLat,                  // edition_city_lat: Float64
 			record.EditionCityLong,                 // edition_city_long: Float64
 			record.CompanyID,                       // company_id: Nullable(UInt32)
@@ -719,8 +734,10 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 			record.CompanyCity,                     // company_city: Nullable(UInt32)
 			record.CompanyCityName,                 // company_city_name: Nullable(String)
 			record.VenueID,                         // venue_id: Nullable(UInt32)
+			record.VenueUUID,                       // venue_uuid
 			record.VenueName,                       // venue_name: Nullable(String)
 			record.VenueCountry,                    // venue_country: Nullable(FixedString(2))
+			record.VenueAddress,                    // venue_address
 			record.VenueCity,                       // venue_city: Nullable(UInt32)
 			record.VenueCityName,                   // venue_city_name: Nullable(String)
 			record.VenueLat,                        // venue_lat: Nullable(Float64)
@@ -768,6 +785,7 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 			record.EventEconomicImpact,             // event_economic_impact: JSON
 			record.Keywords,                        // keywords: Array(String)
 			record.PrimaryEventType,                // PrimaryEventType: Nullable(UUID)
+			record.Region,                          // region: Array(String)
 			record.Version,                         // version: UInt32
 		)
 		if err != nil {
@@ -904,6 +922,50 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 					}
 				}
 
+				locationTable := shared.GetClickHouseTableName("location_ch", config)
+				isoSet := make(map[string]bool)
+				cityCHIDSet := make(map[uint32]bool)
+				stateCHIDSet := make(map[uint32]bool)
+				for _, holiday := range chunkedHolidays {
+					clusterName := shared.SafeConvertToString(holiday["cluster_name"])
+					startDateStr := shared.SafeConvertToString(holiday["start_date"])
+					endDateStr := shared.SafeConvertToString(holiday["end_date"])
+					holidayKey := fmt.Sprintf("%s-%s-%s", clusterName, startDateStr, endDateStr)
+					holidayLocations := allHolidayLocations[holidayKey]
+					locationInfo := mapHolidayLocations(holidayLocations, locationMap)
+					editionCountry := strings.ToUpper(strings.TrimSpace(shared.SafeConvertToString(holiday["country"])))
+					if editionCountry == "" {
+						editionCountry = locationInfo.CountryISO
+					}
+					if len(editionCountry) > 2 {
+						editionCountry = editionCountry[:2]
+					}
+					if editionCountry != "" && editionCountry != "NAN" {
+						isoSet[editionCountry] = true
+					}
+					if locationInfo.CityID > 0 {
+						cityCHIDSet[locationInfo.CityID] = true
+					}
+					if locationInfo.StateID != nil && *locationInfo.StateID > 0 {
+						stateCHIDSet[*locationInfo.StateID] = true
+					}
+				}
+				var isoList []string
+				for iso := range isoSet {
+					isoList = append(isoList, iso)
+				}
+				var cityCHIDs, stateCHIDs []uint32
+				for id := range cityCHIDSet {
+					cityCHIDs = append(cityCHIDs, id)
+				}
+				for id := range stateCHIDSet {
+					stateCHIDs = append(stateCHIDs, id)
+				}
+				countryByISO := fetchLocationCHCountriesByISOs(clickhouseConn, locationTable, isoList)
+				cityUUIDByID := fetchLocationCHUUIDsForType(clickhouseConn, locationTable, "CITY", cityCHIDs)
+				stateUUIDByID := fetchLocationCHUUIDsForType(clickhouseConn, locationTable, "STATE", stateCHIDs)
+				stateGeoByID := fetchLocationCHStateGeoByIDs(clickhouseConn, locationTable, stateCHIDs)
+
 				chunkCache := make(map[string]HolidayCacheEntry)
 				var alleventRecords []alleventRecord
 
@@ -967,6 +1029,64 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 					if editionCountry == "" {
 						editionCountry = locationInfo.CountryISO
 					}
+					ecISO := editionCountry
+					if len(ecISO) > 2 {
+						ecISO = ecISO[:2]
+					}
+					var editionCountryUUID *string
+					var editionCountryLongitude, editionCountryLatitude *float64
+					editionCountryName := ""
+					region := []string{}
+					if ecISO != "" && ecISO != "NAN" {
+						if crow, ok := countryByISO[ecISO]; ok {
+							editionCountryName = crow.Name
+							editionCountryLongitude = crow.Longitude
+							editionCountryLatitude = crow.Latitude
+							if crow.UUID != "" {
+								u := crow.UUID
+								editionCountryUUID = &u
+							}
+							if len(crow.Regions) > 0 {
+								region = crow.Regions
+							}
+						}
+					}
+					var editionCityUUID *string
+					if locationInfo.CityID > 0 {
+						if u, ok := cityUUIDByID[locationInfo.CityID]; ok && u != "" {
+							editionCityUUID = &u
+						} else {
+							for _, hl := range holidayLocations {
+								if strings.ToLower(shared.SafeConvertToString(hl["entity_type"])) != "city" {
+									continue
+								}
+								eid := shared.SafeConvertToString(hl["entity_id"])
+								if eid == "" {
+									continue
+								}
+								src := fmt.Sprintf("city-%s", eid)
+								if loc, ok := locationMap[src]; ok {
+									if uu, ok := loc["id_uuid"].(*string); ok && uu != nil && strings.TrimSpace(*uu) != "" {
+										s := strings.TrimSpace(*uu)
+										editionCityUUID = &s
+									}
+									break
+								}
+							}
+						}
+					}
+					var editionStateUUID *string
+					var editionCityStateLongitude, editionCityStateLatitude *float64
+					if locationInfo.StateID != nil && *locationInfo.StateID > 0 {
+						if u, ok := stateUUIDByID[*locationInfo.StateID]; ok && u != "" {
+							editionStateUUID = &u
+						}
+						if g, ok := stateGeoByID[*locationInfo.StateID]; ok {
+							editionCityStateLongitude = g.Longitude
+							editionCityStateLatitude = g.Latitude
+						}
+					}
+
 					record := alleventRecord{
 						EventID:                         currentEventID,
 						EventUUID:                       eventUUID,
@@ -979,10 +1099,18 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 						EndDate:                         endDateStr,
 						EditionID:                       currentEventID,
 						EditionCountry:                  editionCountry,
+						EditionCountryName:              editionCountryName,
+						EditionCountryLongitude:         editionCountryLongitude,
+						EditionCountryLatitude:          editionCountryLatitude,
+						EditionCountryUUID:              editionCountryUUID,
 						EditionCity:                     locationInfo.CityID,
+						EditionCityUUID:                 editionCityUUID,
 						EditionCityName:                 locationInfo.CityName,
 						EditionCityStateID:              locationInfo.StateID,
+						EditionStateUUID:                editionStateUUID,
 						EditionCityState:                locationInfo.StateName,
+						EditionCityStateLongitude:       editionCityStateLongitude,
+						EditionCityStateLatitude:        editionCityStateLatitude,
 						EditionCityLat:                  0.0,
 						EditionCityLong:                 0.0,
 						CompanyID:                       nil,
@@ -994,8 +1122,10 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 						CompanyCity:                     nil,
 						CompanyCityName:                 nil,
 						VenueID:                         nil,
+						VenueUUID:                       nil,
 						VenueName:                       nil,
 						VenueCountry:                    nil,
+						VenueAddress:                    nil,
 						VenueCity:                       nil,
 						VenueCityName:                   nil,
 						VenueLat:                        nil,
@@ -1043,6 +1173,7 @@ func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.
 						EventEconomicImpact:             "{}",
 						Keywords:                        keywords,
 						PrimaryEventType:                &primaryEventTypeUUID,
+						Region:                          region,
 						Version:                         1,
 					}
 

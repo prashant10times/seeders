@@ -372,6 +372,21 @@ func buildIncrementalRecords(
 		}
 	}
 
+	locationEnrich := buildAlleventLocationEnrichment(
+		clickhouseConn,
+		locationTableName,
+		allevents,
+		eventDataLookup,
+		companyLookup,
+		venueLookup,
+		cityLookup,
+		cityIDLookup,
+		stateIDLookup,
+		stateUUIDLookup,
+		cityStateUUIDLookup,
+		venueIDLookup,
+	)
+
 	var records []map[string]interface{}
 	for _, pair := range pairs {
 		eventID := int64(pair.EventID)
@@ -443,6 +458,7 @@ func buildIncrementalRecords(
 			editionCityLocationChID, companyCityLocationChID, venueCityLocationChID,
 			editionCityStateLocationChID, venueLocationChID,
 			predictedDatesMap[eventID],
+			locationEnrich,
 		)
 
 		record["last_updated_at"] = time.Now().Format("2006-01-02 15:04:05")

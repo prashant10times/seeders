@@ -574,13 +574,21 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		EndDate:            decodeBase64Date(record["end_date"]),
 		EditionID:          shared.SafeConvertToUInt32(record["edition_id"]),
 		EditionUUID:        shared.GenerateUUIDFromString(fmt.Sprintf("%d-%s", shared.SafeConvertToUInt32(record["edition_id"]), decodeBase64DateTime(record["edition_created"]))),
-		EditionCountry:     strings.ToUpper(decodeStr("edition_country")),
-		EditionCity:        shared.SafeConvertToUInt32(record["edition_city"]),
-		EditionCityName:    decodeStr("edition_city_name"),
-		EditionCityStateID: shared.SafeConvertToNullableUInt32(record["edition_city_state_id"]),
-		EditionCityState:   decodeStr("edition_city_state"),
-		EditionCityLat:     shared.SafeConvertToFloat64(record["edition_city_lat"]),
-		EditionCityLong:    shared.SafeConvertToFloat64(record["edition_city_long"]),
+		EditionCountry:            strings.ToUpper(decodeStr("edition_country")),
+		EditionCountryName:        decodeStr("edition_country_name"),
+		EditionCountryLongitude:   shared.SafeConvertToNullableFloat64(record["edition_country_longitude"]),
+		EditionCountryLatitude:    shared.SafeConvertToNullableFloat64(record["edition_country_latitude"]),
+		EditionCountryUUID:        decodeNullableStr("edition_country_uuid"),
+		EditionCity:               shared.SafeConvertToUInt32(record["edition_city"]),
+		EditionCityUUID:           decodeNullableStr("edition_city_uuid"),
+		EditionCityName:           decodeStr("edition_city_name"),
+		EditionCityStateID:        shared.SafeConvertToNullableUInt32(record["edition_city_state_id"]),
+		EditionStateUUID:          decodeNullableStr("edition_state_uuid"),
+		EditionCityState:          decodeStr("edition_city_state"),
+		EditionCityStateLongitude: shared.SafeConvertToNullableFloat64(record["edition_city_state_longitude"]),
+		EditionCityStateLatitude:  shared.SafeConvertToNullableFloat64(record["edition_city_state_latitude"]),
+		EditionCityLat:            shared.SafeConvertToFloat64(record["edition_city_lat"]),
+		EditionCityLong:           shared.SafeConvertToFloat64(record["edition_city_long"]),
 		CompanyID:          shared.SafeConvertToNullableUInt32(record["company_id"]),
 		CompanyUUID:        decodeNullableStr("company_uuid"),
 		CompanyPublished:   shared.SafeConvertToNullableInt8(record["companyPublished"]),
@@ -594,8 +602,10 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		CompanyCityName:    decodeNullableStr("company_city_name"),
 		CompanyAddress:     decodeNullableStr("company_address"),
 		VenueID:            shared.SafeConvertToNullableUInt32(record["venue_id"]),
+		VenueUUID:          decodeNullableStr("venue_uuid"),
 		VenueName:          decodeNullableStr("venue_name"),
 		VenueCountry:       shared.ToUpperNullableString(decodeNullableStr("venue_country")),
+		VenueAddress:       decodeNullableStr("venue_address"),
 		VenueCity:          shared.SafeConvertToNullableUInt32(record["venue_city"]),
 		VenueCityName:      decodeNullableStr("venue_city_name"),
 		VenueLat:           shared.SafeConvertToNullableFloat64(record["venue_lat"]),
@@ -701,7 +711,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 		YoYGrowth:                    shared.SafeConvertToNullableUInt32(record["yoyGrowth"]),
 		FutureExpectedStartDate:      decodeBase64NullableDate(record["futureExpexctedStartDate"]),
 		FutureExpectedEndDate:        decodeBase64NullableDate(record["futureExpexctedEndDate"]),
-		CurrentEditionId:            decodeNullableStr("currentEditionId"),
+		CurrentEditionId:             decodeNullableStr("currentEditionId"),
 		CurrentEditionStartDate:      decodeBase64NullableDate(record["currentEditionStartDate"]),
 		CurrentEditionEndDate:        decodeBase64NullableDate(record["currentEditionEndDate"]),
 		PredictionScore: func() *int32 {
@@ -750,6 +760,7 @@ func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 			return &scoreInt32
 		}(),
 		PrimaryEventType: decodeNullableStr("PrimaryEventType"),
+		Region:           shared.ConvertToStringArray(record["region"]),
 		VerifiedOn:       decodeBase64NullableDate(record["verifiedOn"]),
 		LastUpdatedAt:    decodeBase64DateTime(record["last_updated_at"]),
 		Version:          shared.SafeConvertToUInt32(record["version"]),
@@ -769,13 +780,21 @@ type alleventRecord struct {
 	EndDate                         string   `ch:"end_date"`            // Date NOT NULL
 	EditionID                       uint32   `ch:"edition_id"`
 	EditionUUID                     string   `ch:"edition_uuid"`          // UUID generated from edition_id + edition_created
-	EditionCountry                  string   `ch:"edition_country"`       // LowCardinality(FixedString(2)) NOT NULL
-	EditionCity                     uint32   `ch:"edition_city"`          // UInt32 NOT NULL
-	EditionCityName                 string   `ch:"edition_city_name"`     // String NOT NULL
-	EditionCityStateID              *uint32  `ch:"edition_city_state_id"` // Nullable(UInt32)
-	EditionCityState                string   `ch:"edition_city_state"`    // LowCardinality(String) NOT NULL
-	EditionCityLat                  float64  `ch:"edition_city_lat"`      // Float64 NOT NULL
-	EditionCityLong                 float64  `ch:"edition_city_long"`     // Float64 NOT NULL
+	EditionCountry                  string   `ch:"edition_country"` // LowCardinality(FixedString(2)) NOT NULL
+	EditionCountryName              string   `ch:"edition_country_name"`
+	EditionCountryLongitude         *float64 `ch:"edition_country_longitude"`
+	EditionCountryLatitude          *float64 `ch:"edition_country_latitude"`
+	EditionCountryUUID              *string  `ch:"edition_country_uuid"`
+	EditionCity                     uint32   `ch:"edition_city"`
+	EditionCityUUID                 *string  `ch:"edition_city_uuid"`
+	EditionCityName                 string   `ch:"edition_city_name"`
+	EditionCityStateID              *uint32  `ch:"edition_city_state_id"`
+	EditionStateUUID                *string  `ch:"edition_state_uuid"`
+	EditionCityState                string   `ch:"edition_city_state"`
+	EditionCityStateLongitude       *float64 `ch:"edition_city_state_longitude"`
+	EditionCityStateLatitude        *float64 `ch:"edition_city_state_latitude"`
+	EditionCityLat                  float64  `ch:"edition_city_lat"`
+	EditionCityLong                 float64  `ch:"edition_city_long"`
 	CompanyID                       *uint32  `ch:"company_id"`
 	CompanyUUID                     *string  `ch:"company_uuid"` // Nullable(UUID)
 	CompanyPublished                *int8    `ch:"companyPublished"`
@@ -789,8 +808,10 @@ type alleventRecord struct {
 	CompanyCityName                 *string  `ch:"company_city_name"`
 	CompanyAddress                  *string  `ch:"company_address"` // Nullable(String)
 	VenueID                         *uint32  `ch:"venue_id"`
+	VenueUUID                       *string  `ch:"venue_uuid"` // Nullable(UUID)
 	VenueName                       *string  `ch:"venue_name"`
 	VenueCountry                    *string  `ch:"venue_country"`
+	VenueAddress                    *string  `ch:"venue_address"` // Nullable(String)
 	VenueCity                       *uint32  `ch:"venue_city"`
 	VenueCityName                   *string  `ch:"venue_city_name"`
 	VenueLat                        *float64 `ch:"venue_lat"`
@@ -856,11 +877,12 @@ type alleventRecord struct {
 	YoYGrowth                       *uint32  `ch:"yoyGrowth"`                            // Nullable(UInt32)
 	FutureExpectedStartDate         *string  `ch:"futureExpexctedStartDate"`             // Nullable(Date)
 	FutureExpectedEndDate           *string  `ch:"futureExpexctedEndDate"`               // Nullable(Date)
-	CurrentEditionId                *string  `ch:"currentEditionId"`                    // Nullable(UUID) - only for past editions
+	CurrentEditionId                *string  `ch:"currentEditionId"`                     // Nullable(UUID) - only for past editions
 	CurrentEditionStartDate         *string  `ch:"currentEditionStartDate"`              // Nullable(Date) - only for past editions
 	CurrentEditionEndDate           *string  `ch:"currentEditionEndDate"`                // Nullable(Date) - only for past editions
 	PredictionScore                 *int32   `ch:"predictionScore"`                      // Nullable(Int32) DEFAULT 0
 	PrimaryEventType                *string  `ch:"PrimaryEventType"`                     // Nullable(UUID)
+	Region                          []string `ch:"region"`                               // Array(String)
 	VerifiedOn                      *string  `ch:"verifiedOn"`                           // Nullable(Date)
 	LastUpdatedAt                   string   `ch:"last_updated_at"`                      // DateTime NOT NULL
 	Version                         uint32   `ch:"version"`
@@ -2638,6 +2660,24 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 					log.Printf("allevent chunk %d: Retrieved timing data for %d event-edition combinations in %v", chunkNum, len(timingDataMap), timingTime)
 				}
 
+				var locationEnrich *alleventLocationEnrichment
+				if len(allevents) > 0 {
+					locationEnrich = buildAlleventLocationEnrichment(
+						clickhouseConn,
+						locationTableName,
+						allevents,
+						eventDataLookup,
+						companyLookup,
+						venueLookup,
+						cityLookup,
+						cityIDLookup,
+						stateIDLookup,
+						stateUUIDLookup,
+						cityStateUUIDLookup,
+						venueIDLookup,
+					)
+				}
+
 				// Sort eventIDs by end_date to maintain insertion order
 				sortedEventIDs := make([]int64, 0, len(allevents))
 				for eventID := range allevents {
@@ -2810,6 +2850,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 								editionCityStateLocationChID,
 								venueLocationChID,
 								predictedDatesMap[eventID],
+								locationEnrich,
 							)
 
 							clickHouseRecords = append(clickHouseRecords, record)
@@ -2984,7 +3025,6 @@ func determinealleventType(editionStartDate, currentEditionStartDate interface{}
 		return &editionType
 	}
 }
-
 
 func DetermineEditionType(editionStartDate, currentEditionStartDate interface{}, editionID, currentEditionID int64) *string {
 	return determinealleventType(editionStartDate, currentEditionStartDate, editionID, currentEditionID)
@@ -3542,6 +3582,488 @@ func buildVenueIDLookupFromId10x(clickhouseConn driver.Conn, locationTableName s
 
 	log.Printf("Built venue ID lookup from id_10x: %d venues mapped from %s", len(lookup), locationTableName)
 	return lookup, nil
+}
+
+const locationCHDetailBatchSize = 400
+
+// locationCHCountryRow is denormalized country data from location_ch.
+type locationCHCountryRow struct {
+	UUID      string
+	Name      string
+	Regions   []string
+	Longitude *float64
+	Latitude  *float64
+}
+
+// locationCHStateGeoRow is state centroid from location_ch.
+type locationCHStateGeoRow struct {
+	Longitude *float64
+	Latitude  *float64
+}
+
+// locationCHVenueRow is denormalized venue data from location_ch.
+type locationCHVenueRow struct {
+	UUID    string
+	Address *string
+}
+
+// alleventLocationEnrichment holds batched location_ch lookups for allevent denormalized columns.
+type alleventLocationEnrichment struct {
+	CountryByISO  map[string]locationCHCountryRow
+	CityUUIDByID  map[uint32]string
+	StateUUIDByID map[uint32]string
+	StateGeoByID  map[uint32]locationCHStateGeoRow
+	VenueByID     map[uint32]locationCHVenueRow
+}
+
+func fetchLocationCHCountriesByISOs(clickhouseConn driver.Conn, locationTableName string, isos []string) map[string]locationCHCountryRow {
+	out := make(map[string]locationCHCountryRow)
+	if len(isos) == 0 {
+		return out
+	}
+	seen := make(map[string]bool)
+	var quoted []string
+	for _, iso := range isos {
+		s := strings.TrimSpace(strings.ToUpper(iso))
+		if len(s) > 2 {
+			s = s[:2]
+		}
+		if s == "" || s == "NAN" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		quoted = append(quoted, fmt.Sprintf("'%s'", strings.ReplaceAll(s, "'", "''")))
+	}
+	if len(quoted) == 0 {
+		return out
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	query := fmt.Sprintf(`
+		SELECT
+			iso,
+			argMax(toString(id_uuid), last_updated_at) AS id_uuid,
+			argMax(toString(name), last_updated_at) AS cname,
+			argMax(regions, last_updated_at) AS regions,
+			argMax(longitude, last_updated_at) AS country_lon,
+			argMax(latitude, last_updated_at) AS country_lat
+		FROM %s
+		WHERE location_type = 'COUNTRY'
+		  AND iso IN (%s)
+		GROUP BY iso
+	`, locationTableName, strings.Join(quoted, ","))
+
+	rows, err := clickhouseConn.Query(ctx, query)
+	if err != nil {
+		log.Printf("WARNING: fetchLocationCHCountriesByISOs failed: %v", err)
+		return out
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var iso string
+		var idUUID, cname *string
+		var regions []string
+		var countryLon, countryLat *float64
+		if err := rows.Scan(&iso, &idUUID, &cname, &regions, &countryLon, &countryLat); err != nil {
+			log.Printf("WARNING: scan country row: %v", err)
+			continue
+		}
+		isoKey := strings.TrimSpace(strings.ToUpper(iso))
+		if len(isoKey) > 2 {
+			isoKey = isoKey[:2]
+		}
+		row := locationCHCountryRow{}
+		if idUUID != nil {
+			row.UUID = strings.TrimSpace(*idUUID)
+		}
+		if cname != nil {
+			row.Name = strings.TrimSpace(*cname)
+		}
+		if len(regions) > 0 {
+			row.Regions = regions
+		}
+		if countryLon != nil {
+			v := *countryLon
+			row.Longitude = &v
+		}
+		if countryLat != nil {
+			v := *countryLat
+			row.Latitude = &v
+		}
+		out[isoKey] = row
+	}
+	return out
+}
+
+func fetchLocationCHStateGeoByIDs(clickhouseConn driver.Conn, locationTableName string, ids []uint32) map[uint32]locationCHStateGeoRow {
+	out := make(map[uint32]locationCHStateGeoRow)
+	if len(ids) == 0 {
+		return out
+	}
+	seen := make(map[uint32]bool)
+	var uniq []uint32
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+	for i := 0; i < len(uniq); i += locationCHDetailBatchSize {
+		end := i + locationCHDetailBatchSize
+		if end > len(uniq) {
+			end = len(uniq)
+		}
+		batch := uniq[i:end]
+		var idList []string
+		for _, id := range batch {
+			idList = append(idList, fmt.Sprintf("%d", id))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		query := fmt.Sprintf(`
+			SELECT
+				id,
+				argMax(longitude, last_updated_at) AS state_lon,
+				argMax(latitude, last_updated_at) AS state_lat
+			FROM %s
+			WHERE location_type = 'STATE'
+			  AND id IN (%s)
+			GROUP BY id
+		`, locationTableName, strings.Join(idList, ","))
+
+		rows, err := clickhouseConn.Query(ctx, query)
+		if err != nil {
+			cancel()
+			log.Printf("WARNING: fetchLocationCHStateGeoByIDs failed: %v", err)
+			continue
+		}
+		for rows.Next() {
+			var id uint32
+			var stateLon, stateLat *float64
+			if err := rows.Scan(&id, &stateLon, &stateLat); err != nil {
+				continue
+			}
+			g := locationCHStateGeoRow{}
+			if stateLon != nil {
+				v := *stateLon
+				g.Longitude = &v
+			}
+			if stateLat != nil {
+				v := *stateLat
+				g.Latitude = &v
+			}
+			out[id] = g
+		}
+		rows.Close()
+		cancel()
+	}
+	return out
+}
+
+func fetchLocationCHUUIDsForType(clickhouseConn driver.Conn, locationTableName, locationType string, ids []uint32) map[uint32]string {
+	out := make(map[uint32]string)
+	if len(ids) == 0 {
+		return out
+	}
+	seen := make(map[uint32]bool)
+	var uniq []uint32
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+	for i := 0; i < len(uniq); i += locationCHDetailBatchSize {
+		end := i + locationCHDetailBatchSize
+		if end > len(uniq) {
+			end = len(uniq)
+		}
+		batch := uniq[i:end]
+		var idList []string
+		for _, id := range batch {
+			idList = append(idList, fmt.Sprintf("%d", id))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		query := fmt.Sprintf(`
+			SELECT id, argMax(toString(id_uuid), last_updated_at) AS id_uuid
+			FROM %s
+			WHERE location_type = '%s'
+			  AND id IN (%s)
+			GROUP BY id
+		`, locationTableName, strings.ReplaceAll(locationType, "'", ""), strings.Join(idList, ","))
+
+		rows, err := clickhouseConn.Query(ctx, query)
+		if err != nil {
+			cancel()
+			log.Printf("WARNING: fetchLocationCHUUIDsForType %s failed: %v", locationType, err)
+			continue
+		}
+		for rows.Next() {
+			var id uint32
+			var idUUID *string
+			if err := rows.Scan(&id, &idUUID); err != nil {
+				continue
+			}
+			if idUUID != nil && strings.TrimSpace(*idUUID) != "" {
+				out[id] = strings.TrimSpace(*idUUID)
+			}
+		}
+		rows.Close()
+		cancel()
+	}
+	return out
+}
+
+func fetchLocationCHVenueDetails(clickhouseConn driver.Conn, locationTableName string, ids []uint32) map[uint32]locationCHVenueRow {
+	out := make(map[uint32]locationCHVenueRow)
+	if len(ids) == 0 {
+		return out
+	}
+	seen := make(map[uint32]bool)
+	var uniq []uint32
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+	for i := 0; i < len(uniq); i += locationCHDetailBatchSize {
+		end := i + locationCHDetailBatchSize
+		if end > len(uniq) {
+			end = len(uniq)
+		}
+		batch := uniq[i:end]
+		var idList []string
+		for _, id := range batch {
+			idList = append(idList, fmt.Sprintf("%d", id))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		query := fmt.Sprintf(`
+			SELECT
+				id,
+				argMax(toString(id_uuid), last_updated_at) AS id_uuid,
+				argMax(address, last_updated_at) AS address
+			FROM %s
+			WHERE location_type = 'VENUE'
+			  AND id IN (%s)
+			GROUP BY id
+		`, locationTableName, strings.Join(idList, ","))
+
+		rows, err := clickhouseConn.Query(ctx, query)
+		if err != nil {
+			cancel()
+			log.Printf("WARNING: fetchLocationCHVenueDetails failed: %v", err)
+			continue
+		}
+		for rows.Next() {
+			var id uint32
+			var idUUID *string
+			var address *string
+			if err := rows.Scan(&id, &idUUID, &address); err != nil {
+				continue
+			}
+			v := locationCHVenueRow{}
+			if idUUID != nil {
+				v.UUID = strings.TrimSpace(*idUUID)
+			}
+			if address != nil && strings.TrimSpace(*address) != "" {
+				a := strings.TrimSpace(*address)
+				v.Address = &a
+			}
+			out[id] = v
+		}
+		rows.Close()
+		cancel()
+	}
+	return out
+}
+
+func buildAlleventLocationEnrichment(
+	clickhouseConn driver.Conn,
+	locationTableName string,
+	allevents map[int64][]map[string]interface{},
+	eventDataLookup map[int64]map[string]interface{},
+	companyLookup map[int64]map[string]interface{},
+	venueLookup map[int64]map[string]interface{},
+	cityLookup map[int64]map[string]interface{},
+	cityIDLookup map[string]uint32,
+	stateIDLookup map[string]uint32,
+	stateUUIDLookup map[string]uint32,
+	cityStateUUIDLookup map[string]string,
+	venueIDLookup map[string]uint32,
+) *alleventLocationEnrichment {
+	isoSet := make(map[string]bool)
+	cityIDs := make(map[uint32]bool)
+	stateIDs := make(map[uint32]bool)
+	venueIDs := make(map[uint32]bool)
+
+	for eventID, editions := range allevents {
+		eventData := eventDataLookup[eventID]
+		editionCountryISO := ""
+		if eventData != nil {
+			editionCountryISO = strings.ToUpper(strings.TrimSpace(shared.ConvertToString(eventData["country"])))
+		}
+		if editionCountryISO != "" && editionCountryISO != "NAN" {
+			k := editionCountryISO
+			if len(k) > 2 {
+				k = k[:2]
+			}
+			isoSet[k] = true
+		}
+
+		for _, edition := range editions {
+			_, venue, city, companyCity, venueCity := resolveRelatedDataForEdition(
+				edition, companyLookup, venueLookup, cityLookup,
+			)
+			ec, _, _, es, vv := computeAllLocationIDs(
+				city, companyCity, venue, venueCity,
+				editionCountryISO,
+				cityIDLookup, stateIDLookup, stateUUIDLookup, cityStateUUIDLookup, venueIDLookup,
+			)
+			if ec != nil {
+				cityIDs[*ec] = true
+			}
+			if es != nil {
+				stateIDs[*es] = true
+			}
+			if vv != nil {
+				venueIDs[*vv] = true
+			}
+		}
+	}
+
+	var isos []string
+	for iso := range isoSet {
+		isos = append(isos, iso)
+	}
+	var cids, sids, vids []uint32
+	for id := range cityIDs {
+		cids = append(cids, id)
+	}
+	for id := range stateIDs {
+		sids = append(sids, id)
+	}
+	for id := range venueIDs {
+		vids = append(vids, id)
+	}
+
+	enrich := &alleventLocationEnrichment{
+		CountryByISO:  fetchLocationCHCountriesByISOs(clickhouseConn, locationTableName, isos),
+		CityUUIDByID:  fetchLocationCHUUIDsForType(clickhouseConn, locationTableName, "CITY", cids),
+		StateUUIDByID: fetchLocationCHUUIDsForType(clickhouseConn, locationTableName, "STATE", sids),
+		StateGeoByID:  fetchLocationCHStateGeoByIDs(clickhouseConn, locationTableName, sids),
+		VenueByID:     fetchLocationCHVenueDetails(clickhouseConn, locationTableName, vids),
+	}
+	return enrich
+}
+
+func applyAlleventLocationEnrichmentToRecord(
+	record map[string]interface{},
+	enrich *alleventLocationEnrichment,
+	editionCountryISO string,
+	editionCityLocationChID *uint32,
+	editionCityStateLocationChID *uint32,
+	venueLocationChID *uint32,
+) {
+	if enrich == nil {
+		record["edition_country_name"] = ""
+		record["edition_country_uuid"] = nil
+		record["edition_country_longitude"] = nil
+		record["edition_country_latitude"] = nil
+		record["region"] = []string{}
+		record["edition_city_uuid"] = nil
+		record["edition_state_uuid"] = nil
+		record["edition_city_state_longitude"] = nil
+		record["edition_city_state_latitude"] = nil
+		record["venue_uuid"] = nil
+		record["venue_address"] = nil
+		return
+	}
+
+	iso := strings.TrimSpace(strings.ToUpper(editionCountryISO))
+	if len(iso) > 2 {
+		iso = iso[:2]
+	}
+	if iso != "" && iso != "NAN" {
+		if row, ok := enrich.CountryByISO[iso]; ok {
+			record["edition_country_name"] = row.Name
+			if row.UUID != "" {
+				record["edition_country_uuid"] = row.UUID
+			} else {
+				record["edition_country_uuid"] = nil
+			}
+			record["edition_country_longitude"] = row.Longitude
+			record["edition_country_latitude"] = row.Latitude
+			if len(row.Regions) > 0 {
+				record["region"] = row.Regions
+			} else {
+				record["region"] = []string{}
+			}
+		} else {
+			record["edition_country_name"] = ""
+			record["edition_country_uuid"] = nil
+			record["edition_country_longitude"] = nil
+			record["edition_country_latitude"] = nil
+			record["region"] = []string{}
+		}
+	} else {
+		record["edition_country_name"] = ""
+		record["edition_country_uuid"] = nil
+		record["edition_country_longitude"] = nil
+		record["edition_country_latitude"] = nil
+		record["region"] = []string{}
+	}
+
+	if editionCityLocationChID != nil {
+		if u, ok := enrich.CityUUIDByID[*editionCityLocationChID]; ok && u != "" {
+			record["edition_city_uuid"] = u
+		} else {
+			record["edition_city_uuid"] = nil
+		}
+	} else {
+		record["edition_city_uuid"] = nil
+	}
+
+	if editionCityStateLocationChID != nil {
+		if u, ok := enrich.StateUUIDByID[*editionCityStateLocationChID]; ok && u != "" {
+			record["edition_state_uuid"] = u
+		} else {
+			record["edition_state_uuid"] = nil
+		}
+		if g, ok := enrich.StateGeoByID[*editionCityStateLocationChID]; ok {
+			record["edition_city_state_longitude"] = g.Longitude
+			record["edition_city_state_latitude"] = g.Latitude
+		} else {
+			record["edition_city_state_longitude"] = nil
+			record["edition_city_state_latitude"] = nil
+		}
+	} else {
+		record["edition_state_uuid"] = nil
+		record["edition_city_state_longitude"] = nil
+		record["edition_city_state_latitude"] = nil
+	}
+
+	if venueLocationChID != nil {
+		if v, ok := enrich.VenueByID[*venueLocationChID]; ok {
+			if v.UUID != "" {
+				record["venue_uuid"] = v.UUID
+			} else {
+				record["venue_uuid"] = nil
+			}
+			record["venue_address"] = v.Address
+		} else {
+			record["venue_uuid"] = nil
+			record["venue_address"] = nil
+		}
+	} else {
+		record["venue_uuid"] = nil
+		record["venue_address"] = nil
+	}
 }
 
 func fetchalleventCategoryNamesForEvents(db *sql.DB, eventIDs []int64) map[int64][]string {
@@ -4421,9 +4943,9 @@ func insertalleventDataChunkWithTable(clickhouseConn driver.Conn, records []map[
 		INSERT INTO %s (
 			event_id, event_uuid, event_name, event_abbr_name, event_description, event_punchline, event_avgRating, 10timesEventPageUrl,
 			start_date, end_date,
-			edition_id, edition_uuid, edition_country, edition_city, edition_city_name, edition_city_state_id, edition_city_state, edition_city_lat, edition_city_long,
+			edition_id, edition_uuid, edition_country, edition_country_name, edition_country_longitude, edition_country_latitude, edition_country_uuid, edition_city, edition_city_uuid, edition_city_name, edition_city_state_id, edition_state_uuid, edition_city_state, edition_city_state_longitude, edition_city_state_latitude, edition_city_lat, edition_city_long,
 			company_id, company_uuid, companyPublished, company_name, company_domain, company_website, companyLogoUrl, company_country, company_state, company_city, company_city_name, company_address,
-			venue_id, venue_name, venue_country, venue_city, venue_city_name, venue_lat, venue_long,
+			venue_id, venue_uuid, venue_name, venue_country, venue_address, venue_city, venue_city_name, venue_lat, venue_long,
 			published, status, editions_audiance_type, edition_functionality, edition_website, edition_domain,
 			edition_type, event_editions, event_format, event_followers, edition_followers, event_exhibitor, edition_exhibitor,
 			exhibitors_upper_bound, exhibitors_lower_bound, exhibitors_mean,
@@ -4432,7 +4954,7 @@ func insertalleventDataChunkWithTable(clickhouseConn driver.Conn, records []map[
 			event_pricing, tickets, timings, event_logo, event_estimatedVisitors, estimatedVisitorsMean, estimatedSize, event_frequency, impactScore, inboundScore, internationalScore, repeatSentimentChangePercentage, repeatSentiment, reputationChangePercentage, audienceZone,
 			inboundPercentage, inboundAttendance, internationalPercentage, internationalAttendance,
 			event_economic_FoodAndBevarage, event_economic_Transportation, event_economic_Accomodation, event_economic_Utilities, event_economic_flights, event_economic_value,
-			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, futureExpexctedStartDate, futureExpexctedEndDate, currentEditionId, currentEditionStartDate, currentEditionEndDate, predictionScore, PrimaryEventType, verifiedOn, last_updated_at, version
+			event_economic_dayWiseEconomicImpact, event_economic_breakdown, event_economic_impact, keywords, event_score, yoyGrowth, futureExpexctedStartDate, futureExpexctedEndDate, currentEditionId, currentEditionStartDate, currentEditionEndDate, predictionScore, PrimaryEventType, region, verifiedOn, last_updated_at, version
 		)
 	`, tableName)
 
@@ -4491,13 +5013,26 @@ func insertalleventDataChunkWithTable(clickhouseConn driver.Conn, records []map[
 			alleventRecord.EndDate,                         // end_date: Date NOT NULL
 			alleventRecord.EditionID,                       // edition_id: UInt32 NOT NULL
 			alleventRecord.EditionUUID,                     // edition_uuid: UUID NOT NULL
-			alleventRecord.EditionCountry,                  // edition_country: LowCardinality(FixedString(2)) NOT NULL
-			alleventRecord.EditionCity,                     // edition_city: UInt32 NOT NULL
-			alleventRecord.EditionCityName,                 // edition_city_name: String NOT NULL
-			alleventRecord.EditionCityStateID,              // edition_city_state_id: Nullable(UInt32)
-			alleventRecord.EditionCityState,                // edition_city_state: LowCardinality(String) NOT NULL
-			alleventRecord.EditionCityLat,                  // edition_city_lat: Float64 NOT NULL
-			alleventRecord.EditionCityLong,                 // edition_city_long: Float64 NOT NULL
+			alleventRecord.EditionCountry,                  // edition_country
+			alleventRecord.EditionCountryName,              // edition_country_name
+			alleventRecord.EditionCountryLongitude,         // edition_country_longitude
+			alleventRecord.EditionCountryLatitude,          // edition_country_latitude
+			alleventRecord.EditionCountryUUID,              // edition_country_uuid
+			alleventRecord.EditionCity,                     // edition_city
+			alleventRecord.EditionCityUUID,                 // edition_city_uuid
+			alleventRecord.EditionCityName,                 // edition_city_name
+			func() uint32 {
+				if alleventRecord.EditionCityStateID != nil {
+					return *alleventRecord.EditionCityStateID
+				}
+				return 0
+			}(), // edition_city_state_id UInt32
+			alleventRecord.EditionStateUUID,                // edition_state_uuid
+			alleventRecord.EditionCityState,                // edition_city_state
+			alleventRecord.EditionCityStateLongitude,       // edition_city_state_longitude
+			alleventRecord.EditionCityStateLatitude,        // edition_city_state_latitude
+			alleventRecord.EditionCityLat,                  // edition_city_lat
+			alleventRecord.EditionCityLong,                 // edition_city_long
 			alleventRecord.CompanyID,                       // company_id: Nullable(UInt32)
 			alleventRecord.CompanyUUID,                     // company_uuid: Nullable(UUID)
 			alleventRecord.CompanyPublished,                // companyPublished: Nullable(Int8)
@@ -4511,8 +5046,10 @@ func insertalleventDataChunkWithTable(clickhouseConn driver.Conn, records []map[
 			alleventRecord.CompanyCityName,                 // company_city_name: Nullable(String)
 			alleventRecord.CompanyAddress,                  // company_address: Nullable(String)
 			alleventRecord.VenueID,                         // venue_id: Nullable(UInt32)
+			alleventRecord.VenueUUID,                       // venue_uuid: Nullable(UUID)
 			alleventRecord.VenueName,                       // venue_name: Nullable(String)
 			alleventRecord.VenueCountry,                    // venue_country: LowCardinality(Nullable(FixedString(2)))
+			alleventRecord.VenueAddress,                    // venue_address: Nullable(String)
 			alleventRecord.VenueCity,                       // venue_city: Nullable(UInt32)
 			alleventRecord.VenueCityName,                   // venue_city_name: Nullable(String)
 			alleventRecord.VenueLat,                        // venue_lat: Nullable(Float64)
@@ -4583,6 +5120,7 @@ func insertalleventDataChunkWithTable(clickhouseConn driver.Conn, records []map[
 			alleventRecord.CurrentEditionEndDate,           // currentEditionEndDate: Nullable(Date)
 			alleventRecord.PredictionScore,                 // predictionScore: Nullable(Int32) DEFAULT 0
 			alleventRecord.PrimaryEventType,                // PrimaryEventType: Nullable(UUID)
+			alleventRecord.Region,                          // region: Array(String)
 			alleventRecord.VerifiedOn,                      // verifiedOn: Nullable(Date)
 			alleventRecord.LastUpdatedAt,                   // last_updated_at: DateTime NOT NULL
 			alleventRecord.Version,                         // version: UInt32 NOT NULL DEFAULT 1
@@ -5617,6 +6155,21 @@ func rebuildRecordsForFailedBatch(
 
 	log.Printf("Grouped %d editions into %d events", len(filteredEditionData), len(allevents))
 
+	locationEnrich := buildAlleventLocationEnrichment(
+		clickhouseConn,
+		locationTableName,
+		allevents,
+		eventDataLookup,
+		companyLookup,
+		venueLookup,
+		cityLookup,
+		cityIDLookup,
+		stateIDLookup,
+		stateUUIDLookup,
+		cityStateUUIDLookup,
+		venueIDLookup,
+	)
+
 	records := make([]map[string]interface{}, 0, len(pairs))
 
 	for _, pair := range pairs {
@@ -5738,6 +6291,7 @@ func rebuildRecordsForFailedBatch(
 			editionCityStateLocationChID,
 			venueLocationChID,
 			predictedDatesMap[actualEventID],
+			locationEnrich,
 		)
 
 		records = append(records, record)
@@ -5936,6 +6490,7 @@ func buildAlleventRecord(
 	editionCityStateLocationChID *uint32,
 	venueLocationChID *uint32,
 	dbPredictedDates map[string]interface{},
+	enrich *alleventLocationEnrichment,
 ) map[string]interface{} {
 	record := map[string]interface{}{
 		"event_id":          eventData["id"],
@@ -6080,28 +6635,28 @@ func buildAlleventRecord(
 			}
 			return "A"
 		}(),
-		"editions_audiance_type": eventData["event_audience"],
-		"edition_functionality":  eventData["functionality"],
-		"edition_website":        decodeBase64NullableStringIfNeeded(eventData["event_website"]),
-		"edition_domain":         editionDomain,
-		"event_followers":        esInfoMap["event_following"],
-		"edition_followers":      esInfoMap["event_following"],
-		"event_exhibitor":        esInfoMap["event_exhibitors"],
-		"edition_exhibitor":      esInfoMap["edition_exhibitor"],
-		"exhibitors_upper_bound":    nil,
-		"exhibitors_lower_bound":    nil,
-		"exhibitors_mean":           nil,
-		"currentEditionId":          nil,
-		"currentEditionStartDate":   nil,
-		"currentEditionEndDate":     nil,
-		"event_sponsor":          esInfoMap["event_totalSponsor"],
-		"edition_sponsor":        esInfoMap["edition_sponsor"],
-		"event_speaker":          esInfoMap["event_speakers"],
-		"edition_speaker":        esInfoMap["edition_speaker"],
-		"event_created":          decodeBase64DateTime(eventData["created"]),
-		"event_updated":          decodeBase64DateTime(eventData["modified"]),
-		"edition_created":        decodeBase64DateTime(edition["edition_created"]),
-		"event_hybrid":           esInfoMap["event_hybrid"],
+		"editions_audiance_type":  eventData["event_audience"],
+		"edition_functionality":   eventData["functionality"],
+		"edition_website":         decodeBase64NullableStringIfNeeded(eventData["event_website"]),
+		"edition_domain":          editionDomain,
+		"event_followers":         esInfoMap["event_following"],
+		"edition_followers":       esInfoMap["event_following"],
+		"event_exhibitor":         esInfoMap["event_exhibitors"],
+		"edition_exhibitor":       esInfoMap["edition_exhibitor"],
+		"exhibitors_upper_bound":  nil,
+		"exhibitors_lower_bound":  nil,
+		"exhibitors_mean":         nil,
+		"currentEditionId":        nil,
+		"currentEditionStartDate": nil,
+		"currentEditionEndDate":   nil,
+		"event_sponsor":           esInfoMap["event_totalSponsor"],
+		"edition_sponsor":         esInfoMap["edition_sponsor"],
+		"event_speaker":           esInfoMap["event_speakers"],
+		"edition_speaker":         esInfoMap["edition_speaker"],
+		"event_created":           decodeBase64DateTime(eventData["created"]),
+		"event_updated":           decodeBase64DateTime(eventData["modified"]),
+		"edition_created":         decodeBase64DateTime(edition["edition_created"]),
+		"event_hybrid":            esInfoMap["event_hybrid"],
 		"isBranded": func() *uint32 {
 			if eventData["brand_id"] != nil {
 				val := uint32(1)
@@ -6903,6 +7458,8 @@ func buildAlleventRecord(
 	record["inboundAttendance"] = inboundAttVal
 	record["internationalPercentage"] = internationalPerVal
 	record["internationalAttendance"] = internationalAttVal
+
+	applyAlleventLocationEnrichmentToRecord(record, enrich, editionCountryISO, editionCityLocationChID, editionCityStateLocationChID, venueLocationChID)
 
 	return record
 }
