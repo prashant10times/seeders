@@ -34,6 +34,7 @@ type EventDesignationChRecord struct {
 	SourceVisitorID uint32  `ch:"sourceVisitorId"`
 	DesignationID   uint32  `ch:"designation_id"`
 	DesignationUUID *string `ch:"designation_uuid"`
+	DepartmentID    *uint32 `ch:"department_id"`
 	DisplayName     string  `ch:"display_name"`
 	Department      string  `ch:"department"`
 	Role            string  `ch:"role"`
@@ -44,6 +45,7 @@ type EventDesignationChRecord struct {
 
 type DesignationData struct {
 	ID          uint32
+	DepartmentID *uint32
 	DisplayName string
 	Department  string
 	Role        string
@@ -67,7 +69,7 @@ func FetchDesignationDisplayNameData(db *sql.DB, designationIDs []uint32) (map[u
 	}
 
 	query := fmt.Sprintf(`
-		SELECT id, display_name, department, role, created
+		SELECT id, department_id, display_name, department, role, created
 		FROM designation
 		WHERE id IN (%s)
 	`, strings.Join(idStrings, ","))
@@ -83,14 +85,21 @@ func FetchDesignationDisplayNameData(db *sql.DB, designationIDs []uint32) (map[u
 	designationMap := make(map[uint32]DesignationData)
 	for rows.Next() {
 		var id uint32
+		var departmentID sql.NullInt64
 		var displayName, department, role sql.NullString
 		var created interface{}
-		if err := rows.Scan(&id, &displayName, &department, &role, &created); err != nil {
+		if err := rows.Scan(&id, &departmentID, &displayName, &department, &role, &created); err != nil {
 			log.Printf("Error scanning designation row: %v", err)
 			continue
 		}
+		var departmentIDPtr *uint32
+		if departmentID.Valid {
+			deptID := uint32(departmentID.Int64)
+			departmentIDPtr = &deptID
+		}
 		designationMap[id] = DesignationData{
-			ID:          id,
+			ID:           id,
+			DepartmentID: departmentIDPtr,
 			DisplayName: displayName.String,
 			Department:  department.String,
 			Role:        role.String,
@@ -226,6 +235,7 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 				record.DesignationID = designationIDUint
 
 				if designationInfo, exists := designationData[designationIDUint]; exists {
+					record.DepartmentID = designationInfo.DepartmentID
 					record.DisplayName = designationInfo.DisplayName
 					record.Department = designationInfo.Department
 					record.Role = designationInfo.Role
@@ -312,7 +322,7 @@ func insertEventDesignationChBatchIntoTable(clickhouseConn driver.Conn, records 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	query := fmt.Sprintf(`
-		INSERT INTO %s (event_id, edition_id, sourceVisitorId, designation_id, designation_uuid, display_name, department, role, total_visitors, version, last_updated_at)
+		INSERT INTO %s (event_id, edition_id, sourceVisitorId, designation_id, designation_uuid, department_id, display_name, department, role, total_visitors, version, last_updated_at)
 	`, tableName)
 	batch, err := clickhouseConn.PrepareBatch(ctx, query)
 	if err != nil {
@@ -320,7 +330,7 @@ func insertEventDesignationChBatchIntoTable(clickhouseConn driver.Conn, records 
 	}
 	for _, record := range records {
 		if err := batch.Append(
-			record.EventID, record.EditionID, record.SourceVisitorID, record.DesignationID, record.DesignationUUID,
+			record.EventID, record.EditionID, record.SourceVisitorID, record.DesignationID, record.DesignationUUID, record.DepartmentID,
 			record.DisplayName, record.Department, record.Role, record.TotalVisitors,
 			record.Version, record.LastUpdatedAt,
 		); err != nil {
@@ -408,7 +418,7 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 
 	batch, err := clickhouseConn.PrepareBatch(ctx, `
 		INSERT INTO testing_db.event_designation_temp (
-			event_id, edition_id, sourceVisitorId, designation_id, designation_uuid, display_name, department, role, total_visitors, version, last_updated_at
+			event_id, edition_id, sourceVisitorId, designation_id, designation_uuid, department_id, display_name, department, role, total_visitors, version, last_updated_at
 		)
 	`)
 	if err != nil {
@@ -428,6 +438,7 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 			record.SourceVisitorID, // sourceVisitorId: UInt32
 			record.DesignationID,   // designation_id: UInt32
 			record.DesignationUUID, // designation_uuid: Nullable(UUID)
+			record.DepartmentID,    // department_id: Nullable(UInt32)
 			record.DisplayName,     // display_name: LowCardinality(String)
 			record.Department,      // department: LowCardinality(String)
 			record.Role,            // role: LowCardinality(String)
