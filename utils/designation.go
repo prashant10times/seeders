@@ -55,6 +55,7 @@ type EventEditionPair struct {
 	EditionID uint32
 }
 
+// Load designation metadata (display_name/department/role/created) for a set of designation IDs to enrich visitor aggregates.
 func FetchDesignationDisplayNameData(db *sql.DB, designationIDs []uint32) (map[uint32]DesignationData, error) {
 	if len(designationIDs) == 0 {
 		return make(map[uint32]DesignationData), nil
@@ -116,6 +117,7 @@ func FetchDesignationDisplayNameData(db *sql.DB, designationIDs []uint32) (map[u
 	return designationMap, nil
 }
 
+// Aggregate raw event_visitor rows by (event, edition, designation_id), then enrich with designation table fields and stable UUIDs.
 func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *sql.DB) []EventDesignationChRecord {
 	aggregatedData := make(map[string]map[string]interface{})
 
@@ -250,7 +252,7 @@ func ConvertToEventDesignationChRecords(mysqlData []map[string]interface{}, db *
 	return records
 }
 
-// InsertEventDesignationChDataIntoTable inserts records into the specified table. Used for incremental sync.
+// InsertEventDesignationChDataIntoTable inserts records into the specified ClickHouse table (used by incremental sync).
 func InsertEventDesignationChDataIntoTable(clickhouseConn driver.Conn, records []EventDesignationChRecord, tableName string, numWorkers int) error {
 	if len(records) == 0 {
 		return nil
@@ -295,6 +297,7 @@ func InsertEventDesignationChDataIntoTable(clickhouseConn driver.Conn, records [
 	return nil
 }
 
+// Batch insert primitive for incremental mode (used for event_designation_ch).
 func insertEventDesignationChBatchIntoTable(clickhouseConn driver.Conn, records []EventDesignationChRecord, tableName string) error {
 	if len(records) == 0 {
 		return nil
@@ -330,6 +333,7 @@ func insertEventDesignationChBatchIntoTable(clickhouseConn driver.Conn, records 
 	return nil
 }
 
+// Insert helper for full refresh: insert into temp table, optionally splitting the slice across workers.
 func InsertEventDesignationChDataIntoClickHouse(clickhouseConn driver.Conn, eventDesignationRecords []EventDesignationChRecord, numWorkers int) error {
 	if len(eventDesignationRecords) == 0 {
 		return nil
@@ -383,6 +387,7 @@ func InsertEventDesignationChDataIntoClickHouse(clickhouseConn driver.Conn, even
 	return nil
 }
 
+// Insert helper for full refresh: prepare a ClickHouse batch and send it to `event_designation_temp`.
 func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventDesignationRecords []EventDesignationChRecord) error {
 	if len(eventDesignationRecords) == 0 {
 		return nil
@@ -449,6 +454,7 @@ func InsertEventDesignationChDataSingleWorker(clickhouseConn driver.Conn, eventD
 
 const defaultDesignationBatchSize = 5000
 
+// Full refresh entrypoint: chunk the `event_visitor` ID range (filtered to rows with designation_id) and backfill `event_designation_*`.
 func ProcessEventDesignationOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
 	log.Println("=== Starting event_designation_ch ONLY Processing ===")
 
@@ -503,6 +509,7 @@ func ProcessEventDesignationOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, co
 	log.Println("=== Event Designation Processing Complete ===")
 }
 
+// For one ID-range chunk: fetch event_visitor rows in batches, aggregate+enrich them, and insert into ClickHouse with retries.
 func ProcessEventDesignationChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID, endID int, chunkNum int) {
 	log.Printf("Processing event_designation_ch chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
@@ -583,6 +590,7 @@ func ProcessEventDesignationChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, c
 }
 
 // Used for incremental sync.
+// BuildEventDesignationChRecordsForEventEditionPairs rebuilds the current designation aggregates for a scoped set of (event, edition).
 func BuildEventDesignationChRecordsForEventEditionPairs(db *sql.DB, pairs []EventEditionPair) ([]EventDesignationChRecord, error) {
 	rawData, err := buildEventDesignationChDataForEventEditionPairs(db, pairs)
 	if err != nil {
@@ -591,6 +599,7 @@ func BuildEventDesignationChRecordsForEventEditionPairs(db *sql.DB, pairs []Even
 	return ConvertToEventDesignationChRecords(rawData, db), nil
 }
 
+// Fetch raw event_visitor rows (joined to designation for created) for a list of (event, edition) pairs.
 func buildEventDesignationChDataForEventEditionPairs(db *sql.DB, pairs []EventEditionPair) ([]map[string]interface{}, error) {
 	if len(pairs) == 0 {
 		return nil, nil
@@ -640,6 +649,7 @@ func buildEventDesignationChDataForEventEditionPairs(db *sql.DB, pairs []EventEd
 	return results, rows.Err()
 }
 
+// BuildEventDesignationMigrationData fetches one MySQL batch from event_visitor (joined to designation) for an ID range.
 func BuildEventDesignationMigrationData(mysqlDB *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT

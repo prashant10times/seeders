@@ -21,6 +21,7 @@ type eventEditionDesignationTuple struct {
 	DesignationID uint32
 }
 
+// Incremental sync: for each (event, edition) touched since yesterday, rebuild current aggregates from MySQL then reconcile CH via delete+reinsert.
 func ProcessIncrementalEventDesignation(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) error {
 	startTime := time.Now()
 	log.Println("=== Starting Incremental Event Designation Sync ===")
@@ -131,6 +132,7 @@ func ProcessIncrementalEventDesignation(mysqlDB *sql.DB, clickhouseConn driver.C
 	return nil
 }
 
+// Scope incremental designation sync to (event, edition) pairs with any modified/new visitor rows having a designation_id.
 func fetchIncrementalScopeEventDesignation(db *sql.DB) ([]EventEditionPair, error) {
 	query := `
 		SELECT DISTINCT ev.event AS event_id, ev.edition AS edition_id
@@ -160,6 +162,7 @@ func fetchIncrementalScopeEventDesignation(db *sql.DB) ([]EventEditionPair, erro
 }
 
 // fetchEventDesignationChRowsForEventEditionPairs returns map["eventID|editionID"][]eventEditionDesignationTuple.
+// We read only the primary-key tuple needed to compute deletions without pulling full rows.
 func fetchEventDesignationChRowsForEventEditionPairs(conn driver.Conn, pairs []EventEditionPair, tableName string) (map[string][]eventEditionDesignationTuple, error) {
 	if len(pairs) == 0 {
 		return make(map[string][]eventEditionDesignationTuple), nil
@@ -200,6 +203,7 @@ func fetchEventDesignationChRowsForEventEditionPairs(conn driver.Conn, pairs []E
 	return result, rows.Err()
 }
 
+// Compute deletions as (CH - MySQL) for each scoped pair; inserts are simply the rebuilt MySQL records for the scope.
 func computeEventDesignationDiff(mysqlRecords []EventDesignationChRecord, chRowsByPair map[string][]eventEditionDesignationTuple) (toDelete []eventEditionDesignationTuple, toInsert []EventDesignationChRecord) {
 	mysqlSetByPair := make(map[string]map[string]bool) // "eventID|editionID" -> set of "event|edition|designation"
 	for _, rec := range mysqlRecords {
@@ -225,6 +229,7 @@ func computeEventDesignationDiff(mysqlRecords []EventDesignationChRecord, chRows
 	return toDelete, toInsert
 }
 
+// Apply deletes in ClickHouse using ALTER TABLE ... DELETE in small batches, waiting synchronously for mutations.
 func deleteEventDesignationRowsByPrimaryKey(conn driver.Conn, tuples []eventEditionDesignationTuple, tableName string) error {
 	if len(tuples) == 0 {
 		return nil

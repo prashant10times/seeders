@@ -22,6 +22,7 @@ type speakerTuple struct {
 	SpeakerSourceID uint32
 }
 
+// Incremental sync: take rows modified since yesterday, delete those keys in CH, then reinsert the current published rows.
 func ProcessIncrementalEventSpeaker(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) error {
 	startTime := time.Now()
 	log.Println("=== Starting Incremental Event Speaker Sync ===")
@@ -129,6 +130,7 @@ func ProcessIncrementalEventSpeaker(mysqlDB *sql.DB, clickhouseConn driver.Conn,
 	return nil
 }
 
+// Extract just the ClickHouse primary key fields for the modified set (used as the delete scope).
 func extractSpeakerTuplesFromBatchData(batchData []map[string]interface{}) []speakerTuple {
 	var tuples []speakerTuple
 	for _, row := range batchData {
@@ -143,6 +145,7 @@ func extractSpeakerTuplesFromBatchData(batchData []map[string]interface{}) []spe
 	return tuples
 }
 
+// Apply deletes in ClickHouse using ALTER TABLE ... DELETE in small batches, waiting synchronously for mutations.
 func deleteEventSpeakerRowsByPrimaryKey(conn driver.Conn, tuples []speakerTuple, tableName string) error {
 	if len(tuples) == 0 {
 		return nil

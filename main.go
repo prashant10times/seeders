@@ -24,6 +24,7 @@ import (
 const errorLogFile = "seeding_errors.log"
 const seederLogFile = "seeder.log"
 
+// Initialize unified logging: write to stdout and a fresh `seeder.log` for the current run.
 func initSeederLogFile() error {
 	f, err := os.OpenFile(seederLogFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
@@ -34,6 +35,7 @@ func initSeederLogFile() error {
 	return nil
 }
 
+// Append one script/task failure to `seeding_errors.log` so non-critical failures are visible after long runs.
 func logErrorToFile(scriptName string, err error) {
 	file, fileErr := os.OpenFile(errorLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if fileErr != nil {
@@ -50,6 +52,7 @@ func logErrorToFile(scriptName string, err error) {
 	log.Printf("ERROR logged to %s: %s - %v", errorLogFile, scriptName, err)
 }
 
+// Full refresh orchestrator (`-all`): seed every table into *_temp, validate, optimize, and atomically swap temp -> prod tables.
 func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elasticsearch.Client, config shared.Config, notifyTo []string, jobName string) {
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("=== STARTING ALL SEEDING SCRIPTS IN ORDER ===")
@@ -598,6 +601,7 @@ func runAllScripts(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elastics
 	}
 }
 
+// Incremental orchestrator (`-task=all-incremental`): run the incremental sync tasks sequentially (cron-friendly).
 func runAllIncrementalSequential(mysqlDB *sql.DB, clickhouseDB driver.Conn, esClient *elasticsearch.Client, config shared.Config, notifyTo []string, jobName string) {
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	log.Println("=== STARTING ALL INCREMENTAL SYNC (sequential) ===")
@@ -674,6 +678,7 @@ func runAllIncrementalSequential(mysqlDB *sql.DB, clickhouseDB driver.Conn, esCl
 	log.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 }
 
+// Program entrypoint: parse flags, load env/config, create DB clients, then dispatch into exactly one run mode.
 func main() {
 	var numChunks int
 	var batchSize int
@@ -724,11 +729,13 @@ func main() {
 	var allScripts bool
 	var daywiseOnly bool
 
+	// Global throughput knobs shared by most seeders.
 	flag.IntVar(&numChunks, "chunks", 5, "Number of chunks to process data in (default: 5)")
 	flag.IntVar(&batchSize, "batch", 5000, "MySQL batch size for fetching data (default: 5000)")
 	flag.IntVar(&numWorkers, "workers", 5, "Number of parallel workers (default: 5)")
 	flag.IntVar(&clickHouseWorkers, "clickhouse-workers", 3, "Number of parallel ClickHouse insertion workers (default: 3)")
 
+	// One-off/full-refresh table modes (seed into temp then swap, unless noted otherwise).
 	flag.BoolVar(&companyOnly, "company", false, "Process only company data into allCompany_ch (default: false)")
 	flag.BoolVar(&companyCategoryOnly, "company-category", false, "Process only company_category data from company_interests into company_category_ch (default: false)")
 	flag.BoolVar(&companyClassificationOnly, "company-classification", false, "Process only company_classification data from company_classification_mapping into company_classification_ch (default: false)")
@@ -755,6 +762,8 @@ func main() {
 	flag.BoolVar(&eventDesignationOnly, "eventdesignation", false, "Process only event designation data (default: false)")
 	flag.BoolVar(&visitorSpreadOnly, "visitorspread", false, "Process only visitor spread data (default: false)")
 	flag.BoolVar(&allEventOnly, "allevent", false, "Process only all event data (default: false)")
+
+	// Incremental sync modes (write directly to production CH tables; used by `increment.sh` via `-task`).
 	flag.BoolVar(&incrementalAlleventOnly, "allevent-incremental", false, "Incremental sync for allevent (only changed since yesterday) (default: false)")
 	flag.BoolVar(&incrementalEventTypeOnly, "eventtype-incremental", false, "Incremental sync for event_type_ch (only changed since yesterday) (default: false)")
 	flag.BoolVar(&incrementalCategoryOnly, "eventcategory-incremental", false, "Incremental sync for event_category_ch (only changed since yesterday) (default: false)")
@@ -768,9 +777,13 @@ func main() {
 	flag.BoolVar(&holidaysOnly, "holidays", false, "Process holidays into allevent_ch (automatically handles event types) (default: false)")
 	flag.BoolVar(&alertsOnly, "alerts", false, "Process alerts from GDAC API into alerts_ch (default: false)")
 	flag.BoolVar(&incrementalAlertsOnly, "alerts-incremental", false, "Incremental alert sync: fetch yesterday only and upsert into alerts_ch, location_polygons_ch, event_type_ch (default: false)")
+
+	// Meta modes.
 	flag.BoolVar(&allScripts, "all", false, "Run all seeding scripts in order: location, eventtype, allevent, category, product, ranking, designation, holidays, alerts, exhibitor, speaker, sponsor, visitors, visitorspread (default: false)")
 	flag.BoolVar(&daywiseOnly, "daywise", false, "Process only day-wise economic impact data from estimate table into event_daywiseEconomicImpact_ch (standalone, never runs with -all)")
 	flag.BoolVar(&showHelp, "help", false, "Show help information")
+
+	// Cron-friendly incremental selector: this maps to the corresponding `*-incremental` boolean flags below.
 	task := flag.String("task", "", "Incremental task only (cron-friendly). E.g. -task=allevent-incremental")
 	flag.Parse()
 

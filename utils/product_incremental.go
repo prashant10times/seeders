@@ -137,6 +137,7 @@ func ProcessIncrementalEventProduct(mysqlDB *sql.DB, clickhouseConn driver.Conn,
 	return nil
 }
 
+// Scope incremental product sync to event IDs with any modified/new rows in `event_products` since yesterday.
 func fetchIncrementalScopeEventProduct(db *sql.DB) ([]int64, error) {
 	query := `
 		SELECT DISTINCT event
@@ -164,6 +165,7 @@ func fetchIncrementalScopeEventProduct(db *sql.DB) ([]int64, error) {
 }
 
 // fetchEventProductChRowsForEventIDs returns map[eventID][]eventProductTuple - all (event, edition, id) in ClickHouse for the given events.
+// We read only the primary-key tuple needed to compute deletions without pulling full rows.
 func fetchEventProductChRowsForEventIDs(conn driver.Conn, eventIDs []int64, tableName string) (map[int64][]eventProductTuple, error) {
 	if len(eventIDs) == 0 {
 		return make(map[int64][]eventProductTuple), nil
@@ -205,6 +207,7 @@ func fetchEventProductChRowsForEventIDs(conn driver.Conn, eventIDs []int64, tabl
 }
 
 // computeEventProductDiff: toDelete = CH_set - MySQL_set per event, toInsert = all MySQL records.
+// Insert-side uses full current MySQL state for scoped events (simpler than row-level diffs).
 func computeEventProductDiff(mysqlRecords []EventProductChRecord, chRowsByEvent map[int64][]eventProductTuple) (toDelete []eventProductTuple, toInsert []EventProductChRecord) {
 	mysqlSetByEvent := make(map[int64]map[string]bool) // eventID -> set of "event|edition|id"
 	for _, rec := range mysqlRecords {
@@ -230,6 +233,7 @@ func computeEventProductDiff(mysqlRecords []EventProductChRecord, chRowsByEvent 
 	return toDelete, toInsert
 }
 
+// Apply deletes in ClickHouse using ALTER TABLE ... DELETE in small batches, waiting synchronously for mutations.
 func deleteEventProductRowsByPrimaryKey(conn driver.Conn, tuples []eventProductTuple, tableName string) error {
 	if len(tuples) == 0 {
 		return nil

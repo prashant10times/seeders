@@ -51,6 +51,7 @@ type EventProductChRecord struct {
 	LastUpdatedAt         string `ch:"last_updated_at"`         // DateTime
 }
 
+// Full refresh entrypoint: chunk the `event_products` ID range and backfill `event_product_*` into ClickHouse.
 func ProcessEventProductChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
 	log.Println("=== Starting event_product_ch ONLY Processing ===")
 
@@ -104,6 +105,7 @@ func ProcessEventProductChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, conf
 	log.Println("EventProductCh processing completed!")
 }
 
+// For one ID-range chunk: fetch MySQL rows in batches, generate product UUID + slug, and insert into ClickHouse with retries.
 func processEventProductChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing event_product_ch chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
@@ -202,6 +204,7 @@ func processEventProductChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, con
 	results <- fmt.Sprintf("EventProductCh chunk %d: Completed successfully", chunkNum)
 }
 
+// Fetch one MySQL batch by joining `event_products` with `product` to get product fields used in ClickHouse.
 func buildEventProductChMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
@@ -389,6 +392,7 @@ func InsertEventProductChDataIntoTable(clickhouseConn driver.Conn, records []Eve
 	return nil
 }
 
+// Insert helper for incremental mode: prepare a batch INSERT into the caller-provided table and append all records.
 func insertEventProductChBatchIntoTable(clickhouseConn driver.Conn, records []EventProductChRecord, tableName string) error {
 	if len(records) == 0 {
 		return nil
@@ -437,6 +441,7 @@ func insertEventProductChBatchIntoTable(clickhouseConn driver.Conn, records []Ev
 	return nil
 }
 
+// Insert helper for full refresh: insert into temp table, optionally splitting the slice across workers.
 func insertEventProductChDataIntoClickHouse(clickhouseConn driver.Conn, eventProductChRecords []EventProductChRecord, numWorkers int) error {
 	if len(eventProductChRecords) == 0 {
 		return nil
@@ -485,6 +490,7 @@ func insertEventProductChDataIntoClickHouse(clickhouseConn driver.Conn, eventPro
 	return nil
 }
 
+// Insert helper for full refresh: prepare a ClickHouse batch and send it to `event_product_temp`.
 func insertEventProductChDataSingleWorker(clickhouseConn driver.Conn, eventProductChRecords []EventProductChRecord) error {
 	if len(eventProductChRecords) == 0 {
 		return nil

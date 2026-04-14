@@ -36,6 +36,7 @@ type SpeakerRecord struct {
 	SpeakerSourceID uint32  `ch:"speakerSourceId"`
 }
 
+// Normalize a single value into a padded string (" <val> ") so ClickHouse gets consistent partition key values.
 func formatSingleValueWithSpaces(value interface{}) *string {
 	s := shared.SafeConvertToString(value)
 	trimmed := strings.TrimSpace(s)
@@ -46,7 +47,7 @@ func formatSingleValueWithSpaces(value interface{}) *string {
 	return &result
 }
 
-
+// Like formatSingleValueWithSpaces, but returns a non-nullable placeholder when the input is empty.
 func formatSingleValueWithSpacesOrEmpty(value interface{}) string {
 	if p := formatSingleValueWithSpaces(value); p != nil {
 		return *p
@@ -54,6 +55,7 @@ func formatSingleValueWithSpacesOrEmpty(value interface{}) string {
 	return "  "
 }
 
+// Map raw speaker rows into ClickHouse records by joining in user/company/city lookups and normalizing strings.
 func BuildSpeakerRecordsFromBatchData(
 	batchData []map[string]interface{},
 	userData map[int64]map[string]interface{},
@@ -180,6 +182,7 @@ func BuildSpeakerRecordsFromBatchData(
 	return speakerRecords
 }
 
+// Full refresh entrypoint: chunk the `event_speaker` ID range and backfill `event_speaker_*` into ClickHouse.
 func ProcessSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
 	log.Println("=== Starting SPEAKERS ONLY Processing ===")
 
@@ -233,8 +236,7 @@ func ProcessSpeakersOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sha
 	log.Println("Speakers processing completed!")
 }
 
-
-
+// For one ID-range chunk: fetch MySQL rows in batches, enrich via user/company/city lookups, then insert into ClickHouse.
 func processSpeakersChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing speakers chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
@@ -538,6 +540,7 @@ func BuildEventSpeakerChRecordsFromBatchData(db *sql.DB, batchData []map[string]
 	return BuildSpeakerRecordsFromBatchData(batchData, userData, companyLookup, cityLookup, now), nil
 }
 
+// Fetch one MySQL batch of speaker rows (id range + published filter) to drive full refresh processing.
 func buildSpeakersMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
@@ -587,6 +590,7 @@ func buildSpeakersMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 	return results, nil
 }
 
+// Load user profile fields for speaker user IDs in manageable IN() batches.
 func fetchSpeakersUserData(db *sql.DB, userIDs []int64) map[int64]map[string]interface{} {
 	if len(userIDs) == 0 {
 		return nil
@@ -662,6 +666,7 @@ func fetchSpeakersUserData(db *sql.DB, userIDs []int64) map[int64]map[string]int
 	return allUserData
 }
 
+// Load company names for speaker company IDs in manageable IN() batches.
 func fetchSpeakersCompanyData(db *sql.DB, companyIDs []int64) map[int64]map[string]interface{} {
 	if len(companyIDs) == 0 {
 		return nil
@@ -735,6 +740,7 @@ func fetchSpeakersCompanyData(db *sql.DB, companyIDs []int64) map[int64]map[stri
 	return allCompanyData
 }
 
+// Insert helper for full refresh: insert into temp table, optionally splitting the slice across workers.
 func insertSpeakersDataIntoClickHouse(clickhouseConn driver.Conn, speakerRecords []SpeakerRecord, numWorkers int) error {
 	if len(speakerRecords) == 0 {
 		return nil
@@ -776,6 +782,7 @@ func insertSpeakersDataIntoClickHouse(clickhouseConn driver.Conn, speakerRecords
 	return nil
 }
 
+// Insert helper for full refresh: prepare a ClickHouse batch and send it to `event_speaker_temp`.
 func insertSpeakersDataSingleWorker(clickhouseConn driver.Conn, speakerRecords []SpeakerRecord) error {
 	if len(speakerRecords) == 0 {
 		return nil
@@ -877,6 +884,7 @@ func InsertEventSpeakerChDataIntoTable(clickhouseConn driver.Conn, records []Spe
 	return nil
 }
 
+// Batch insert primitive for incremental mode (used for event_speaker_ch).
 func insertSpeakerChBatchIntoTable(clickhouseConn driver.Conn, records []SpeakerRecord, tableName string) error {
 	if len(records) == 0 {
 		return nil

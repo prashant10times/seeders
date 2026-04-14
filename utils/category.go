@@ -27,6 +27,7 @@ type EventCategoryEventChRecord struct {
 	LastUpdatedAt string `ch:"last_updated_at"` // DateTime
 }
 
+// Full refresh: split the `event_category` ID range into chunks and run chunk workers in parallel to populate ClickHouse.
 func ProcessEventCategoryEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
 	log.Println("=== Starting event_category_ch ONLY Processing ===")
 
@@ -80,6 +81,7 @@ func ProcessEventCategoryEventChOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn
 	log.Println("EventCategoryEventCh processing completed!")
 }
 
+// For one ID-range chunk: read MySQL rows in batches, generate stable UUIDs, and insert into ClickHouse (with retries).
 func processEventCategoryEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing event_category_ch chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
@@ -177,6 +179,7 @@ func processEventCategoryEventChChunk(mysqlDB *sql.DB, clickhouseConn driver.Con
 	results <- fmt.Sprintf("EventCategoryEventCh chunk %d: Completed successfully", chunkNum)
 }
 
+// Fetch one MySQL batch for an ID range by joining `event_category` with `category` to get the fields needed in ClickHouse.
 func buildEventCategoryEventChMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
@@ -233,6 +236,7 @@ func buildEventCategoryEventChMigrationData(db *sql.DB, startID, endID int, batc
 	return results, nil
 }
 
+// Insert a slice of records into ClickHouse, optionally splitting the slice across workers for throughput.
 func insertEventCategoryEventChDataIntoClickHouse(clickhouseConn driver.Conn, eventCategoryEventChRecords []EventCategoryEventChRecord, numWorkers int) error {
 	if len(eventCategoryEventChRecords) == 0 {
 		return nil
@@ -281,6 +285,7 @@ func insertEventCategoryEventChDataIntoClickHouse(clickhouseConn driver.Conn, ev
 	return nil
 }
 
+// Insert records using a single prepared ClickHouse batch into the temp table used by full refresh.
 func insertEventCategoryEventChDataSingleWorker(clickhouseConn driver.Conn, eventCategoryEventChRecords []EventCategoryEventChRecord) error {
 	if len(eventCategoryEventChRecords) == 0 {
 		return nil
@@ -468,6 +473,7 @@ func InsertEventCategoryEventChDataIntoTable(clickhouseConn driver.Conn, records
 	return nil
 }
 
+// For incremental mode: insert already-built records into the provided ClickHouse table name using a single batch.
 func insertEventCategoryEventChBatchIntoTable(clickhouseConn driver.Conn, records []EventCategoryEventChRecord, tableName string) error {
 	if len(records) == 0 {
 		return nil

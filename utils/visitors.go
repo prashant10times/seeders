@@ -31,6 +31,7 @@ type VisitorRecord struct {
 	Published       int8    `ch:"published"`
 }
 
+// Full refresh entrypoint: chunk the `event_visitor` ID range and backfill `event_visitors_*` into ClickHouse.
 func ProcessVisitorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
 	log.Println("=== Starting VISITORS ONLY Processing ===")
 
@@ -87,6 +88,7 @@ func ProcessVisitorsOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sha
 }
 
 // processes a single chunk of visitors data
+// For one ID-range chunk: create a dedicated ClickHouse connection, fetch MySQL rows in batches, enrich via user/city, then insert.
 func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config shared.Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing visitors chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
@@ -230,6 +232,7 @@ func processVisitorsChunk(mysqlDB *sql.DB, _ driver.Conn, config shared.Config, 
 	results <- fmt.Sprintf("Visitors chunk %d: Completed successfully", chunkNum)
 }
 
+// Fetch one MySQL batch of visitor rows (id range + published filter) with basic visitor fields.
 func buildVisitorsMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	if startID < 0 || endID < 0 || startID > endID {
 		return nil, fmt.Errorf("invalid ID range: startID=%d, endID=%d", startID, endID)
@@ -313,6 +316,7 @@ func buildVisitorsMigrationData(db *sql.DB, startID, endID int, batchSize int) (
 	return results, nil
 }
 
+// Load user name + company fields for visitor user IDs in manageable IN() batches.
 func fetchVisitorsUserData(db *sql.DB, userIDs []int64) map[int64]map[string]interface{} {
 	if len(userIDs) == 0 {
 		return nil
@@ -388,6 +392,7 @@ func fetchVisitorsUserData(db *sql.DB, userIDs []int64) map[int64]map[string]int
 	return allUserData
 }
 
+// Convert raw MySQL visitor rows into ClickHouse records, using user + city lookups and sane defaults for missing data.
 func buildVisitorRecordsFromBatchData(batchData []map[string]interface{}, userData map[int64]map[string]interface{}, cityLookup map[int64]map[string]interface{}, now string) []VisitorRecord {
 	var visitorRecords []VisitorRecord
 	for _, visitor := range batchData {
@@ -472,6 +477,7 @@ func buildVisitorRecordsFromBatchData(batchData []map[string]interface{}, userDa
 	return visitorRecords
 }
 
+// Insert helper for full refresh: insert into temp table, optionally splitting the slice across workers.
 func insertVisitorsDataIntoClickHouse(clickhouseConn driver.Conn, visitorRecords []VisitorRecord, numWorkers int) error {
 	if len(visitorRecords) == 0 {
 		log.Printf("WARNING: No visitor records provided for insertion")
@@ -555,6 +561,7 @@ func insertVisitorsDataIntoClickHouse(clickhouseConn driver.Conn, visitorRecords
 	return nil
 }
 
+// Insert helper for full refresh: validate records and send a prepared batch to `event_visitors_temp`.
 func insertVisitorsDataSingleWorker(clickhouseConn driver.Conn, visitorRecords []VisitorRecord) error {
 	if len(visitorRecords) == 0 {
 		log.Printf("WARNING: No visitor records to insert")
@@ -829,6 +836,7 @@ func InsertEventVisitorChDataIntoTable(clickhouseConn driver.Conn, records []Vis
 	return nil
 }
 
+// Batch insert primitive for incremental mode (used for event_visitors_ch).
 func insertVisitorChBatchIntoTable(clickhouseConn driver.Conn, records []VisitorRecord, tableName string) error {
 	if len(records) == 0 {
 		return nil

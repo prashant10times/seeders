@@ -12,8 +12,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// ProcessIncrementalAlerts fetches alerts from GDAC API for yesterday only and upserts into
-// alerts_ch, location_polygons_ch, and event_type_ch. No deletion of old data.
+// Incremental sync: fetch GDAC alerts for yesterday only and upsert into production CH tables (no full refresh / no swapping).
 func ProcessIncrementalAlerts(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint string, validCountries []string, config shared.Config) error {
 	startTime := time.Now()
 	log.Println("=== Starting Incremental Alert Sync (yesterday only, upsert) ===")

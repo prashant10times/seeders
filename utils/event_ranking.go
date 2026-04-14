@@ -26,7 +26,7 @@ type EventRankingChRecord struct {
 	LastUpdatedAt string  `ch:"last_updated_at"`
 }
 
-// FetchCategoryNameData fetches category names from category table
+// FetchCategoryNameData loads a small lookup map (category_id -> category_name) for enriching ranking rows.
 func FetchCategoryNameData(db *sql.DB, categoryIDs []uint32) (map[uint32]string, error) {
 	if len(categoryIDs) == 0 {
 		return make(map[uint32]string), nil
@@ -67,7 +67,7 @@ func FetchCategoryNameData(db *sql.DB, categoryIDs []uint32) (map[uint32]string,
 	return categoryMap, nil
 }
 
-// ConvertToEventRankingChRecords converts MySQL data to ClickHouse records
+// ConvertToEventRankingChRecords converts raw MySQL rows into typed ClickHouse records and enriches category_name.
 func ConvertToEventRankingChRecords(mysqlData []map[string]interface{}, db *sql.DB) []EventRankingChRecord {
 	var records []EventRankingChRecord
 	now := time.Now().Format("2006-01-02 15:04:05")
@@ -150,7 +150,7 @@ func ConvertToEventRankingChRecords(mysqlData []map[string]interface{}, db *sql.
 	return records
 }
 
-// InsertEventRankingChDataIntoClickHouse inserts event ranking data into ClickHouse with parallel workers
+// InsertEventRankingChDataIntoClickHouse inserts ranking records into ClickHouse, optionally splitting work across workers.
 func InsertEventRankingChDataIntoClickHouse(clickhouseConn driver.Conn, eventRankingRecords []EventRankingChRecord, numWorkers int) error {
 	if len(eventRankingRecords) == 0 {
 		return nil
@@ -197,7 +197,7 @@ func InsertEventRankingChDataIntoClickHouse(clickhouseConn driver.Conn, eventRan
 	return nil
 }
 
-// InsertEventRankingChDataSingleWorker inserts event ranking data into ClickHouse
+// InsertEventRankingChDataSingleWorker writes a slice of ranking records into the temp table used by full refresh.
 func InsertEventRankingChDataSingleWorker(clickhouseConn driver.Conn, eventRankingRecords []EventRankingChRecord) error {
 	if len(eventRankingRecords) == 0 {
 		return nil
@@ -255,7 +255,7 @@ func InsertEventRankingChDataSingleWorker(clickhouseConn driver.Conn, eventRanki
 	return nil
 }
 
-// ProcessEventRankingOnly processes only event ranking data
+// Full refresh entrypoint: chunk the `event_ranking` ID range and backfill `event_ranking_*` into ClickHouse.
 func ProcessEventRankingOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
 	log.Println("=== Starting event_ranking_ch ONLY Processing ===")
 
@@ -308,7 +308,7 @@ func ProcessEventRankingOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config
 	log.Println("=== Event Ranking Processing Complete ===")
 }
 
-// ProcessEventRankingChunk processes a chunk of event ranking data
+// For one ID-range chunk: fetch MySQL rows in batches, convert/enrich them, and insert into ClickHouse with retries.
 func ProcessEventRankingChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing event_ranking_ch chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
@@ -381,6 +381,7 @@ func ProcessEventRankingChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, confi
 	results <- fmt.Sprintf("EventRanking chunk %d completed successfully", chunkNum)
 }
 
+// BuildEventRankingMigrationData fetches a page of MySQL ranking rows for the given ID range (restricted to current month/year).
 func BuildEventRankingMigrationData(mysqlDB *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	month := time.Now().Month()
 	year := time.Now().Year()

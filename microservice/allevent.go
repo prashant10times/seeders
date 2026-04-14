@@ -188,6 +188,7 @@ var attendanceRangeTag = map[uint32]map[string]string{
 // eventTypeUUIDToID reverse lookup map: UUID -> ID (populated from eventTypeIDs)
 var eventTypeUUIDToID map[string]uint32
 
+// Load a bounded set of eventtype_id -> eventtype_uuid from ClickHouse so allevent seeding can map types consistently.
 func loadEventTypeIDsFromDB(clickhouseConn driver.Conn, config shared.Config) (map[uint32]string, error) {
 	baseTableName := shared.GetClickHouseTableName("event_type_ch", config)
 
@@ -265,6 +266,7 @@ func loadEventTypeIDsFromDB(clickhouseConn driver.Conn, config shared.Config) (m
 	return eventTypeMap, nil
 }
 
+// Decode date-like strings that may be base64-encoded by upstream systems (keeps a safe default when missing).
 func decodeBase64Date(value interface{}) string {
 	str := shared.SafeConvertToString(value)
 	if str == "" {
@@ -281,6 +283,7 @@ func decodeBase64Date(value interface{}) string {
 	return str
 }
 
+// Nullable version of decodeBase64Date (returns nil when input is empty/NULL).
 func decodeBase64NullableDate(value interface{}) *string {
 	if value == nil {
 		return nil
@@ -314,6 +317,7 @@ func decodeBase64NullableDate(value interface{}) *string {
 	return &str
 }
 
+// Parse date strings defensively by using only the YYYY-MM-DD prefix when full timestamps are present.
 func parseDateLenient(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, fmt.Errorf("empty date string")
@@ -327,6 +331,7 @@ func parseDateLenient(s string) (time.Time, error) {
 
 // when the edition start is strictly after today, the ES predicted start must be on or after edition_start + 3 months.
 // When the edition is not upcoming, returns true
+// Helper used during ES predicted-date ingestion to reject obviously-wrong predictions for upcoming editions.
 func esPredPassesUpcomingPlusThree(editionStartDateStr string, esPredStart *string) bool {
 	if editionStartDateStr == "" || esPredStart == nil || strings.TrimSpace(*esPredStart) == "" {
 		return true
@@ -349,6 +354,7 @@ func esPredPassesUpcomingPlusThree(editionStartDateStr string, esPredStart *stri
 	return !predDay.Before(thDay)
 }
 
+// Decode datetime-like strings that may be base64-encoded by upstream systems (keeps a safe default when missing).
 func decodeBase64DateTime(value interface{}) string {
 	str := shared.SafeConvertToString(value)
 	if str == "" {
@@ -365,6 +371,7 @@ func decodeBase64DateTime(value interface{}) string {
 	return str
 }
 
+// Decode a string only when it looks like base64 and decodes to mostly-printable UTF-8.
 func decodeBase64StringIfNeeded(value interface{}) string {
 	str := shared.SafeConvertToString(value)
 	if str == "" {
@@ -405,6 +412,7 @@ func decodeBase64StringIfNeeded(value interface{}) string {
 	return str
 }
 
+// Nullable version of decodeBase64StringIfNeeded (returns nil when input is empty/NULL).
 func decodeBase64NullableStringIfNeeded(value interface{}) *string {
 	if value == nil {
 		return nil
@@ -448,6 +456,7 @@ func decodeBase64NullableStringIfNeeded(value interface{}) *string {
 }
 
 // normalizePricingValue normalizes pricing values: converts to lowercase and replaces "free-paid" with "free_and_paid"
+// Used while building allevent records so event_pricing values are consistent for filtering/search.
 func normalizePricingValue(value interface{}) *string {
 	if value == nil {
 		return nil
@@ -469,6 +478,7 @@ func normalizePricingValue(value interface{}) *string {
 	return &str
 }
 
+// Decode arbitrary field values with base64 support based on the expected ClickHouse field type (string/date/datetime).
 func decodeValueWithBase64Support(value interface{}, fieldType string) interface{} {
 	if value == nil {
 		return nil
@@ -552,7 +562,7 @@ func decodeValueWithBase64Support(value interface{}, fieldType string) interface
 	return value
 }
 
-// converts a map to alleventRecord struct
+// Convert the intermediate map form (built from MySQL + ES + lookups) into the strongly-typed ClickHouse `alleventRecord`.
 func convertToalleventRecord(record map[string]interface{}) alleventRecord {
 	decodeStr := func(key string) string {
 		val := decodeValueWithBase64Support(record[key], "string")
@@ -896,6 +906,7 @@ type dayWiseEconomicImpactRecord struct {
 	LastUpdatedAt string  `ch:"last_updated_at"` // DateTime
 }
 
+// Fetch a MySQL page from the base `event` table for a given ID range (drives the per-chunk seeding loop).
 func buildalleventMigrationData(db *sql.DB, table string, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf("SELECT id, name as event_name, abbr_name, punchline, start_date, end_date, country, published, status, event_audience, functionality, brand_id, created FROM %s WHERE id >= %d AND id <= %d ORDER BY id, end_date LIMIT %d", table, startID, endID, batchSize)
 	rows, err := db.Query(query)
@@ -936,6 +947,7 @@ func buildalleventMigrationData(db *sql.DB, table string, startID, endID int, ba
 	return results, nil
 }
 
+// Extract distinct venue IDs from edition rows so we can prefetch venue details for denormalization.
 func extractalleventVenueIDs(editionData []map[string]interface{}) []int64 {
 	var venueIDs []int64
 	seen := make(map[int64]bool)
@@ -962,6 +974,7 @@ func extractalleventVenueIDs(editionData []map[string]interface{}) []int64 {
 	return venueIDs
 }
 
+// Fetch venue rows in batches to enrich allevent records (avoids building huge IN() clauses).
 func fetchalleventVenueDataParallel(db *sql.DB, venueIDs []int64) []map[string]interface{} {
 	if len(venueIDs) == 0 {
 		return nil
@@ -1002,6 +1015,7 @@ func fetchalleventVenueDataParallel(db *sql.DB, venueIDs []int64) []map[string]i
 	return allVenueData
 }
 
+// Fetch one venue batch (by IDs) and coerce lat/long to float64 for ClickHouse insertion safety.
 func fetchalleventVenueDataForBatch(db *sql.DB, venueIDs []int64) []map[string]interface{} {
 	if len(venueIDs) == 0 {
 		return nil
@@ -1093,6 +1107,7 @@ func fetchalleventVenueDataForBatch(db *sql.DB, venueIDs []int64) []map[string]i
 	return results
 }
 
+// Extract distinct company IDs from edition rows so we can prefetch organizer/company details for denormalization.
 func extractalleventCompanyIDs(editionData []map[string]interface{}) []int64 {
 	var companyIDs []int64
 	seen := make(map[int64]bool)
@@ -1119,6 +1134,7 @@ func extractalleventCompanyIDs(editionData []map[string]interface{}) []int64 {
 	return companyIDs
 }
 
+// Fetch company rows in batches to enrich allevent records (avoids building huge IN() clauses).
 func fetchalleventCompanyDataParallel(db *sql.DB, companyIDs []int64) []map[string]interface{} {
 	if len(companyIDs) == 0 {
 		return nil
@@ -1148,6 +1164,7 @@ func fetchalleventCompanyDataParallel(db *sql.DB, companyIDs []int64) []map[stri
 	return allCompanyData
 }
 
+// Fetch one company batch (by IDs) and return them as maps for lookup joins.
 func fetchalleventCompanyDataForBatch(db *sql.DB, companyIDs []int64) []map[string]interface{} {
 	if len(companyIDs) == 0 {
 		return nil
@@ -1208,6 +1225,7 @@ func fetchalleventCompanyDataForBatch(db *sql.DB, companyIDs []int64) []map[stri
 	return results
 }
 
+// Extract base event IDs from a MySQL event page (used to scope edition/company/venue/ES fetches).
 func extractalleventIDs(batchData []map[string]interface{}) []int64 {
 	var eventIDs []int64
 	for _, row := range batchData {
@@ -1218,6 +1236,7 @@ func extractalleventIDs(batchData []map[string]interface{}) []int64 {
 	return eventIDs
 }
 
+// Fetch all edition rows for a set of events (in batches) to build one allevent row per (event, edition).
 func fetchallalleventDataParallel(db *sql.DB, eventIDs []int64) []map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
@@ -1240,6 +1259,7 @@ func fetchallalleventDataParallel(db *sql.DB, eventIDs []int64) []map[string]int
 	return allEditionData
 }
 
+// Retry helper: fetch editions by explicit edition IDs (used when rebuilding failed batches by event-edition pair).
 func fetchEditionsByEditionIDs(db *sql.DB, editionIDs []int64) []map[string]interface{} {
 	if len(editionIDs) == 0 {
 		return nil
@@ -1262,6 +1282,7 @@ func fetchEditionsByEditionIDs(db *sql.DB, editionIDs []int64) []map[string]inte
 	return allEditionData
 }
 
+// Fetch one edition-id batch from MySQL (helper for fetchEditionsByEditionIDs).
 func fetchEditionsByEditionIDsBatch(db *sql.DB, editionIDs []int64) []map[string]interface{} {
 	if len(editionIDs) == 0 {
 		return nil
@@ -1379,6 +1400,7 @@ func fetchEditionsByEditionIDsBatch(db *sql.DB, editionIDs []int64) []map[string
 	return results
 }
 
+// Fetch all edition rows for a single event-id batch (helper for fetchallalleventDataParallel).
 func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
@@ -1479,6 +1501,7 @@ func fetchallalleventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]int
 	return results
 }
 
+// Fetch base event metadata used by edition-level denormalization (separate from ES enrichment).
 func fetchalleventEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
@@ -1540,6 +1563,7 @@ func fetchalleventEventDataForBatch(db *sql.DB, eventIDs []int64) []map[string]i
 	return results
 }
 
+// Fetch predicted start/end dates (model outputs) from MySQL for a batch of events (used in future edition fields).
 func fetchalleventPredictedDatesForBatch(db *sql.DB, eventIDs []int64) map[int64]map[string]interface{} {
 	if len(eventIDs) == 0 {
 		return nil
@@ -1613,6 +1637,7 @@ type estimateData struct {
 	InternationalAttendance *uint32
 }
 
+// Fetch estimate/economic-impact source fields from MySQL for a batch of events (drives economic impact JSON processing).
 func fetchalleventEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]estimateData {
 	if len(eventIDs) == 0 {
 		return nil
@@ -1679,6 +1704,7 @@ func fetchalleventEstimateDataForBatch(db *sql.DB, eventIDs []int64) map[int64]e
 }
 
 // fetchalleventEventTypesForBatch fetches event types for a batch of events from event_type_event table
+// Used to derive `PrimaryEventType` and related type-based tags/priority fields in allevent.
 func fetchalleventEventTypesForBatch(db *sql.DB, eventIDs []int64) map[int64][]uint32 {
 	if len(eventIDs) == 0 {
 		return nil
@@ -1752,6 +1778,7 @@ func fetchalleventEventTypesForBatch(db *sql.DB, eventIDs []int64) map[int64][]u
 
 // getAttendanceRange returns the attendance range string based on event type ID and estimated visitor mean
 // use event type ID instead of UUID for better memory efficiency
+// Used to classify events into stable size buckets during seeding.
 func getAttendanceRange(primaryEventTypeID *uint32, estimatedVisitorMean *uint32) *string {
 	if primaryEventTypeID == nil || estimatedVisitorMean == nil {
 		return nil
@@ -1801,6 +1828,7 @@ func getAttendanceRange(primaryEventTypeID *uint32, estimatedVisitorMean *uint32
 	return selectedRange
 }
 
+// Choose a single "PrimaryEventType" UUID from the allowed event types using priority + audience group (B2B/B2C).
 func getPrimaryEventType(eventTypes []uint32, eventAudience uint16) *string {
 	if len(eventTypes) == 0 {
 		return nil
@@ -1861,6 +1889,7 @@ func getPrimaryEventType(eventTypes []uint32, eventAudience uint16) *string {
 	return nil
 }
 
+// Parse/normalize economic impact JSON for each event and attach estimate-derived fields used by allevent + day-wise inserts.
 func processalleventEconomicImpactDataParallel(estimateDataMap map[int64]estimateData) map[int64]map[string]interface{} {
 	if len(estimateDataMap) == 0 {
 		return nil
@@ -1881,6 +1910,7 @@ func processalleventEconomicImpactDataParallel(estimateDataMap map[int64]estimat
 	return finalResult
 }
 
+// Normalize one event's economic impact JSON into safe strings/fields for ClickHouse insertion.
 func processalleventSingleEconomicImpact(eventID int64, economicImpact string) map[int64]map[string]interface{} {
 	result := make(map[int64]map[string]interface{})
 
@@ -1946,6 +1976,7 @@ func processalleventSingleEconomicImpact(eventID int64, economicImpact string) m
 	return result
 }
 
+// Extract totals and per-category breakdowns from raw economic impact JSON, plus a normalized day-wise breakdown map.
 func formatalleventEconomicImpact(_ int64, economicImpact string) (interface{}, interface{}, interface{}) {
 	var economicImpactJSON map[string]interface{}
 	if err := json.Unmarshal([]byte(economicImpact), &economicImpactJSON); err != nil {
@@ -2028,6 +2059,7 @@ func formatalleventEconomicImpact(_ int64, economicImpact string) (interface{}, 
 	return total, totalBreakdown, dayWiseFormatted
 }
 
+// Convert the normalized day-wise breakdown map into flat ClickHouse rows (one row per date + metric).
 func convertDayWiseDataToRows(
 	eventID int64,
 	dayWiseFormatted map[string]map[string]interface{},
@@ -2097,6 +2129,7 @@ func convertDayWiseDataToRows(
 	return records
 }
 
+// Aggregate all event day-wise JSON strings into ClickHouse insert records for the day-wise economic impact temp table.
 func aggregateDayWiseRecordsFromEconomicData(
 	processedEconomicData map[int64]map[string]interface{},
 	lastUpdatedAt string,
@@ -2140,6 +2173,7 @@ func aggregateDayWiseRecordsFromEconomicData(
 	return allRecords
 }
 
+// Clean up old log artifacts from previous runs so retries/diagnostics stay readable.
 func cleanupOldLogFiles() {
 	logFiles := []string{
 		"optimize_logs.log",
@@ -2170,6 +2204,7 @@ func cleanupOldLogFiles() {
 	}
 }
 
+// Full refresh entrypoint: chunk the MySQL `event` table, build one row per (event, edition), and insert into `allevent_temp`.
 func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
 	log.Println("=== Starting allevent ONLY Processing ===")
 
@@ -2308,6 +2343,7 @@ func ProcessAllEventOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *
 	}
 }
 
+// Check if any failed-batch JSON files exist (used to decide whether a retry loop still has work).
 func HasRemainingFailedBatches() bool {
 	dir := "failed_batches"
 	files, err := filepath.Glob(filepath.Join(dir, "failed_batches_chunk_*_batch_*.json"))
@@ -2318,6 +2354,7 @@ func HasRemainingFailedBatches() bool {
 	return len(files) > 0
 }
 
+// Chunk worker: join editions + MySQL enrichment + ES enrichment, dedupe by (event_id, edition_id), then insert into ClickHouse temp tables.
 func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config, startID, endID int, chunkNum int, results chan<- string, globalUniqueRecords map[uint64]bool, globalMutex *sync.RWMutex, totalRecordsProcessed *int64, totalRecordsSkipped *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
 	log.Printf("Processing allevent chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
@@ -2977,6 +3014,7 @@ func processalleventChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient 
 // 1. current_edition: The edition_id that matches event.allevent (only one per event)
 // 2. future_edition: All editions with start_date > current_edition start_date
 // 3. past_edition: All editions with start_date < current_edition start_date
+// Used while building allevent rows so each edition is labeled relative to the current edition for the event.
 func determinealleventType(editionStartDate, currentEditionStartDate interface{}, editionID, currentEditionID int64) *string {
 	// edition is the current edition, return "current_edition"
 	if editionID == currentEditionID {
@@ -3026,6 +3064,7 @@ func determinealleventType(editionStartDate, currentEditionStartDate interface{}
 	}
 }
 
+// Public wrapper for determinealleventType (keeps callsites readable in the record builder).
 func DetermineEditionType(editionStartDate, currentEditionStartDate interface{}, editionID, currentEditionID int64) *string {
 	return determinealleventType(editionStartDate, currentEditionStartDate, editionID, currentEditionID)
 }

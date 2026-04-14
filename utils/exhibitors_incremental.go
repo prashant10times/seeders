@@ -21,6 +21,7 @@ type exhibitorTuple struct {
 	ExhibitorSourceID uint32
 }
 
+// Incremental sync: take rows modified since yesterday, delete those keys in CH, then reinsert the current published rows.
 func ProcessIncrementalEventExhibitor(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) error {
 	startTime := time.Now()
 	log.Println("=== Starting Incremental Event Exhibitor Sync ===")
@@ -128,6 +129,7 @@ func ProcessIncrementalEventExhibitor(mysqlDB *sql.DB, clickhouseConn driver.Con
 	return nil
 }
 
+// Extract just the ClickHouse primary key fields for the modified set (used as the delete scope).
 func extractExhibitorTuplesFromBatchData(batchData []map[string]interface{}) []exhibitorTuple {
 	var tuples []exhibitorTuple
 	for _, row := range batchData {
@@ -141,6 +143,7 @@ func extractExhibitorTuplesFromBatchData(batchData []map[string]interface{}) []e
 	return tuples
 }
 
+// Apply deletes in ClickHouse using ALTER TABLE ... DELETE in small batches, waiting synchronously for mutations.
 func deleteEventExhibitorRowsByPrimaryKey(conn driver.Conn, tuples []exhibitorTuple, tableName string) error {
 	if len(tuples) == 0 {
 		return nil

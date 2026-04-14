@@ -99,6 +99,7 @@ type PolygonError struct {
 
 var polygonErrorLogger *PolygonErrorLogger
 
+// Create a fresh polygon error log file for this run and initialize the in-memory collector.
 func InitPolygonErrorLogger() error {
 	logFileName := "polygon_coordinate_cases.log"
 	file, err := os.Create(logFileName)
@@ -117,6 +118,7 @@ func InitPolygonErrorLogger() error {
 	return nil
 }
 
+// Append one polygon/geometry failure case for later debugging and for a one-file run summary.
 func LogPolygonError(alertID, gdacSearchURL, polygonSourceURL string) {
 	if polygonErrorLogger == nil {
 		return
@@ -135,6 +137,7 @@ func LogPolygonError(alertID, gdacSearchURL, polygonSourceURL string) {
 	polygonErrorLogger.logger.Printf("%s -> %s -> %s", alertID, gdacSearchURL, polygonSourceURL)
 }
 
+// Flush a short summary and close the polygon error log file (safe no-op if not initialized).
 func FinalizePolygonErrorLogger() error {
 	if polygonErrorLogger == nil {
 		return nil
@@ -176,6 +179,7 @@ type AlertCountryLogger struct {
 
 var alertCountryLogger *AlertCountryLogger
 
+// Create a per-country processing log file so large GDAC runs can be triaged country-by-country.
 func InitAlertCountryLogger() error {
 	logFileName := "alerts_country_processing.log"
 	file, err := os.Create(logFileName)
@@ -196,6 +200,7 @@ func InitAlertCountryLogger() error {
 	return nil
 }
 
+// Log per-country fetch+parse results including counts, skipped reasons, and timing.
 func LogAlertCountryResult(country string, fetched, processed, skippedDroughts int, parseErrors []string, duration time.Duration, success bool) {
 	if alertCountryLogger == nil {
 		return
@@ -233,6 +238,7 @@ func LogAlertCountryResult(country string, fetched, processed, skippedDroughts i
 	alertCountryLogger.logger.Println("")
 }
 
+// Log a per-country failure when we could not even fetch alerts (network, rate limiting, etc.).
 func LogAlertCountryFetchError(country string, err error, duration time.Duration) {
 	if alertCountryLogger == nil {
 		return
@@ -250,6 +256,7 @@ func LogAlertCountryFetchError(country string, err error, duration time.Duration
 	alertCountryLogger.logger.Println("")
 }
 
+// Log major phases (batch insert, polygon processing) to the country processing log for quick operator visibility.
 func LogAlertPhase(phase string, detail string, success bool, err error) {
 	if alertCountryLogger == nil {
 		return
@@ -269,6 +276,7 @@ func LogAlertPhase(phase string, detail string, success bool, err error) {
 	alertCountryLogger.logger.Println("")
 }
 
+// Flush summary stats and close the alert country log file (safe no-op if not initialized).
 func FinalizeAlertCountryLogger() error {
 	if alertCountryLogger == nil {
 		return nil
@@ -295,6 +303,7 @@ func FinalizeAlertCountryLogger() error {
 	return nil
 }
 
+// InsertAlertsChDataIntoTable inserts a prepared slice of alert records into the provided ClickHouse table.
 func InsertAlertsChDataIntoTable(clickhouseConn driver.Conn, alertRecords []AlertChRecord, tableName string) error {
 	if len(alertRecords) == 0 {
 		return nil
@@ -464,6 +473,7 @@ type FetchAlertRequest struct {
 	ToDate   *string
 }
 
+// Compute retry backoff for GDAC 403 rate limiting (honors Retry-After when present).
 func backoffSecondsFor403(attempt int, resp *http.Response) time.Duration {
 	if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
 		if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds > 0 {
@@ -477,6 +487,7 @@ func backoffSecondsFor403(attempt int, resp *http.Response) time.Duration {
 	return 60 * time.Second
 }
 
+// Make an HTTP GET with retries/backoff and return body + status (special-cases 204 and retryable codes).
 func makeRequest(client *http.Client, url string, maxRetries int, backoffFactor int) ([]byte, int, error) {
 	var lastErr error
 	var lastStatusCode int
@@ -542,6 +553,7 @@ func makeRequest(client *http.Client, url string, maxRetries int, backoffFactor 
 	return nil, lastStatusCode, fmt.Errorf("max retries exceeded: %w", lastErr)
 }
 
+// Build the GDAC search URL for a request payload (this does not execute the request).
 func fetchAlerts(gdacBaseURL, gdacEndpoint string, req FetchAlertRequest) (string, FetchAlertRequest, error) {
 	params := url.Values{}
 	if req.Type != nil {
@@ -564,6 +576,7 @@ func fetchAlerts(gdacBaseURL, gdacEndpoint string, req FetchAlertRequest) (strin
 	return url, req, nil
 }
 
+// Convert a single GDAC feature into an AlertChRecord + metadata used later for polygon/event mapping (returns nil for droughts).
 func parseAlertFeature(feature GDACFeature, now time.Time, country string) (*AlertChRecord, *AlertMetadata, error) {
 	props := feature.Properties
 
@@ -730,6 +743,7 @@ func parseAlertFeature(feature GDACFeature, now time.Time, country string) (*Ale
 	return alertRecord, metadata, nil
 }
 
+// Split a date range into two halves so we can recursively narrow GDAC searches when result counts hit the cap.
 func getDateRange(startDate, endDate string) [][]string {
 	if startDate == endDate {
 		return [][]string{{startDate, endDate}}
@@ -744,6 +758,7 @@ func getDateRange(startDate, endDate string) [][]string {
 	return [][]string{{startDate, middleStr}, {nextDayStr, endDate}}
 }
 
+// Expand a request payload based on current search level (type fan-out, then date-range splitting).
 func generateRequests(payload FetchAlertRequest, searchLevel int) []FetchAlertRequest {
 	var requests []FetchAlertRequest
 
@@ -773,6 +788,7 @@ func generateRequests(payload FetchAlertRequest, searchLevel int) []FetchAlertRe
 	return requests
 }
 
+// Fetch GDAC features with adaptive narrowing: retry on rate limits, split by type/date when results are too large, and dedupe.
 func getAlerts(httpClient *http.Client, gdacBaseURL, gdacEndpoint string, payloads []FetchAlertRequest, searchLevel int) ([]GDACFeature, error) {
 	var allFeatures []GDACFeature
 	pending := []FetchAlertRequest{}
@@ -913,6 +929,7 @@ type CountryData struct {
 	Altname   string `json:"altname"`
 }
 
+// Load the country allowlist from `Country_data.json` and return the intersection with GDAC's supported country names.
 func GetValidCountries() ([]string, error) {
 	_, filename, _, _ := runtime.Caller(0)
 	dir := filepath.Dir(filename)
@@ -967,6 +984,7 @@ type GeoJSON struct {
 	Features []GeoJSONFeature `json:"features"`
 }
 
+// Filter geojson features down to the polygon classes we support for alert->event mapping (skips non-polygons).
 func getValidFeatureClassesGeoJson(geojsonMap map[string]interface{}) (map[string]interface{}, error) {
 	if geojsonMap == nil {
 		return map[string]interface{}{
@@ -1039,6 +1057,7 @@ func getValidFeatureClassesGeoJson(geojsonMap map[string]interface{}) (map[strin
 	return geojsonMap, nil
 }
 
+// Provide a stable sort order for polygon feature classes so we process higher-signal classes first.
 func getClassValue(class interface{}) int {
 	if classStr, ok := class.(string); ok {
 		switch classStr {
@@ -1053,6 +1072,7 @@ func getClassValue(class interface{}) int {
 	return 2
 }
 
+// InsertLocationPolygonsChDataSingleWorker inserts polygon GeoJSON blobs into the provided table, with validations + retries.
 func InsertLocationPolygonsChDataSingleWorker(clickhouseConn driver.Conn, polygonRecords []LocationPolygonRecord, tableName string) error {
 	if len(polygonRecords) == 0 {
 		return nil
@@ -1105,6 +1125,7 @@ func InsertLocationPolygonsChDataSingleWorker(clickhouseConn driver.Conn, polygo
 	return nil
 }
 
+// Prepare and send one ClickHouse batch insert for location polygons.
 func insertLocationPolygonsBatch(clickhouseConn driver.Conn, polygonRecords []LocationPolygonRecord, tableName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -1160,6 +1181,7 @@ func insertLocationPolygonsBatch(clickhouseConn driver.Conn, polygonRecords []Lo
 	return nil
 }
 
+// Fetch polygon GeoJSON from GDAC geometry link, filter/normalize it, and wrap it into a LocationPolygonRecord.
 func fetchAndProcessPolygon(httpClient *http.Client, alertID, geometryLink string) (*LocationPolygonRecord, error) {
 	// Polygon/geometry API is rate-limited; use more retries (5) for 403 backoff
 	body, statusCode, err := makeRequest(httpClient, geometryLink, 5, 2)
@@ -1203,6 +1225,7 @@ func fetchAndProcessPolygon(httpClient *http.Client, alertID, geometryLink strin
 	}, nil
 }
 
+// Fetch polygons concurrently (rate-limited), insert them, then map each polygon's affected events into event_type_ch.
 func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metadataMap map[string]*AlertMetadata, semaphore chan struct{}, eventTypeTableName, locationPolygonsTableName string) error {
 	type GeometryLink struct {
 		AlertID      string
@@ -1344,6 +1367,7 @@ func processPolygons(clickhouseConn driver.Conn, httpClient *http.Client, metada
 	return nil
 }
 
+// Find the current maximum eventtype_id so the alert event type can be assigned consistently when absent.
 func getMaxEventTypeIDForAlerts(clickhouseConn driver.Conn, eventTypeTableName string) (uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1364,6 +1388,7 @@ func getMaxEventTypeIDForAlerts(clickhouseConn driver.Conn, eventTypeTableName s
 	return maxID, nil
 }
 
+// Reuse an existing alert eventtype_id when alert entries already exist (keeps IDs stable across runs).
 func getAlertEventTypeIDFromExisting(clickhouseConn driver.Conn, eventTypeTableName string) (uint32, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1383,6 +1408,7 @@ func getAlertEventTypeIDFromExisting(clickhouseConn driver.Conn, eventTypeTableN
 	return eventTypeID, true
 }
 
+// Convert a GeoJSON ring into raw lon/lat points, skipping invalid point shapes.
 func extractPointsFromRing(ring interface{}) []struct {
 	Lon, Lat float64
 } {
@@ -1411,6 +1437,7 @@ func extractPointsFromRing(ring interface{}) []struct {
 	return rawPoints
 }
 
+// Reject empty rings and degenerate rings where every point is identical (ClickHouse polygon ops can fail).
 func validatePoints(rawPoints []struct {
 	Lon, Lat float64
 }) bool {
@@ -1434,6 +1461,7 @@ func validatePoints(rawPoints []struct {
 	return true
 }
 
+// Format raw lon/lat points into ClickHouse polygon literal syntax.
 func formatPointsToClickHouse(rawPoints []struct {
 	Lon, Lat float64
 }) string {
@@ -1444,6 +1472,7 @@ func formatPointsToClickHouse(rawPoints []struct {
 	return "[[" + strings.Join(points, ",") + "]]"
 }
 
+// Convert a GeoJSON ring to ClickHouse polygon string, returning ok=false for invalid/degenerate rings.
 func convertRingToClickHousePolygon(ring interface{}) (string, bool) {
 	rawPoints := extractPointsFromRing(ring)
 	if !validatePoints(rawPoints) {
@@ -1460,6 +1489,7 @@ func convertRingToClickHousePolygonWithDiagnostic(ring interface{}) (rawPoints [
 }
 
 
+// If a polygon is degenerate, attempt a centroid-like fallback (first point) so we can query by circle instead.
 func tryExtractCentroidFromDegeneratePolygon(feature GeoJSONFeature) (centerLat, centerLon float64, ok bool) {
 	var rawPoints []struct {
 		Lon, Lat float64
@@ -1497,6 +1527,7 @@ func tryExtractCentroidFromDegeneratePolygon(feature GeoJSONFeature) (centerLat,
 	return rawPoints[0].Lat, rawPoints[0].Lon, true
 }
 
+// Convert a single GeoJSON feature into a ClickHouse polygon string with diagnostics for invalid geometry cases.
 func convertFeatureToClickHousePolygon(feature GeoJSONFeature, alertID string, polygonSourceURL string, gdacSearchURL string, class string) (string, error) {
 	switch feature.Geometry.Type {
 	case "Polygon":
@@ -1561,6 +1592,7 @@ func convertFeatureToClickHousePolygon(feature GeoJSONFeature, alertID string, p
 	}
 }
 
+// Convert a MultiPolygon into multiple ClickHouse polygon strings, skipping invalid sub-polygons.
 func convertMultiPolygonToClickHouse(feature GeoJSONFeature, alertID string, _ string, _ string) ([]string, error) {
 	if feature.Geometry.Type != "MultiPolygon" {
 		return nil, fmt.Errorf("feature is not a MultiPolygon (type: %s)", feature.Geometry.Type)
@@ -1606,6 +1638,7 @@ func convertMultiPolygonToClickHouse(feature GeoJSONFeature, alertID string, _ s
 	return polygonStrs, nil
 }
 
+// Query ClickHouse for events whose (venue/city) point is inside a polygon (or within a circle) and overlaps the alert date window.
 func queryEventsWithinPolygon(clickhouseConn driver.Conn, isCircle bool, centerLat, centerLon float64, radiusMeters int, polygonStr string, startDate, endDate string, lastEventID uint32) ([]uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -1664,6 +1697,7 @@ func queryEventsWithinPolygon(clickhouseConn driver.Conn, isCircle bool, centerL
 	return eventIDs, nil
 }
 
+// Given a polygon GeoJSON, build `event_type_ch` alert records for all events affected by the alert (including buffers/recovery windows).
 func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJSON string, metadata *AlertMetadata, alertEventTypeID uint32) ([]EventTypeChRecord, error) {
 	var geojson GeoJSON
 	if err := json.Unmarshal([]byte(polygonGeoJSON), &geojson); err != nil {
@@ -1949,6 +1983,7 @@ func processPolygonFeaturesAndMapEvents(clickhouseConn driver.Conn, polygonGeoJS
 	return allEventTypeRecords, nil
 }
 
+// InsertEventTypeChDataSingleWorker inserts alert-enriched event_type records into the provided table, retrying on failures.
 func InsertEventTypeChDataSingleWorker(clickhouseConn driver.Conn, eventTypeRecords []EventTypeChRecord, eventTypeTableName string) error {
 	if len(eventTypeRecords) == 0 {
 		return nil
@@ -1988,6 +2023,7 @@ func InsertEventTypeChDataSingleWorker(clickhouseConn driver.Conn, eventTypeReco
 	return nil
 }
 
+// Prepare and send one ClickHouse batch insert for alert-enriched event_type records.
 func insertEventTypeChBatch(clickhouseConn driver.Conn, eventTypeRecords []EventTypeChRecord, eventTypeTableName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -2045,6 +2081,7 @@ func insertEventTypeChBatch(clickhouseConn driver.Conn, eventTypeRecords []Event
 	return nil
 }
 
+// Full refresh entrypoint: fetch alerts from GDAC for all valid countries, insert alerts, then fetch polygons and map alerts onto events.
 func ProcessAlertsFromAPI(clickhouseConn driver.Conn, gdacBaseURL, gdacEndpoint string, validCountries []string, config shared.Config) error {
 	startTime := time.Now()
 	log.Printf("Starting alert processing from GDAC API")

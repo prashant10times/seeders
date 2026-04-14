@@ -85,6 +85,7 @@ var holidayEventTypes = []HolidayEventType{
 	{"7d05fc2c-2f59-579c-80f2-c92979472eda", "Religious Holiday", "religious-holiday"},
 }
 
+// Read the current max `eventtype_id` in ClickHouse so we can assign new IDs without colliding.
 func getMaxEventTypeID(clickhouseConn driver.Conn, config shared.Config) (uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -108,6 +109,7 @@ func getMaxEventTypeID(clickhouseConn driver.Conn, config shared.Config) (uint32
 	return maxID, nil
 }
 
+// Ensure we have deterministic eventtype_id values for the holiday UUID set (either for initial seed or for lookup).
 func ProcessHolidayEventTypes(clickhouseConn driver.Conn, config shared.Config) (map[string]uint32, error) {
 	log.Println("=== Starting Holiday Event Types Processing ===")
 
@@ -145,6 +147,7 @@ type HolidayCacheEntry struct {
 	EventUUID   string
 }
 
+// Split synonyms CSV, normalize (trim/lower/special-char removal), and dedupe for keyword building.
 func processSynonyms(synonyms string) []string {
 	if synonyms == "" {
 		return []string{}
@@ -168,6 +171,7 @@ func processSynonyms(synonyms string) []string {
 	return result
 }
 
+// Read the current max `event_id` in ClickHouse so we can assign new holiday event IDs without colliding.
 func getMaxEventID(clickhouseConn driver.Conn, config shared.Config) (uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -191,6 +195,7 @@ func getMaxEventID(clickhouseConn driver.Conn, config shared.Config) (uint32, er
 	return maxID, nil
 }
 
+// Count distinct holiday clusters (cluster_name + date range) to give per-country visibility during processing.
 func getHolidayTotalCount(mysqlDB *sql.DB, startDate, countryFilter string) (int, error) {
 	whereClause := "cluster_name IS NOT NULL AND start_date >= '" + startDate + "'"
 	if c := strings.TrimSpace(countryFilter); c != "" {
@@ -250,6 +255,7 @@ func getDistinctHolidayCountries(mysqlDB *sql.DB, startDate string) ([]string, e
 	return countries, nil
 }
 
+// Fetch one page of grouped holidays from MySQL (grouped by cluster_name + dates) with comma-aggregated fields.
 func fetchHolidays(mysqlDB *sql.DB, limit, offset int, startDate, countryFilter string) ([]map[string]interface{}, error) {
 	whereClause := "cluster_name IS NOT NULL AND start_date >= '" + startDate + "'"
 	if c := strings.TrimSpace(countryFilter); c != "" {
@@ -311,6 +317,7 @@ func fetchHolidays(mysqlDB *sql.DB, limit, offset int, startDate, countryFilter 
 	return results, nil
 }
 
+// For a holiday page: fetch all holiday_score rows concurrently and collect distinct location source IDs for location_ch lookup.
 func fetchHolidayLocationsBatch(mysqlDB *sql.DB, holidays []map[string]interface{}, numWorkers int) (map[string][]map[string]interface{}, map[string]bool, error) {
 	if len(holidays) == 0 {
 		return make(map[string][]map[string]interface{}), make(map[string]bool), nil
@@ -382,6 +389,7 @@ type HolidayLocationInfo struct {
 	CountryISO string
 }
 
+// Fetch holiday_score rows (and related city/state joins) for one holiday cluster/date-range.
 func fetchHolidayLocations(mysqlDB *sql.DB, clusterName, startDate, endDate string) ([]map[string]interface{}, error) {
 	query := `
 		SELECT hs.id, hs.entity_id, hs.entity_type
@@ -434,6 +442,7 @@ func fetchHolidayLocations(mysqlDB *sql.DB, clusterName, startDate, endDate stri
 	return results, nil
 }
 
+// Build unique location_ch lookup keys (id_10x) from holiday_score entity rows (city + inferred state).
 func getDistinctLocationSourceIDs(holidayLocations []map[string]interface{}) []string {
 	locationSourceIDs := make(map[string]bool)
 
@@ -476,6 +485,7 @@ func getDistinctLocationSourceIDs(holidayLocations []map[string]interface{}) []s
 	return result
 }
 
+// Query location_ch for a set of id_10x keys and return a map for fast lookups during record building.
 func fetchLocationsFromClickHouse(clickhouseConn driver.Conn, id10xValues []string, config shared.Config) (map[string]map[string]interface{}, error) {
 	if len(id10xValues) == 0 {
 		return make(map[string]map[string]interface{}), nil
@@ -541,6 +551,7 @@ func fetchLocationsFromClickHouse(clickhouseConn driver.Conn, id10xValues []stri
 	return locationMap, nil
 }
 
+// Collapse holiday_score locations into a single (city/state/country) selection for allevent fields.
 func mapHolidayLocations(holidayLocations []map[string]interface{}, locationMap map[string]map[string]interface{}) HolidayLocationInfo {
 	locationInfo := HolidayLocationInfo{
 		CityID:     0,
@@ -607,6 +618,7 @@ func mapHolidayLocations(holidayLocations []map[string]interface{}, locationMap 
 	return locationInfo
 }
 
+// Insert helper: fan out to multiple workers (optional) and write holiday events into `allevent_ch`.
 func insertHolidaysIntoAllevent(clickhouseConn driver.Conn, records []alleventRecord, numWorkers int, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
@@ -648,6 +660,7 @@ func insertHolidaysIntoAllevent(clickhouseConn driver.Conn, records []alleventRe
 	return nil
 }
 
+// Insert helper: prepare one large allevent batch for the provided holiday records and send it to ClickHouse.
 func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records []alleventRecord, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
@@ -801,6 +814,7 @@ func insertHolidaysIntoAlleventSingleWorker(clickhouseConn driver.Conn, records 
 	return nil
 }
 
+// Check whether the base holiday event type UUID exists in ClickHouse (used to decide seed-vs-lookup path).
 func checkHolidayEventTypesExist(clickhouseConn driver.Conn, config shared.Config) (bool, error) {
 	baseHolidayUUID := "5b37e581-53f7-5dcf-8177-c6a43774b168"
 	_, err := getEventTypeIDByUUID(clickhouseConn, baseHolidayUUID, config)
@@ -810,6 +824,7 @@ func checkHolidayEventTypesExist(clickhouseConn driver.Conn, config shared.Confi
 	return true, nil
 }
 
+// Full refresh entrypoint: read grouped holidays from MySQL, build allevent rows + event_type mappings, and insert them into ClickHouse.
 func ProcessHolidays(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) error {
 	log.Println("=== Starting Holiday Processing ===")
 
@@ -1280,6 +1295,7 @@ var holidayTypesMapping = map[string]string{
 	"cultural":      "cultural-holiday",
 }
 
+// Resolve eventtype_id from ClickHouse by UUID (used to build a UUID->ID lookup for holiday types).
 func getEventTypeIDByUUID(clickhouseConn driver.Conn, eventTypeUUID string, config shared.Config) (uint32, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1298,6 +1314,7 @@ func getEventTypeIDByUUID(clickhouseConn driver.Conn, eventTypeUUID string, conf
 	return eventTypeID, nil
 }
 
+// Build a UUID->eventtype_id lookup from ClickHouse for the known holiday event types.
 func buildEventTypeUUIDLookup(clickhouseConn driver.Conn, config shared.Config) (map[string]uint32, error) {
 	lookup := make(map[string]uint32)
 
@@ -1314,6 +1331,7 @@ func buildEventTypeUUIDLookup(clickhouseConn driver.Conn, config shared.Config) 
 	return lookup, nil
 }
 
+// Insert helper: fan out to multiple workers (optional) and write holiday event_type mappings into `event_type_ch`.
 func insertHolidayEventTypeMappings(clickhouseConn driver.Conn, records []HolidayEventTypeRecord, numWorkers int, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
@@ -1355,6 +1373,7 @@ func insertHolidayEventTypeMappings(clickhouseConn driver.Conn, records []Holida
 	return nil
 }
 
+// Insert helper: prepare one batch for holiday event_type mappings and send it to ClickHouse.
 func insertHolidayEventTypeMappingsSingleWorker(clickhouseConn driver.Conn, records []HolidayEventTypeRecord, config shared.Config) error {
 	if len(records) == 0 {
 		return nil
@@ -1417,6 +1436,7 @@ func insertHolidayEventTypeMappingsSingleWorker(clickhouseConn driver.Conn, reco
 	return nil
 }
 
+// Build (holiday + subtype/type) event_type_ch rows for the chunk, then batch-insert with retries.
 func ProcessHolidayEventTypeMappings(clickhouseConn driver.Conn, holidayCache map[string]HolidayCacheEntry, eventTypeLookup map[string]uint32, config shared.Config) (int, error) {
 	log.Println("=== Starting Holiday Event Type Mapping Processing ===")
 

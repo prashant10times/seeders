@@ -36,6 +36,7 @@ type ExhibitorRecord struct {
 	ExhibitorSourceID uint32  `ch:"exhibitorSourceId"`
 }
 
+// Full refresh entrypoint: chunk the `event_exhibitor` ID range and backfill `event_exhibitor_*` into ClickHouse.
 func ProcessExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config) {
 	log.Println("=== Starting EXHIBITOR ONLY Processing ===")
 
@@ -90,6 +91,7 @@ func ProcessExhibitorOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, config sh
 	log.Println("Exhibitor processing completed!")
 }
 
+// For one ID-range chunk: fetch MySQL rows in batches, enrich with social + location info, and insert into ClickHouse.
 func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config shared.Config, startID, endID int, chunkNum int, results chan<- string) {
 	log.Printf("Processing exhibitor chunk %d: ID range %d-%d", chunkNum, startID, endID)
 
@@ -306,6 +308,7 @@ func processExhibitorChunk(mysqlDB *sql.DB, clickhouseConn driver.Conn, config s
 	results <- fmt.Sprintf("Exhibitor chunk %d: Completed successfully", chunkNum)
 }
 
+// Fetch one MySQL batch of exhibitor rows (id range + published filter) to drive full refresh processing.
 func buildExhibitorMigrationData(db *sql.DB, startID, endID int, batchSize int) ([]map[string]interface{}, error) {
 	query := fmt.Sprintf(`
 		SELECT 
@@ -353,6 +356,7 @@ func buildExhibitorMigrationData(db *sql.DB, startID, endID int, batchSize int) 
 	return results, nil
 }
 
+// Load social IDs (facebook/linkedin/twitter) for exhibitor companies in manageable IN() batches.
 func fetchExhibitorSocialData(db *sql.DB, companyIDs []int64) map[int64]map[string]interface{} {
 	if len(companyIDs) == 0 {
 		return nil
@@ -427,6 +431,7 @@ func fetchExhibitorSocialData(db *sql.DB, companyIDs []int64) map[int64]map[stri
 	return allSocialData
 }
 
+// Insert helper for full refresh: insert into temp table, optionally splitting the slice across workers.
 func insertExhibitorDataIntoClickHouse(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord, numWorkers int) error {
 	if len(exhibitorRecords) == 0 {
 		return nil
@@ -468,6 +473,7 @@ func insertExhibitorDataIntoClickHouse(clickhouseConn driver.Conn, exhibitorReco
 	return nil
 }
 
+// Insert helper for full refresh: prepare a ClickHouse batch and send it to `event_exhibitor_temp`.
 func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord) error {
 	if len(exhibitorRecords) == 0 {
 		return nil
@@ -533,6 +539,7 @@ func insertExhibitorDataSingleWorker(clickhouseConn driver.Conn, exhibitorRecord
 	return nil
 }
 
+// Extract distinct event IDs from a MySQL batch (used to scope downstream enrichment work).
 func extractExhibitorEventIDs(exhibitorData []map[string]interface{}) []int64 {
 	var eventIDs []int64
 	seen := make(map[int64]bool)
@@ -549,6 +556,7 @@ func extractExhibitorEventIDs(exhibitorData []map[string]interface{}) []int64 {
 	return eventIDs
 }
 
+// Incremental scope helper: fetch only exhibitor rows modified/created since yesterday (includes published=0 for deletes).
 func buildExhibitorChDataForModifiedRows(db *sql.DB) ([]map[string]interface{}, error) {
 	query := `
 		SELECT id, company_id, company_name, event_id, edition_id, country, city, website, created, published
@@ -589,6 +597,7 @@ func buildExhibitorChDataForModifiedRows(db *sql.DB) ([]map[string]interface{}, 
 	return results, rows.Err()
 }
 
+// Incremental helper: fetch all published exhibitor rows for a list of event IDs.
 func buildExhibitorChDataForEventIDs(db *sql.DB, eventIDs []int64) ([]map[string]interface{}, error) {
 	if len(eventIDs) == 0 {
 		return nil, nil
@@ -763,6 +772,7 @@ func BuildExhibitorRecordsFromBatchData(db *sql.DB, batchData []map[string]inter
 	return exhibitorRecords, nil
 }
 
+// Insert helper for incremental mode: insert already-built records into the provided ClickHouse table name.
 func InsertEventExhibitorChDataIntoTable(clickhouseConn driver.Conn, records []ExhibitorRecord, tableName string, numWorkers int) error {
 	if len(records) == 0 {
 		return nil
@@ -797,6 +807,7 @@ func InsertEventExhibitorChDataIntoTable(clickhouseConn driver.Conn, records []E
 	return nil
 }
 
+// Batch insert primitive for incremental mode (used for event_exhibitor_ch).
 func insertExhibitorChBatchIntoTable(clickhouseConn driver.Conn, exhibitorRecords []ExhibitorRecord, tableName string) error {
 	if len(exhibitorRecords) == 0 {
 		return nil

@@ -25,6 +25,7 @@ type VisitorSpreadRecord struct {
 	LastUpdatedAt     string        `ch:"last_updated_at"`
 }
 
+// Full refresh entrypoint: split distinct event IDs into chunks, fetch visitor_spread from Elasticsearch, and insert into ClickHouse.
 func ProcessVisitorSpreadOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esClient *elasticsearch.Client, config shared.Config) {
 	log.Println("=== Starting VISITOR SPREAD ONLY Processing ===")
 
@@ -94,6 +95,7 @@ func ProcessVisitorSpreadOnly(mysqlDB *sql.DB, clickhouseConn driver.Conn, esCli
 	log.Println("Visitor Spread processing completed!")
 }
 
+// Get all distinct event IDs from MySQL as the driving set for visitor-spread backfill.
 func getDistinctEventIDs(mysqlDB *sql.DB) ([]int64, error) {
 	query := "SELECT DISTINCT event FROM event_edition WHERE event IS NOT NULL ORDER BY event"
 
@@ -119,6 +121,7 @@ func getDistinctEventIDs(mysqlDB *sql.DB) ([]int64, error) {
 	return eventIDs, nil
 }
 
+// Convert per-event ES payloads into ClickHouse rows, ensuring arrays are always present (empty when missing).
 func convertVisitorSpreadDataToRecords(visitorSpreadData map[int64]map[string]interface{}, allEventIDs []int64) []VisitorSpreadRecord {
 	records := make([]VisitorSpreadRecord, 0, len(allEventIDs))
 	eventsWithoutVisitorData := make([]int64, 0, 10)
@@ -183,6 +186,7 @@ func convertVisitorSpreadDataToRecords(visitorSpreadData map[int64]map[string]in
 	return records
 }
 
+// For one event-ID chunk: fetch visitor_spread from ES, convert to records, and insert into ClickHouse with retries.
 func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsearch.Client, eventIDs []int64, chunkNum int, config shared.Config, results chan<- string, totalRecordsProcessed *int64, totalRecordsInserted *int64, globalCountMutex *sync.Mutex) {
 	log.Printf("Processing visitor spread chunk %d: %d event IDs", chunkNum, len(eventIDs))
 
@@ -247,6 +251,7 @@ func processVisitorSpreadChunk(clickhouseConn driver.Conn, esClient *elasticsear
 	results <- fmt.Sprintf("Visitor spread chunk %d: Successfully processed %d records, inserted %d records", chunkNum, recordCount, insertedCount)
 }
 
+// Fetch visitor_spread documents from Elasticsearch for a set of event IDs using batching + limited concurrency.
 func fetchVisitorSpreadDataFromElasticsearch(esClient *elasticsearch.Client, eventIDs []int64) (map[int64]map[string]interface{}, error) {
 	if len(eventIDs) == 0 {
 		return nil, nil
@@ -323,6 +328,7 @@ func fetchVisitorSpreadDataFromElasticsearch(esClient *elasticsearch.Client, eve
 	return results, nil
 }
 
+// Fetch one Elasticsearch batch and return map[eventID]visitor_spread (keeps missing events as empty maps).
 func fetchVisitorSpreadBatch(esClient *elasticsearch.Client, eventIDs []int64) (map[int64]map[string]interface{}, error) {
 	if len(eventIDs) == 0 {
 		return nil, nil
@@ -411,6 +417,7 @@ func fetchVisitorSpreadBatch(esClient *elasticsearch.Client, eventIDs []int64) (
 	return results, nil
 }
 
+// Normalize the ES `visitor_spread` field into two arrays (`user_by_cntry`, `user_by_designation`) with safe fallbacks.
 func processVisitorSpreadData(eventID int64, visitorSpread interface{}) map[string]interface{} {
 	processedData := make(map[string]interface{})
 
@@ -464,6 +471,7 @@ func processVisitorSpreadData(eventID int64, visitorSpread interface{}) map[stri
 	return processedData
 }
 
+// Insert helper for full refresh: insert into temp table, optionally splitting the slice across workers.
 func insertVisitorSpreadDataIntoClickHouse(clickhouseConn driver.Conn, records []VisitorSpreadRecord, numWorkers int) error {
 	if len(records) == 0 {
 		return nil
@@ -505,6 +513,7 @@ func insertVisitorSpreadDataIntoClickHouse(clickhouseConn driver.Conn, records [
 	return nil
 }
 
+// Insert helper for full refresh: prepare a ClickHouse batch and send it to `event_visitorSpread_temp`.
 func insertVisitorSpreadDataSingleWorker(clickhouseConn driver.Conn, records []VisitorSpreadRecord) error {
 	if len(records) == 0 {
 		return nil

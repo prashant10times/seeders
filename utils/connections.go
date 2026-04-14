@@ -23,7 +23,7 @@ func LoadEnv() (shared.Config, error) {
 	var config shared.Config
 
 	if err := godotenv.Load(); err != nil {
-		return config, fmt.Errorf("failed to load .env file: %w", err)
+		log.Printf("WARNING: could not load .env (%v); using existing process environment variables", err)
 	}
 
 	if err := envconfig.Process("", &config); err != nil {
